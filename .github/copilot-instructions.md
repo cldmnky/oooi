@@ -49,7 +49,7 @@ make test-e2e          # Creates Kind cluster, runs e2e tests, tears down
 
 **Container workflow**:
 ```bash
-make docker-build  # Uses ko for multi-arch build
+make container-build  # Uses ko for multi-arch build
 make deploy IMG=quay.io/cldmnky/oooi:v0.0.1
 ```
 

@@ -645,7 +645,7 @@ make run
 
 ```bash
 # Build and push image
-make docker-build  # Uses ko for multi-arch
+make container-build  # Uses ko for multi-arch
 
 # Deploy to cluster
 make deploy IMG=quay.io/cldmnky/oooi:v1.0.0
