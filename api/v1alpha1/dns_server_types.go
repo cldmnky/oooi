@@ -69,6 +69,12 @@ type DNSNetworkConfig struct {
 	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`
 	ProxyIP string `json:"proxyIP"`
 
+	// SecondaryNetworkCIDR is the CIDR of the secondary network for view plugin matching
+	// Queries from this CIDR will see HCP endpoints (split-horizon)
+	// +optional
+	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$`
+	SecondaryNetworkCIDR string `json:"secondaryNetworkCIDR,omitempty"`
+
 	// NetworkAttachmentName is the name of the NetworkAttachmentDefinition to attach
 	// +optional
 	NetworkAttachmentName string `json:"networkAttachmentName,omitempty"`

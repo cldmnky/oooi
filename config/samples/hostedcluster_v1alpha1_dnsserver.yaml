@@ -7,10 +7,11 @@ metadata:
   name: dnsserver-sample
 spec:
   # NetworkConfig defines the DNS server network settings
-  # The serverIP is used to bind the Multus interface view
+  # SecondaryNetworkCIDR is used by view plugin for source-based routing
   networkConfig:
     serverIP: "192.168.100.3"  # DNS server IP on secondary network (Multus)
     proxyIP: "192.168.100.10"   # Envoy proxy IP that HCP endpoints resolve to
+    secondaryNetworkCIDR: "192.168.100.0/24"  # CIDR for view plugin matching
     dnsPort: 53
     networkAttachmentName: "tenant-vlan-100"
     networkAttachmentNamespace: "default"
@@ -18,9 +19,9 @@ spec:
   # Hosted cluster domain (constructed from ClusterName + BaseDomain)
   hostedClusterDomain: "my-cluster.example.com"
   
-  # Static DNS entries visible ONLY from Multus interface (split-horizon)
-  # These provide HCP control plane access to tenant VMs on secondary network
-  # Queries from pod network do NOT see these entries
+  # Static DNS entries visible ONLY from secondary network CIDR (split-horizon)
+  # View plugin uses incidr(client_ip(), secondaryNetworkCIDR) to route queries
+  # Queries from secondary network see these entries; pod network does not
   staticEntries:
     - hostname: "api.my-cluster.example.com"
       ip: "192.168.100.10"

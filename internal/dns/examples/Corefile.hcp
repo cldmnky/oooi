@@ -1,77 +1,77 @@
 # Example Corefile for OpenShift Hosted Control Plane Split-Horizon DNS
-# Dual-View Configuration: Separate views for Multus and Pod networks
+# Using CoreDNS view plugin for source-based routing
 
 # =============================================================================
-# VIEW 1: Multus Secondary Network Interface (Tenant VM Access)
+# Single Server Block with View Plugin
 # =============================================================================
-# Binds to the secondary network IP where tenant VMs connect
-# HCP control plane endpoints are visible here (split-horizon)
-my-cluster.example.com:53 {
-    bind 192.168.1.5
-    
-    # CRITICAL: Hosts plugin for split-horizon DNS
-    # Maps HCP control plane endpoints to the Envoy L4 proxy IP
-    # This enables VMs on isolated VLANs to reach the control plane
-    my-cluster.example.com {
-        hosts {
-            # API Server endpoints point to Envoy proxy on secondary network
-            192.168.1.10 api.my-cluster.example.com
-            192.168.1.10 api-int.my-cluster.example.com
+# Listens on all interfaces, routes based on source IP using view plugin
+.:53 {
+    # ===========================================================================
+    # VIEW 1: Multus Secondary Network (Tenant VM Access)
+    # ===========================================================================
+    # Matches queries from secondary network CIDR using incidr() expression
+    # HCP control plane endpoints are visible here (split-horizon)
+    view multus {
+        # Match expression: source IP must be in secondary network CIDR
+        expr incidr(client_ip(), '192.168.1.0/24')
+        
+        # HCP domain zone with static A records
+        my-cluster.example.com {
+            # CRITICAL: Hosts plugin for split-horizon DNS
+            # Maps HCP control plane endpoints to the Envoy L4 proxy IP
+            # This enables VMs on isolated VLANs to reach the control plane
+            hosts {
+                # API Server endpoints point to Envoy proxy on secondary network
+                192.168.1.10 api.my-cluster.example.com
+                192.168.1.10 api-int.my-cluster.example.com
+                
+                # OpenShift OAuth server
+                192.168.1.10 oauth-openshift.apps.my-cluster.example.com
+                
+                # Console and app routes
+                192.168.1.10 console-openshift-console.apps.my-cluster.example.com
+                192.168.1.10 downloads-openshift-console.apps.my-cluster.example.com
+                
+                # Ignition endpoint for machine bootstrapping
+                192.168.1.10 ignition-my-cluster.apps.my-cluster.example.com
+                
+                # fallthrough: if not found in hosts, continue to forward
+                fallthrough
+            }
             
-            # OpenShift OAuth server
-            192.168.1.10 oauth-openshift.apps.my-cluster.example.com
-            
-            # Console and app routes
-            192.168.1.10 console-openshift-console.apps.my-cluster.example.com
-            192.168.1.10 downloads-openshift-console.apps.my-cluster.example.com
-            
-            # Ignition endpoint for machine bootstrapping
-            192.168.1.10 ignition-my-cluster.apps.my-cluster.example.com
-            
-            # fallthrough: if not found in hosts, continue to forward
-            fallthrough
+            forward . 8.8.8.8 8.8.4.4
+            cache 30s
         }
         
-        forward . 8.8.8.8 8.8.4.4
-        cache 30s
+        # All other domains forward to upstream
+        . {
+            forward . 8.8.8.8 8.8.4.4
+            cache 30s
+        }
     }
     
-    # All other domains forward to upstream
-    . {
-        forward . 8.8.8.8 8.8.4.4
-        cache 30s
+    # ===========================================================================
+    # VIEW 2: Default (Pod Network and Other Sources)
+    # ===========================================================================
+    # Catches all queries not matching the multus view expression
+    # HCP endpoints are NOT visible here (network isolation)
+    view default {
+        # No hosts plugin - HCP control plane is hidden from pod network
+        # This prevents management cluster pods from accessing tenant control planes
+        
+        # All queries forwarded to upstream DNS
+        . {
+            forward . 8.8.8.8 8.8.4.4
+            cache 30s
+        }
     }
     
+    # ===========================================================================
+    # Shared Plugins (Apply to All Views)
+    # ===========================================================================
     log
     errors
     reload 5s
-}
-
-# =============================================================================
-# VIEW 2: Pod Network Interface (Management Cluster)
-# =============================================================================
-# Default interface - queries from Kubernetes pod network
-# HCP endpoints are NOT visible here (network isolation)
-.:53 {
-    # No hosts plugin - HCP control plane is hidden from pod network
-    # This prevents management cluster pods from accessing tenant control planes
-    
-    # All queries forwarded to upstream DNS
-    forward . 8.8.8.8 8.8.4.4
-    
-    # Cache DNS responses
-    cache 30s
-    
-    # Enable query logging
-    log
-    
-    # Log errors
-    errors
-    
-    # Auto-reload configuration
-    reload 5s
-    
-    # Health check endpoints for Kubernetes probes
     ready :8181
     health :8080
 }
@@ -79,10 +79,12 @@ my-cluster.example.com:53 {
 # =============================================================================
 # Architecture Notes:
 # =============================================================================
-# - Tenant VMs query 192.168.1.5:53 → VIEW 1 (HCP visible)
-# - Management pods query pod DNS → VIEW 2 (HCP hidden)
+# - View plugin uses incidr(client_ip(), CIDR) for source-based routing
+# - Tenant VMs (192.168.1.0/24) → multus view (HCP visible)
+# - Management pods (other IPs) → default view (HCP hidden)
 # - Envoy proxy at 192.168.1.10 routes HCP traffic to actual services
-# - Network isolation enforced at DNS layer via dual views
+# - Network isolation enforced at DNS layer via view plugin
+# - Single server block eliminates port binding conflicts
 # =============================================================================
     
     # Cache responses for 30 seconds

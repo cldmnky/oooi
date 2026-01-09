@@ -234,6 +234,7 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 			NetworkConfig: hostedclusterv1alpha1.DNSNetworkConfig{
 				ServerIP:                   dnsSpec.ServerIP,
 				ProxyIP:                    proxyIP,
+				SecondaryNetworkCIDR:       infra.Spec.NetworkConfig.CIDR,
 				NetworkAttachmentName:      nadName,
 				NetworkAttachmentNamespace: nadNamespace,
 				DNSPort:                    53,

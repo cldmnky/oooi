@@ -52,9 +52,10 @@ var _ = Describe("DNSServer Controller", func() {
 				},
 				Spec: hostedclusterv1alpha1.DNSServerSpec{
 					NetworkConfig: hostedclusterv1alpha1.DNSNetworkConfig{
-						ServerIP: "192.168.100.3",
-						ProxyIP:  "192.168.100.10",
-						DNSPort:  53,
+						ServerIP:             "192.168.100.3",
+						ProxyIP:              "192.168.100.10",
+						SecondaryNetworkCIDR: "192.168.100.0/24",
+						DNSPort:              53,
 					},
 					HostedClusterDomain: "my-cluster.example.com",
 					StaticEntries: []hostedclusterv1alpha1.DNSStaticEntry{
@@ -168,10 +169,10 @@ var _ = Describe("DNSServer Controller", func() {
 			Expect(corefile).To(ContainSubstring("api-int.my-cluster.example.com"))
 			Expect(corefile).To(ContainSubstring("192.168.100.10"))
 
-			By("verifying the Corefile has dual views")
-			Expect(corefile).To(ContainSubstring("VIEW 1: Multus secondary network"))
-			Expect(corefile).To(ContainSubstring("VIEW 2: Pod network interface"))
-			Expect(corefile).To(ContainSubstring("bind 192.168.100.3"))
+			By("verifying the Corefile uses view plugin")
+			Expect(corefile).To(ContainSubstring("view multus"))
+			Expect(corefile).To(ContainSubstring("view default"))
+			Expect(corefile).To(ContainSubstring("incidr(client_ip()"))
 
 			By("verifying the Corefile contains upstream DNS")
 			Expect(corefile).To(ContainSubstring("8.8.8.8"))

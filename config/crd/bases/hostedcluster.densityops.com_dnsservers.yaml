@@ -96,6 +96,12 @@ spec:
                       DNS entries will point to
                     pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
                     type: string
+                  secondaryNetworkCIDR:
+                    description: |-
+                      SecondaryNetworkCIDR is the CIDR of the secondary network for view plugin matching
+                      Queries from this CIDR will see HCP endpoints (split-horizon)
+                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
+                    type: string
                   serverIP:
                     description: ServerIP is the static IP address assigned to the
                       DNS server on the secondary network

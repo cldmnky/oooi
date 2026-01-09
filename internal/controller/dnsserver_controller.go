@@ -167,59 +167,66 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 		dnsPort = 53
 	}
 
-	// Get server IP for Multus interface binding
-	multusIP := dnsServer.Spec.NetworkConfig.ServerIP
+	// Get secondary network CIDR for view plugin
+	secondaryCIDR := dnsServer.Spec.NetworkConfig.SecondaryNetworkCIDR
+	if secondaryCIDR == "" {
+		secondaryCIDR = "192.168.0.0/16" // Default fallback
+	}
 
-	// Build Corefile configuration with two views:
-	// 1. Multus interface view: HCP domain with static entries (split-horizon)
-	// 2. Pod network view: Forward all queries to upstream (no HCP access)
-	corefile := fmt.Sprintf(`# Hosted Control Plane split-horizon DNS with dual views
-# Multus Interface: %s (HCP endpoints visible)
-# Pod Network: 0.0.0.0 (upstream only, HCP endpoints hidden)
+	// Build Corefile using view plugin for source-based routing
+	// View plugin routes queries based on source IP address
+	// - Queries from secondary network CIDR see HCP endpoints (split-horizon)
+	// - All other queries forward to upstream only (HCP hidden)
+	corefile := fmt.Sprintf(`# Hosted Control Plane split-horizon DNS using view plugin
+# Source-based routing: queries from %s see HCP endpoints
+# All other sources (pod network) see upstream DNS only
 
-# VIEW 1: Multus secondary network interface
-# Queries from tenant VMs on secondary network see HCP control plane endpoints
-%s:%d {
-    bind %s
-    
-    # HCP domain with static A records
-    %s {
-        hosts {
-%s            fallthrough
-        }
-        forward . %s {
-            policy sequential
-            health_check 5s
-        }
-        cache %s
-    }
-    
-    # All other domains forward to upstream
-    . {
-        forward . %s
-        cache %s
-    }
-    
-    log
-    errors
-    reload %s
-}
-
-# VIEW 2: Pod network interface (default)
-# Queries from pod network only see upstream DNS (HCP endpoints are hidden)
 .:%d {
-    forward . %s
-    cache %s
+    # View plugin for source-based routing
+    view multus {
+        # Match queries from secondary network CIDR (tenant VMs)
+        expr incidr(client_ip(), '%s')
+        
+        # HCP domain with static A records (visible to tenant VMs only)
+        %s {
+            hosts {
+%s                fallthrough
+            }
+            forward . %s {
+                policy sequential
+                health_check 5s
+            }
+            cache %s
+        }
+        
+        # All other domains forward to upstream
+        . {
+            forward . %s
+            cache %s
+        }
+    }
+    
+    # Default view for all other sources (pod network)
+    # HCP endpoints are NOT visible here
+    view default {
+        # All queries forward to upstream DNS
+        . {
+            forward . %s
+            cache %s
+        }
+    }
+    
+    # Shared plugins (apply to all views)
     log
     errors
     reload %s
     ready :8181
     health :8080
 }
-`, multusIP, dnsServer.Spec.HostedClusterDomain, dnsPort, multusIP,
+`, secondaryCIDR, dnsPort, secondaryCIDR,
 		dnsServer.Spec.HostedClusterDomain, hostsEntries.String(), upstream, cacheTTL,
-		upstream, cacheTTL, reloadInterval,
-		dnsPort, upstream, cacheTTL, reloadInterval)
+		upstream, cacheTTL,
+		upstream, cacheTTL, reloadInterval)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

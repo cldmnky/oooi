@@ -5,32 +5,35 @@ CoreDNS-based split-horizon DNS server for OpenShift Hosted Control Planes (HCP)
 ## Features
 
 - **CoreDNS Integration**: Full CoreDNS plugin support with explicit plugin registration
-- **Dual-View Architecture**: Separate DNS views for Multus secondary network and pod network
-  - **Multus View**: HCP endpoints visible (split-horizon for tenant VMs)
-  - **Pod Network View**: HCP endpoints hidden (upstream DNS only)
-- **Hosts Plugin**: 🔑 CRITICAL - Maps HCP control plane FQDNs to Envoy L4 proxy IP (Multus view only)
+- **View Plugin**: Source-based routing using CoreDNS view plugin for network isolation
+  - Queries from secondary network CIDR see HCP endpoints (split-horizon)
+  - Queries from pod network see upstream DNS only (HCP hidden)
+- **Hosts Plugin**: 🔑 CRITICAL - Maps HCP control plane FQDNs to Envoy L4 proxy IP (multus view only)
 - **Automatic Reload**: Watches Corefile changes (requires `reload` plugin configured with >=2s interval)
 - **Dual-Network Support**: Binds to both primary and secondary networks via Multus annotations
 
 ## Architecture
 
-### Split-Horizon with Dual Views
+### Split-Horizon with View Plugin
 
-The DNS server creates two separate CoreDNS server blocks:
+The DNS server uses CoreDNS **view plugin** for source-based routing:
 
-1. **Multus Interface View** (`bind <multus-ip>:53`):
-   - Queries from tenant VMs on secondary network
+**Single Server Block** (`.:53`) with **Two Views**:
+
+1. **Multus View** (`view multus`):
+   - Match expression: `incidr(client_ip(), '<secondary-cidr>')`
+   - Queries from tenant VMs on secondary network (matches CIDR)
    - HCP control plane endpoints (api, api-int, oauth, console, *.apps) resolve to Envoy proxy
    - Static A records via hosts plugin
    - Upstream forwarding for non-HCP domains
 
-2. **Pod Network View** (`.:53`):
-   - Queries from Kubernetes pod network
+2. **Default View** (`view default`):
+   - Catches all other queries (pod network)
    - HCP endpoints are **NOT** visible (no hosts plugin)
    - All queries forwarded to upstream DNS
    - Prevents pods from accessing isolated HCP control planes
 
-This dual-view design ensures network isolation between tenant VMs and management cluster pods.
+The view plugin evaluates source IP against the secondary network CIDR, ensuring network isolation at the DNS layer.
 
 ## Usage
 
@@ -40,31 +43,40 @@ This dual-view design ensures network isolation between tenant VMs and managemen
 oooi dns --corefile /etc/coredns/Corefile
 ```
 
-### Example Corefile for HCP (Dual Views)
+### Example Corefile with View Plugin
 
 ```corefile
-# VIEW 1: Multus secondary network (HCP endpoints visible)
-my-cluster.example.com:53 {
-    bind 192.168.100.3
-    
-    hosts {
-        192.168.100.10 api.my-cluster.example.com
-        192.168.100.10 api-int.my-cluster.example.com
-        192.168.100.10 oauth-openshift.apps.my-cluster.example.com
-        fallthrough
+# Split-horizon DNS using view plugin
+.:53 {
+    # View for secondary network (tenant VMs)
+    view multus {
+        expr incidr(client_ip(), '192.168.100.0/24')
+        
+        # HCP domain with static entries
+        my-cluster.example.com {
+            hosts {
+                192.168.100.10 api.my-cluster.example.com
+                192.168.100.10 api-int.my-cluster.example.com
+                fallthrough
+            }
+            forward . 8.8.8.8
+            cache 30s
+        }
+        
+        . {
+            forward . 8.8.8.8
+            cache 30s
+        }
     }
     
-    forward . 8.8.8.8
-    cache 30s
-    log
-    errors
-    reload 5s
-}
-
-# VIEW 2: Pod network (HCP endpoints hidden)
-.:53 {
-    forward . 8.8.8.8
-    cache 30s
+    # Default view for pod network
+    view default {
+        . {
+            forward . 8.8.8.8
+            cache 30s
+        }
+    }
+    
     log
     errors
     reload 5s
