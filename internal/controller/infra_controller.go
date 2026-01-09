@@ -18,8 +18,12 @@ package controller
 
 import (
 	"context"
+	"strings"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -36,28 +40,120 @@ type InfraReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras/finalizers,verbs=update
+// +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dhcpservers,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Infra object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	// Fetch the Infra instance
+	infra := &hostedclusterv1alpha1.Infra{}
+	err := r.Get(ctx, req.NamespacedName, infra)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("Infra resource not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+		log.Error(err, "Failed to get Infra")
+		return ctrl.Result{}, err
+	}
+
+	// Create DHCPServer CR if DHCP is enabled
+	if infra.Spec.InfraComponents.DHCP.Enabled {
+		dhcpServer := r.dhcpServerForInfra(infra)
+		if err := ctrl.SetControllerReference(infra, dhcpServer, r.Scheme); err != nil {
+			log.Error(err, "Failed to set controller reference for DHCPServer")
+			return ctrl.Result{}, err
+		}
+
+		foundDHCPServer := &hostedclusterv1alpha1.DHCPServer{}
+		err = r.Get(ctx, types.NamespacedName{Name: dhcpServer.Name, Namespace: dhcpServer.Namespace}, foundDHCPServer)
+		if err != nil && errors.IsNotFound(err) {
+			log.Info("Creating a new DHCPServer", "DHCPServer.Namespace", dhcpServer.Namespace, "DHCPServer.Name", dhcpServer.Name)
+			err = r.Create(ctx, dhcpServer)
+			if err != nil {
+				log.Error(err, "Failed to create new DHCPServer")
+				return ctrl.Result{}, err
+			}
+		} else if err != nil {
+			log.Error(err, "Failed to get DHCPServer")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Update status
+	infra.Status.ObservedGeneration = infra.Generation
+	condition := metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: infra.Generation,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "ReconciliationSucceeded",
+		Message:            "Infrastructure components provisioned successfully",
+	}
+
+	infra.Status.Conditions = []metav1.Condition{condition}
+	if infra.Spec.InfraComponents.DHCP.Enabled {
+		infra.Status.ComponentStatus.DHCPReady = true
+	}
+
+	if err := r.Status().Update(ctx, infra); err != nil {
+		log.Error(err, "Failed to update Infra status")
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
+}
+
+// dhcpServerForInfra returns a DHCPServer object for the Infra
+func (r *InfraReconciler) dhcpServerForInfra(infra *hostedclusterv1alpha1.Infra) *hostedclusterv1alpha1.DHCPServer {
+	dhcpSpec := infra.Spec.InfraComponents.DHCP
+
+	// Use default image if not specified
+	image := dhcpSpec.Image
+	if image == "" {
+		image = "ghcr.io/cldmnky/hyperdhcp:latest"
+	}
+
+	// Parse NetworkAttachmentDefinition name and namespace
+	// Format: "namespace/name" or just "name" (uses Infra's namespace)
+	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
+	nadNamespace := infra.Namespace
+	if parts := strings.Split(nadName, "/"); len(parts) == 2 {
+		nadNamespace = parts[0]
+		nadName = parts[1]
+	}
+
+	return &hostedclusterv1alpha1.DHCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      infra.Name + "-dhcp",
+			Namespace: infra.Namespace,
+		},
+		Spec: hostedclusterv1alpha1.DHCPServerSpec{
+			NetworkConfig: hostedclusterv1alpha1.DHCPNetworkConfig{
+				CIDR:                       infra.Spec.NetworkConfig.CIDR,
+				Gateway:                    infra.Spec.NetworkConfig.Gateway,
+				ServerIP:                   dhcpSpec.ServerIP,
+				DNSServers:                 infra.Spec.NetworkConfig.DNSServers,
+				NetworkAttachmentName:      nadName,
+				NetworkAttachmentNamespace: nadNamespace,
+			},
+			LeaseConfig: hostedclusterv1alpha1.DHCPLeaseConfig{
+				RangeStart: dhcpSpec.RangeStart,
+				RangeEnd:   dhcpSpec.RangeEnd,
+				LeaseTime:  dhcpSpec.LeaseTime,
+			},
+			Image: image,
+		},
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.Infra{}).
+		Owns(&hostedclusterv1alpha1.DHCPServer{}).
 		Named("infra").
 		Complete(r)
 }

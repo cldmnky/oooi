@@ -5,8 +5,35 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - persistentvolumeclaims
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - hostedcluster.densityops.com
   resources:
+  - dhcpservers
   - infras
   verbs:
   - create
@@ -19,12 +46,14 @@ rules:
 - apiGroups:
   - hostedcluster.densityops.com
   resources:
+  - dhcpservers/finalizers
   - infras/finalizers
   verbs:
   - update
 - apiGroups:
   - hostedcluster.densityops.com
   resources:
+  - dhcpservers/status
   - infras/status
   verbs:
   - get

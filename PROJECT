@@ -20,4 +20,9 @@ resources:
   kind: Infra
   path: github.com/cldmnky/oooi/api/v1alpha1
   version: v1alpha1
+- controller: true
+  domain: densityops.com
+  group: hostedcluster
+  kind: DHCPServer
+  version: v1alpha1
 version: "3"

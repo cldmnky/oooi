@@ -450,34 +450,6 @@ operator-sdk create api \
 5. ✅ Implement reconciliation logic
 6. ✅ Add RBAC markers and regenerate with `make manifests`
 
-### Adding APIs Without Controllers
-
-**When you need a CRD but no custom controller (e.g., for external consumption):**
-
-```bash
-# Create API resource only (no controller)
-operator-sdk create api \
-  --group cache \
-  --version v1alpha1 \
-  --kind Memcached \
-  --resource \
-  --controller=false
-```
-
-### Adding Controllers for Existing APIs
-
-**When you have an API but need to add a controller later:**
-
-```bash
-# Create controller only (API already exists)
-operator-sdk create api \
-  --group cache \
-  --version v1alpha1 \
-  --kind Memcached \
-  --resource=false \
-  --controller
-```
-
 ### API Design Best Practices
 
 **1. Use Kubebuilder Validation Markers**
@@ -705,27 +677,6 @@ operator-sdk run bundle myregistry/myoperator-bundle:v1.0.0
 
 # Cleanup bundle
 operator-sdk cleanup myoperator
-```
-
-### Multi-Version API Support
-
-**When adding a new API version (e.g., v1beta1 after v1alpha1):**
-
-```bash
-# Create new version
-operator-sdk create api \
-  --group mygroup \
-  --version v1beta1 \
-  --kind MyResource \
-  --resource \
-  --controller=false  # Reuse existing controller
-
-# Implement conversion webhook (if needed)
-operator-sdk create webhook \
-  --group mygroup \
-  --version v1beta1 \
-  --kind MyResource \
-  --conversion
 ```
 
 ### Common Pitfalls to Avoid

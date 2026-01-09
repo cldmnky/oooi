@@ -56,6 +56,19 @@ var _ = Describe("Infra Controller", func() {
 							CIDR:                        "192.168.100.0/24",
 							Gateway:                     "192.168.100.1",
 							NetworkAttachmentDefinition: "tenant-vlan-100",
+							DNSServers: []string{
+								"8.8.8.8",
+								"8.8.4.4",
+							},
+						},
+						InfraComponents: hostedclusterv1alpha1.InfraComponents{
+							DHCP: hostedclusterv1alpha1.DHCPConfig{
+								Enabled:    true,
+								ServerIP:   "192.168.100.2",
+								RangeStart: "192.168.100.10",
+								RangeEnd:   "192.168.100.100",
+								LeaseTime:  "1h",
+							},
 						},
 					},
 				}
@@ -83,6 +96,61 @@ var _ = Describe("Infra Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should create a DHCPServer CR when DHCP is enabled", func() {
+			By("Reconciling the Infra resource")
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the DHCPServer CR was created")
+			dhcpServer := &hostedclusterv1alpha1.DHCPServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-dhcp",
+				Namespace: "default",
+			}, dhcpServer)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying DHCPServer has correct configuration")
+			Expect(dhcpServer.Spec.NetworkConfig.CIDR).To(Equal("192.168.100.0/24"))
+			Expect(dhcpServer.Spec.NetworkConfig.Gateway).To(Equal("192.168.100.1"))
+			Expect(dhcpServer.Spec.NetworkConfig.ServerIP).To(Equal("192.168.100.2"))
+			Expect(dhcpServer.Spec.LeaseConfig.RangeStart).To(Equal("192.168.100.10"))
+			Expect(dhcpServer.Spec.LeaseConfig.RangeEnd).To(Equal("192.168.100.100"))
+
+			By("Verifying owner reference is set")
+			Expect(dhcpServer.OwnerReferences).To(HaveLen(1))
+			Expect(dhcpServer.OwnerReferences[0].Name).To(Equal(resourceName))
+			Expect(dhcpServer.OwnerReferences[0].Kind).To(Equal("Infra"))
+		})
+
+		It("should update Infra status when reconciliation succeeds", func() {
+			By("Reconciling the Infra resource")
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Fetching the updated Infra resource")
+			updatedInfra := &hostedclusterv1alpha1.Infra{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedInfra)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying status conditions are set")
+			Expect(updatedInfra.Status.Conditions).NotTo(BeEmpty())
+			Expect(updatedInfra.Status.ComponentStatus.DHCPReady).To(BeTrue())
 		})
 	})
 })

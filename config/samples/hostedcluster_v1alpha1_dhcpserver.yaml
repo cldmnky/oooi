@@ -1,0 +1,30 @@
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: DHCPServer
+metadata:
+  labels:
+    app.kubernetes.io/name: oooi
+    app.kubernetes.io/managed-by: kustomize
+  name: dhcpserver-sample
+spec:
+  networkConfig:
+    cidr: "192.168.100.0/24"
+    gateway: "192.168.100.1"
+    serverIP: "192.168.100.2"
+    dnsServers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+    networkAttachmentName: "vlan100"
+    networkAttachmentNamespace: "default"
+
+  leaseConfig:
+    rangeStart: "192.168.100.10"
+    rangeEnd: "192.168.100.100"
+    leaseTime: "1h"
+
+  options:
+    - code: 3
+      value: "192.168.100.1"  # Default gateway
+    - code: 6
+      value: "8.8.8.8,8.8.4.4"  # DNS servers
+
+  image: "ghcr.io/cldmnky/hyperdhcp:latest"
