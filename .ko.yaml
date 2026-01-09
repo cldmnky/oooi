@@ -1,0 +1,2 @@
+# ko build configuration for oooi
+defaultBaseImage: registry.access.redhat.com/ubi9/ubi:9.4

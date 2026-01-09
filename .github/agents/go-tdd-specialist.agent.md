@@ -645,10 +645,10 @@ make run
 
 ```bash
 # Build and push image
-make docker-build docker-push IMG=myregistry/myoperator:v1.0.0
+make container-build  # Uses ko for multi-arch
 
 # Deploy to cluster
-make deploy IMG=myregistry/myoperator:v1.0.0
+make deploy IMG=quay.io/cldmnky/oooi:v1.0.0
 
 # Verify deployment
 kubectl get deployment -n myoperator-system

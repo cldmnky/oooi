@@ -113,7 +113,7 @@ func (r *InfraReconciler) dhcpServerForInfra(infra *hostedclusterv1alpha1.Infra)
 	// Use default image if not specified
 	image := dhcpSpec.Image
 	if image == "" {
-		image = "ghcr.io/cldmnky/hyperdhcp:latest"
+		image = "quay.io/cldmnky/oooi:latest"
 	}
 
 	// Parse NetworkAttachmentDefinition name and namespace
