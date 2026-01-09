@@ -17,10 +17,10 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/cldmnky/oooi/internal/dhcp"
 )
@@ -46,13 +46,12 @@ pod network.`,
 }
 
 func runDHCP(cmd *cobra.Command, args []string) {
-	log := setupLog.WithName("dhcp")
+	log := ctrl.Log.WithName("dhcp")
 	log.Info("starting DHCP server", "config-file", dhcpConfigFile)
 
 	config := dhcp.NewConfig(dhcpConfigFile)
 	if err := dhcp.Run(config); err != nil {
 		log.Error(err, "failed to run DHCP server")
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }

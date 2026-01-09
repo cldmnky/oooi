@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package cmd implements the CLI interface for oooi operator.
+// It provides subcommands for running the manager (controllers) and DHCP server.
 package cmd
 
 import (
 	"flag"
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -29,12 +30,17 @@ import (
 
 var (
 	cfgFile string
+	zapOpts *zap.Options
 	rootCmd = &cobra.Command{
 		Use:   "oooi",
 		Short: "OpenShift Hosted Control Plane Infrastructure Operator",
 		Long: `oooi is a Kubernetes operator for deploying infrastructure components 
 required by OpenShift Hosted Control Planes (HCP) running on OpenShift 
 Virtualization with isolated secondary networks (VLANs).`,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Initialize logger after flags are parsed
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(zapOpts)))
+		},
 	}
 )
 
@@ -46,18 +52,15 @@ func Execute() error {
 func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.oooi.yaml)")
-	viper.BindPFlag("config", rootCmd.PersistentFlags().Lookup("config"))
+	_ = viper.BindPFlag("config", rootCmd.PersistentFlags().Lookup("config"))
 
 	// Add zap flags for logging
 	zapfs := flag.NewFlagSet("zap", flag.ExitOnError)
-	opts := &zap.Options{
+	zapOpts = &zap.Options{
 		Development: true,
 	}
-	opts.BindFlags(zapfs)
+	zapOpts.BindFlags(zapfs)
 	rootCmd.PersistentFlags().AddGoFlagSet(zapfs)
-
-	// Set logger with default options
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(opts)))
 
 	// Add subcommands
 	rootCmd.AddCommand(managerCmd)
@@ -77,6 +80,6 @@ func initConfig() {
 	}
 	viper.AutomaticEnv()
 	if err := viper.ReadInConfig(); err == nil {
-		fmt.Println("Using config file:", viper.ConfigFileUsed())
+		ctrl.Log.Info("loaded configuration", "config-file", viper.ConfigFileUsed())
 	}
 }
