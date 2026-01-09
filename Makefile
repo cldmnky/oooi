@@ -170,12 +170,7 @@ run: manifests generate fmt vet ## Run the manager from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: container-build
 container-build: manifests generate fmt vet ko ## Build container image with ko for multi-arch support.
-	KO_DOCKER_REPO=$(IMAGE_TAG_BASE) \
-	KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 \
-	$(KO) build --platform linux/amd64,linux/arm64 \
-		--preserve-import-paths=false \
-		--bare=true \
-		.
+	KO_DOCKER_REPO=$(IMAGE_TAG_BASE) KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 $(KO) build --platform linux/amd64,linux/arm64 --preserve-import-paths=false --bare=true .
 
 .PHONY: container-push
 container-push: ## Push container image with the manager.
@@ -241,6 +236,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+KO ?= $(LOCALBIN)/ko
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
