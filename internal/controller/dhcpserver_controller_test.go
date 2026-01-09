@@ -65,7 +65,7 @@ var _ = Describe("DHCPServer Controller", func() {
 						RangeEnd:   "192.168.100.100",
 						LeaseTime:  "1h",
 					},
-					Image: "ghcr.io/cldmnky/hyperdhcp:latest",
+					Image: "quay.io/cldmnky/oooi:latest",
 				},
 			}
 			Expect(k8sClient.Create(ctx, dhcpServer)).To(Succeed())
@@ -120,7 +120,7 @@ var _ = Describe("DHCPServer Controller", func() {
 
 			By("verifying the Deployment has correct image")
 			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
-			Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/cldmnky/hyperdhcp:latest"))
+			Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/cldmnky/oooi:latest"))
 
 			By("verifying owner reference is set")
 			Expect(deployment.OwnerReferences).To(HaveLen(1))

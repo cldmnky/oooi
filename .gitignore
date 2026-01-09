@@ -35,3 +35,7 @@ go.work.sum
 # .vscode/
 
 .mcp-debug-tools
+
+internal/dhcp/plugins/leasedb/test.db
+internal/dhcp/plugins/leasedb/test_register.db
+
