@@ -6,13 +6,21 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: dnsserver-sample
 spec:
+  # NetworkConfig defines the DNS server network settings
+  # The serverIP is used to bind the Multus interface view
   networkConfig:
-    serverIP: "192.168.100.3"
-    proxyIP: "192.168.100.10"
+    serverIP: "192.168.100.3"  # DNS server IP on secondary network (Multus)
+    proxyIP: "192.168.100.10"   # Envoy proxy IP that HCP endpoints resolve to
     dnsPort: 53
     networkAttachmentName: "tenant-vlan-100"
     networkAttachmentNamespace: "default"
+  
+  # Hosted cluster domain (constructed from ClusterName + BaseDomain)
   hostedClusterDomain: "my-cluster.example.com"
+  
+  # Static DNS entries visible ONLY from Multus interface (split-horizon)
+  # These provide HCP control plane access to tenant VMs on secondary network
+  # Queries from pod network do NOT see these entries
   staticEntries:
     - hostname: "api.my-cluster.example.com"
       ip: "192.168.100.10"
@@ -24,9 +32,15 @@ spec:
       ip: "192.168.100.10"
     - hostname: "*.apps.my-cluster.example.com"
       ip: "192.168.100.10"
+  
+  # Upstream DNS servers for non-HCP queries (both views use these)
   upstreamDNS:
     - "8.8.8.8"
     - "8.8.4.4"
+  
+  # Container image
   image: "quay.io/cldmnky/oooi:latest"
-  reloadInterval: "5s"
-  cacheTTL: "30s"
+  
+  # CoreDNS tuning
+  reloadInterval: "5s"  # How often to check for Corefile changes
+  cacheTTL: "30s"       # DNS response cache duration

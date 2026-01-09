@@ -168,6 +168,11 @@ var _ = Describe("DNSServer Controller", func() {
 			Expect(corefile).To(ContainSubstring("api-int.my-cluster.example.com"))
 			Expect(corefile).To(ContainSubstring("192.168.100.10"))
 
+			By("verifying the Corefile has dual views")
+			Expect(corefile).To(ContainSubstring("VIEW 1: Multus secondary network"))
+			Expect(corefile).To(ContainSubstring("VIEW 2: Pod network interface"))
+			Expect(corefile).To(ContainSubstring("bind 192.168.100.3"))
+
 			By("verifying the Corefile contains upstream DNS")
 			Expect(corefile).To(ContainSubstring("8.8.8.8"))
 

@@ -167,43 +167,59 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 		dnsPort = 53
 	}
 
-	// Build Corefile configuration
-	corefile := fmt.Sprintf(`# Hosted Control Plane split-horizon DNS
-# Domain: %s
-%s {
-    # Static A records for control plane endpoints
-    hosts {
-%s        fallthrough
+	// Get server IP for Multus interface binding
+	multusIP := dnsServer.Spec.NetworkConfig.ServerIP
+
+	// Build Corefile configuration with two views:
+	// 1. Multus interface view: HCP domain with static entries (split-horizon)
+	// 2. Pod network view: Forward all queries to upstream (no HCP access)
+	corefile := fmt.Sprintf(`# Hosted Control Plane split-horizon DNS with dual views
+# Multus Interface: %s (HCP endpoints visible)
+# Pod Network: 0.0.0.0 (upstream only, HCP endpoints hidden)
+
+# VIEW 1: Multus secondary network interface
+# Queries from tenant VMs on secondary network see HCP control plane endpoints
+%s:%d {
+    bind %s
+    
+    # HCP domain with static A records
+    %s {
+        hosts {
+%s            fallthrough
+        }
+        forward . %s {
+            policy sequential
+            health_check 5s
+        }
+        cache %s
     }
     
-    # Forward to upstream DNS
-    forward . %s {
-        policy sequential
-        health_check 5s
+    # All other domains forward to upstream
+    . {
+        forward . %s
+        cache %s
     }
     
-    # Auto-reload on config changes
-    reload %s
-    
-    # Cache DNS responses
-    cache %s
-    
-    # Logging
     log
     errors
-    
-    # Health checks
+    reload %s
+}
+
+# VIEW 2: Pod network interface (default)
+# Queries from pod network only see upstream DNS (HCP endpoints are hidden)
+.:%d {
+    forward . %s
+    cache %s
+    log
+    errors
+    reload %s
     ready :8181
     health :8080
 }
-
-# Forward all other queries to upstream
-. {
-    forward . %s
-    log
-    errors
-}
-`, dnsServer.Spec.HostedClusterDomain, dnsServer.Spec.HostedClusterDomain, hostsEntries.String(), upstream, reloadInterval, cacheTTL, upstream)
+`, multusIP, dnsServer.Spec.HostedClusterDomain, dnsPort, multusIP,
+		dnsServer.Spec.HostedClusterDomain, hostsEntries.String(), upstream, cacheTTL,
+		upstream, cacheTTL, reloadInterval,
+		dnsPort, upstream, cacheTTL, reloadInterval)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

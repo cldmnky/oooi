@@ -1,52 +1,89 @@
 # Example Corefile for OpenShift Hosted Control Plane Split-Horizon DNS
-# This configuration demonstrates using the hosts plugin for HCP endpoint resolution
+# Dual-View Configuration: Separate views for Multus and Pod networks
 
-# Primary zone - handles all DNS queries
-.:53 {
+# =============================================================================
+# VIEW 1: Multus Secondary Network Interface (Tenant VM Access)
+# =============================================================================
+# Binds to the secondary network IP where tenant VMs connect
+# HCP control plane endpoints are visible here (split-horizon)
+my-cluster.example.com:53 {
+    bind 192.168.1.5
+    
     # CRITICAL: Hosts plugin for split-horizon DNS
     # Maps HCP control plane endpoints to the Envoy L4 proxy IP
     # This enables VMs on isolated VLANs to reach the control plane
-    hosts {
-        # API Server endpoints point to Envoy proxy on secondary network
-        192.168.1.10 api.my-cluster.example.com
-        192.168.1.10 api-int.my-cluster.example.com
+    my-cluster.example.com {
+        hosts {
+            # API Server endpoints point to Envoy proxy on secondary network
+            192.168.1.10 api.my-cluster.example.com
+            192.168.1.10 api-int.my-cluster.example.com
+            
+            # OpenShift OAuth server
+            192.168.1.10 oauth-openshift.apps.my-cluster.example.com
+            
+            # Console and app routes
+            192.168.1.10 console-openshift-console.apps.my-cluster.example.com
+            192.168.1.10 downloads-openshift-console.apps.my-cluster.example.com
+            
+            # Ignition endpoint for machine bootstrapping
+            192.168.1.10 ignition-my-cluster.apps.my-cluster.example.com
+            
+            # fallthrough: if not found in hosts, continue to forward
+            fallthrough
+        }
         
-        # OpenShift OAuth server
-        192.168.1.10 oauth-openshift.apps.my-cluster.example.com
-        
-        # Wildcard apps domain (*.apps.my-cluster.example.com)
-        # Individual app routes can be added here
-        192.168.1.10 console-openshift-console.apps.my-cluster.example.com
-        192.168.1.10 downloads-openshift-console.apps.my-cluster.example.com
-        
-        # Ignition endpoint for machine bootstrapping
-        192.168.1.10 ignition-my-cluster.apps.my-cluster.example.com
-        
-        # fallthrough: if not found in hosts, continue to next plugin
-        fallthrough
+        forward . 8.8.8.8 8.8.4.4
+        cache 30s
     }
     
-    # Forward all non-HCP queries to upstream DNS
-    # This ensures VMs can still resolve internet domains
+    # All other domains forward to upstream
+    . {
+        forward . 8.8.8.8 8.8.4.4
+        cache 30s
+    }
+    
+    log
+    errors
+    reload 5s
+}
+
+# =============================================================================
+# VIEW 2: Pod Network Interface (Management Cluster)
+# =============================================================================
+# Default interface - queries from Kubernetes pod network
+# HCP endpoints are NOT visible here (network isolation)
+.:53 {
+    # No hosts plugin - HCP control plane is hidden from pod network
+    # This prevents management cluster pods from accessing tenant control planes
+    
+    # All queries forwarded to upstream DNS
     forward . 8.8.8.8 8.8.4.4
     
-    # Automatically reload configuration every 5 seconds
-    # When the operator updates the ConfigMap, changes take effect automatically
-    reload 5s
+    # Cache DNS responses
+    cache 30s
     
-    # Bind to specific interface (optional)
-    # For dual-homed deployments, bind to the secondary network interface
-    # bind 192.168.1.5
-    
-    # Enable query logging for debugging
+    # Enable query logging
     log
     
     # Log errors
     errors
     
+    # Auto-reload configuration
+    reload 5s
+    
     # Health check endpoints for Kubernetes probes
     ready :8181
     health :8080
+}
+
+# =============================================================================
+# Architecture Notes:
+# =============================================================================
+# - Tenant VMs query 192.168.1.5:53 → VIEW 1 (HCP visible)
+# - Management pods query pod DNS → VIEW 2 (HCP hidden)
+# - Envoy proxy at 192.168.1.10 routes HCP traffic to actual services
+# - Network isolation enforced at DNS layer via dual views
+# =============================================================================
     
     # Cache responses for 30 seconds
     cache 30
