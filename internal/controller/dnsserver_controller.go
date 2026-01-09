@@ -251,6 +251,7 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 
 	replicas := int32(1)
 	runAsUser := int64(1000)
+	privileged := true
 
 	// Get DNS port (default to 53)
 	dnsPort := dnsServer.Spec.NetworkConfig.DNSPort
@@ -323,13 +324,8 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
-								RunAsUser:                &runAsUser,
-								AllowPrivilegeEscalation: ptr(false),
-								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{
-										"NET_BIND_SERVICE",
-									},
-								},
+								RunAsUser:  &runAsUser,
+								Privileged: &privileged,
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
