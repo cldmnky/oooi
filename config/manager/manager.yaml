@@ -59,7 +59,7 @@ spec:
           type: RuntimeDefault
       containers:
       - command:
-        - /manager
+        - /oooi
         - manager
         args:
           - --leader-elect
