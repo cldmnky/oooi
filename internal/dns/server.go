@@ -16,7 +16,6 @@ import (
 type Server struct {
 	corefilePath string
 	instance     *caddy.Instance
-	cancel       context.CancelFunc
 }
 
 func NewServer(corefilePath string) (*Server, error) {
@@ -42,29 +41,38 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.instance = instance
 
-	internalCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
+	// Channel to signal when shutdown is complete
+	shutdownComplete := make(chan struct{})
 
-	done := make(chan struct{})
+	// Start shutdown handler in background
 	go func() {
-		<-internalCtx.Done()
+		<-ctx.Done()
 		if s.instance != nil {
 			s.instance.ShutdownCallbacks()
 			s.instance.Stop()
 		}
-		close(done)
+		close(shutdownComplete)
 	}()
 
-	s.instance.Wait()
-	<-done
-	return ctx.Err()
+	// Wait for either natural shutdown or context cancellation
+	select {
+	case <-shutdownComplete:
+		// Context was cancelled, shutdown initiated
+		return ctx.Err()
+	case <-func() chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			s.instance.Wait()
+			close(done)
+		}()
+		return done
+	}():
+		// Instance stopped naturally
+		return nil
+	}
 }
 
 func (s *Server) Stop() error {
-	if s.cancel != nil {
-		s.cancel()
-	}
-
 	if s.instance != nil {
 		if errs := s.instance.ShutdownCallbacks(); len(errs) > 0 {
 			return fmt.Errorf("shutdown callbacks failed: %v", errs)
