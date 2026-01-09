@@ -41,6 +41,7 @@ type InfraReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras/finalizers,verbs=update
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dhcpservers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -82,6 +83,29 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
+	// Create DNSServer CR if DNS is enabled
+	if infra.Spec.InfraComponents.DNS.Enabled {
+		dnsServer := r.dnsServerForInfra(infra)
+		if err := ctrl.SetControllerReference(infra, dnsServer, r.Scheme); err != nil {
+			log.Error(err, "Failed to set controller reference for DNSServer")
+			return ctrl.Result{}, err
+		}
+
+		foundDNSServer := &hostedclusterv1alpha1.DNSServer{}
+		err = r.Get(ctx, types.NamespacedName{Name: dnsServer.Name, Namespace: dnsServer.Namespace}, foundDNSServer)
+		if err != nil && errors.IsNotFound(err) {
+			log.Info("Creating a new DNSServer", "DNSServer.Namespace", dnsServer.Namespace, "DNSServer.Name", dnsServer.Name)
+			err = r.Create(ctx, dnsServer)
+			if err != nil {
+				log.Error(err, "Failed to create new DNSServer")
+				return ctrl.Result{}, err
+			}
+		} else if err != nil {
+			log.Error(err, "Failed to get DNSServer")
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Update status
 	infra.Status.ObservedGeneration = infra.Generation
 	condition := metav1.Condition{
@@ -96,6 +120,9 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	infra.Status.Conditions = []metav1.Condition{condition}
 	if infra.Spec.InfraComponents.DHCP.Enabled {
 		infra.Status.ComponentStatus.DHCPReady = true
+	}
+	if infra.Spec.InfraComponents.DNS.Enabled {
+		infra.Status.ComponentStatus.DNSReady = true
 	}
 
 	if err := r.Status().Update(ctx, infra); err != nil {
@@ -149,11 +176,84 @@ func (r *InfraReconciler) dhcpServerForInfra(infra *hostedclusterv1alpha1.Infra)
 	}
 }
 
+// dnsServerForInfra returns a DNSServer object for the Infra
+func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) *hostedclusterv1alpha1.DNSServer {
+	dnsSpec := infra.Spec.InfraComponents.DNS
+
+	// Use default image if not specified
+	image := dnsSpec.Image
+	if image == "" {
+		image = "quay.io/cldmnky/oooi:latest"
+	}
+
+	// Parse NetworkAttachmentDefinition name and namespace
+	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
+	nadNamespace := infra.Namespace
+	if parts := strings.Split(nadName, "/"); len(parts) == 2 {
+		nadNamespace = parts[0]
+		nadName = parts[1]
+	}
+
+	// Build hosted cluster domain from ClusterName and BaseDomain
+	hostedClusterDomain := dnsSpec.ClusterName + "." + dnsSpec.BaseDomain
+
+	// Get proxy IP (for static DNS entries to point to)
+	proxyIP := infra.Spec.InfraComponents.Proxy.ServerIP
+
+	// Build static DNS entries for HCP endpoints
+	// These all point to the Envoy L4 proxy which routes to actual services
+	staticEntries := []hostedclusterv1alpha1.DNSStaticEntry{
+		{
+			Hostname: "api." + hostedClusterDomain,
+			IP:       proxyIP,
+		},
+		{
+			Hostname: "api-int." + hostedClusterDomain,
+			IP:       proxyIP,
+		},
+		{
+			Hostname: "oauth-openshift.apps." + hostedClusterDomain,
+			IP:       proxyIP,
+		},
+		{
+			Hostname: "console-openshift-console.apps." + hostedClusterDomain,
+			IP:       proxyIP,
+		},
+		{
+			Hostname: "*.apps." + hostedClusterDomain,
+			IP:       proxyIP,
+		},
+	}
+
+	return &hostedclusterv1alpha1.DNSServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      infra.Name + "-dns",
+			Namespace: infra.Namespace,
+		},
+		Spec: hostedclusterv1alpha1.DNSServerSpec{
+			NetworkConfig: hostedclusterv1alpha1.DNSNetworkConfig{
+				ServerIP:                   dnsSpec.ServerIP,
+				ProxyIP:                    proxyIP,
+				NetworkAttachmentName:      nadName,
+				NetworkAttachmentNamespace: nadNamespace,
+				DNSPort:                    53,
+			},
+			HostedClusterDomain: hostedClusterDomain,
+			StaticEntries:       staticEntries,
+			UpstreamDNS:         infra.Spec.NetworkConfig.DNSServers,
+			Image:               image,
+			ReloadInterval:      "5s",
+			CacheTTL:            "30s",
+		},
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.Infra{}).
 		Owns(&hostedclusterv1alpha1.DHCPServer{}).
+		Owns(&hostedclusterv1alpha1.DNSServer{}).
 		Named("infra").
 		Complete(r)
 }

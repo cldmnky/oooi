@@ -10,6 +10,7 @@ rules:
   - configmaps
   - persistentvolumeclaims
   - serviceaccounts
+  - services
   verbs:
   - create
   - delete
@@ -34,6 +35,7 @@ rules:
   - hostedcluster.densityops.com
   resources:
   - dhcpservers
+  - dnsservers
   - infras
   verbs:
   - create
@@ -47,6 +49,7 @@ rules:
   - hostedcluster.densityops.com
   resources:
   - dhcpservers/finalizers
+  - dnsservers/finalizers
   - infras/finalizers
   verbs:
   - update
@@ -54,6 +57,7 @@ rules:
   - hostedcluster.densityops.com
   resources:
   - dhcpservers/status
+  - dnsservers/status
   - infras/status
   verbs:
   - get

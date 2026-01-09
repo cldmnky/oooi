@@ -1,0 +1,83 @@
+# Example Corefile for OpenShift Hosted Control Plane Split-Horizon DNS
+# This configuration demonstrates using the hosts plugin for HCP endpoint resolution
+
+# Primary zone - handles all DNS queries
+.:53 {
+    # CRITICAL: Hosts plugin for split-horizon DNS
+    # Maps HCP control plane endpoints to the Envoy L4 proxy IP
+    # This enables VMs on isolated VLANs to reach the control plane
+    hosts {
+        # API Server endpoints point to Envoy proxy on secondary network
+        192.168.1.10 api.my-cluster.example.com
+        192.168.1.10 api-int.my-cluster.example.com
+        
+        # OpenShift OAuth server
+        192.168.1.10 oauth-openshift.apps.my-cluster.example.com
+        
+        # Wildcard apps domain (*.apps.my-cluster.example.com)
+        # Individual app routes can be added here
+        192.168.1.10 console-openshift-console.apps.my-cluster.example.com
+        192.168.1.10 downloads-openshift-console.apps.my-cluster.example.com
+        
+        # Ignition endpoint for machine bootstrapping
+        192.168.1.10 ignition-my-cluster.apps.my-cluster.example.com
+        
+        # fallthrough: if not found in hosts, continue to next plugin
+        fallthrough
+    }
+    
+    # Forward all non-HCP queries to upstream DNS
+    # This ensures VMs can still resolve internet domains
+    forward . 8.8.8.8 8.8.4.4
+    
+    # Automatically reload configuration every 5 seconds
+    # When the operator updates the ConfigMap, changes take effect automatically
+    reload 5s
+    
+    # Bind to specific interface (optional)
+    # For dual-homed deployments, bind to the secondary network interface
+    # bind 192.168.1.5
+    
+    # Enable query logging for debugging
+    log
+    
+    # Log errors
+    errors
+    
+    # Health check endpoints for Kubernetes probes
+    ready :8181
+    health :8080
+    
+    # Cache responses for 30 seconds
+    cache 30
+}
+
+# Alternative: Separate zones for different domains
+# This approach provides more granular control
+
+# HCP control plane zone (no forwarding)
+#api.my-cluster.example.com api-int.my-cluster.example.com {
+#    hosts {
+#        192.168.1.10 api.my-cluster.example.com
+#        192.168.1.10 api-int.my-cluster.example.com
+#    }
+#    log
+#    errors
+#}
+
+# Apps wildcard zone
+#apps.my-cluster.example.com {
+#    hosts {
+#        192.168.1.10 oauth-openshift.apps.my-cluster.example.com
+#        192.168.1.10 console-openshift-console.apps.my-cluster.example.com
+#        fallthrough
+#    }
+#    # Return NXDOMAIN for unknown apps subdomains
+#    # This prevents unnecessary upstream queries
+#}
+
+# Catch-all for everything else
+#. {
+#    forward . 8.8.8.8 8.8.4.4
+#    cache 30
+#}

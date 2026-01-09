@@ -1,0 +1,32 @@
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: DNSServer
+metadata:
+  labels:
+    app.kubernetes.io/name: oooi
+    app.kubernetes.io/managed-by: kustomize
+  name: dnsserver-sample
+spec:
+  networkConfig:
+    serverIP: "192.168.100.3"
+    proxyIP: "192.168.100.10"
+    dnsPort: 53
+    networkAttachmentName: "tenant-vlan-100"
+    networkAttachmentNamespace: "default"
+  hostedClusterDomain: "my-cluster.example.com"
+  staticEntries:
+    - hostname: "api.my-cluster.example.com"
+      ip: "192.168.100.10"
+    - hostname: "api-int.my-cluster.example.com"
+      ip: "192.168.100.10"
+    - hostname: "oauth-openshift.apps.my-cluster.example.com"
+      ip: "192.168.100.10"
+    - hostname: "console-openshift-console.apps.my-cluster.example.com"
+      ip: "192.168.100.10"
+    - hostname: "*.apps.my-cluster.example.com"
+      ip: "192.168.100.10"
+  upstreamDNS:
+    - "8.8.8.8"
+    - "8.8.4.4"
+  image: "quay.io/cldmnky/oooi:latest"
+  reloadInterval: "5s"
+  cacheTTL: "30s"
