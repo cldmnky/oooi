@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- hostedcluster_v1alpha1_infra.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

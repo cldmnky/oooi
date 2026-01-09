@@ -1,0 +1,35 @@
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: Infra
+metadata:
+  labels:
+    app.kubernetes.io/name: oooi
+    app.kubernetes.io/managed-by: kustomize
+  name: infra-sample
+spec:
+  networkConfig:
+    cidr: "192.168.100.0/24"
+    gateway: "192.168.100.1"
+    networkAttachmentDefinition: "tenant-vlan-100"
+    dnsServers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+  
+  infraComponents:
+    dhcp:
+      enabled: true
+      serverIP: "192.168.100.2"
+      rangeStart: "192.168.100.10"
+      rangeEnd: "192.168.100.250"
+      leaseTime: "1h"
+    
+    dns:
+      enabled: true
+      serverIP: "192.168.100.3"
+      baseDomain: "example.com"
+      clusterName: "mycluster"
+    
+    proxy:
+      enabled: true
+      serverIP: "192.168.100.4"
+      controlPlaneNamespace: "clusters-mycluster"
+      apiServerService: "kube-apiserver"
