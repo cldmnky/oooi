@@ -142,7 +142,7 @@ spec:
                           control plane (oooi).
                         type: string
                       proxyImage:
-                        default: envoyproxy/envoy:v1.27-latest
+                        default: envoyproxy/envoy:v1.36.4
                         description: ProxyImage is the container image for Envoy proxy.
                         type: string
                       serverIP:

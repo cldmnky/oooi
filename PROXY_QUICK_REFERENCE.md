@@ -81,7 +81,7 @@ spec:
     enabled: true
     networkName: tenant-network
     serverIP: 10.10.10.3
-    proxyImage: envoyproxy/envoy:v1.27-latest
+    proxyImage: envoyproxy/envoy:v1.36.4
     managerImage: quay.io/cldmnky/oooi:latest
 ```
 

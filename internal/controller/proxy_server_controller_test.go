@@ -85,7 +85,7 @@ var _ = Describe("ProxyServer Controller", func() {
 							TimeoutSeconds:  30,
 						},
 					},
-					ProxyImage:   "envoyproxy/envoy:v1.27-latest",
+					ProxyImage:   "envoyproxy/envoy:v1.36.4",
 					ManagerImage: "quay.io/cldmnky/oooi:test",
 					Port:         443,
 					XDSPort:      18000,
@@ -175,7 +175,7 @@ var _ = Describe("ProxyServer Controller", func() {
 				}
 			}
 			Expect(envoyContainer).NotTo(BeNil())
-			Expect(envoyContainer.Image).To(Equal("envoyproxy/envoy:v1.27-latest"))
+			Expect(envoyContainer.Image).To(Equal("envoyproxy/envoy:v1.36.4"))
 			Expect(envoyContainer.Args).To(ContainElement(ContainSubstring("/etc/envoy/bootstrap.json")))
 			Expect(envoyContainer.VolumeMounts).To(ContainElement(HaveField("Name", "bootstrap-config")))
 
@@ -346,7 +346,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("updating ProxyServer spec")
 			updatedProxyServer := &hostedclusterv1alpha1.ProxyServer{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedProxyServer)).To(Succeed())
-			updatedProxyServer.Spec.ProxyImage = "envoyproxy/envoy:v1.28-latest"
+			updatedProxyServer.Spec.ProxyImage = "envoyproxy/envoy:v1.36.5"
 			Expect(k8sClient.Update(ctx, updatedProxyServer)).To(Succeed())
 
 			By("reconciling again")
@@ -630,7 +630,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			}
 			Expect(envoyContainer).NotTo(BeNil())
 			Expect(managerContainer).NotTo(BeNil())
-			Expect(envoyContainer.Image).To(Equal("envoyproxy/envoy:v1.27-latest"))
+			Expect(envoyContainer.Image).To(Equal("envoyproxy/envoy:v1.36.4"))
 			Expect(managerContainer.Image).To(Equal("quay.io/cldmnky/oooi:latest"))
 
 			By("verifying ConfigMap uses default XDS port")

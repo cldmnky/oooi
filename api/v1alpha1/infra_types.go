@@ -166,7 +166,7 @@ type ProxyConfig struct {
 
 	// ProxyImage is the container image for Envoy proxy.
 	// +optional
-	// +kubebuilder:default="envoyproxy/envoy:v1.27-latest"
+	// +kubebuilder:default="envoyproxy/envoy:v1.36.4"
 	ProxyImage string `json:"proxyImage,omitempty"`
 
 	// ManagerImage is the container image for the xDS control plane (oooi).

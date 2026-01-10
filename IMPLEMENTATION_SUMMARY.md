@@ -75,7 +75,7 @@ Successfully implemented Envoy-based Layer 4 proxy infrastructure component for 
 **Deployment** (`{proxy-name}-deployment`):
 - 2 containers:
   1. **Envoy Container**:
-     - Image: `proxyImage` from Infra CR (default: `envoyproxy/envoy:v1.27-latest`)
+     - Image: `proxyImage` from Infra CR (default: `envoyproxy/envoy:v1.36.4`)
      - Mounts: Envoy bootstrap ConfigMap
      - Startup args: `envoy -c /etc/envoy/bootstrap.json`
      - Resource limits: 100m-500m CPU, 256-512Mi memory
@@ -160,7 +160,7 @@ Simplified implementation avoids complex go-control-plane protobuf handling. Ful
    - **konnectivity** (konnectivity.{cluster-domain}:8132) → konnectivity:8132
 
 4. **Infra API Update**: Added proxy image fields
-   - `ProxyImage`: Envoy container image (default: `envoyproxy/envoy:v1.27-latest`)
+   - `ProxyImage`: Envoy container image (default: `envoyproxy/envoy:v1.36.4`)
    - `ManagerImage`: Manager sidecar image (default: `quay.io/cldmnky/oooi:latest`)
 
 ### 7. Manager Integration

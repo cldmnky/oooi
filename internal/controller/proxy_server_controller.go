@@ -270,7 +270,7 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 
 	proxyImage := proxyServer.Spec.ProxyImage
 	if proxyImage == "" {
-		proxyImage = "envoyproxy/envoy:v1.27-latest"
+		proxyImage = "envoyproxy/envoy:v1.36.4"
 	}
 
 	managerImage := proxyServer.Spec.ManagerImage
