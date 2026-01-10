@@ -24,10 +24,10 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
@@ -41,8 +41,6 @@ var (
 	proxyLogLevel    string
 	proxyMetricsPort int32
 )
-
-var scheme = runtime.NewScheme()
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -97,9 +95,8 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 
-	k8sClient, err := ctrl.NewClient(ctrl.Options{
+	k8sClient, err := client.New(config, client.Options{
 		Scheme: scheme,
-		Config: config,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create kubernetes client: %w", err)

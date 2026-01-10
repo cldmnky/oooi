@@ -33,7 +33,7 @@ func TestDNS(t *testing.T) {
 	RunSpecs(t, "DNS Server Suite")
 }
 
-var _ = Describe("DNS Server", func() {
+var _ = Describe("DNS Server", Serial, func() {
 	var (
 		tmpDir       string
 		corefilePath string
@@ -54,6 +54,9 @@ var _ = Describe("DNS Server", func() {
 		if cancel != nil {
 			cancel()
 		}
+		// Add a delay to allow CoreDNS to fully clean up its goroutines
+		// This works around a race condition in CoreDNS v1.11.3's server.Stop()
+		time.Sleep(100 * time.Millisecond)
 		if tmpDir != "" {
 			os.RemoveAll(tmpDir)
 		}
