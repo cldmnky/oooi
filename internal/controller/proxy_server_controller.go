@@ -265,8 +265,13 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 	}
 
 	replicas := int32(1)
-	runAsUser := int64(1000)
-	fsGroup := int64(1000)
+	// Note: In OpenShift, we need to handle SCCs properly.
+	// For secondary network (Multus) scenarios where the pod binds directly
+	// to privileged ports (443, 6443), we have two options:
+	// 1. Run as root (UID 0) - works with 'anyuid' SCC
+	// 2. Use NET_BIND_SERVICE capability - requires custom SCC
+	// We use option 1 for better OpenShift compatibility.
+	runAsNonRoot := false
 
 	proxyImage := proxyServer.Spec.ProxyImage
 	if proxyImage == "" {
@@ -315,20 +320,15 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "default",
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser: &runAsUser,
-						FSGroup:   &fsGroup,
+						RunAsNonRoot: &runAsNonRoot,
 					},
 					Containers: []corev1.Container{
 						{
 							Name:  "envoy",
 							Image: proxyImage,
-							SecurityContext: &corev1.SecurityContext{
-								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{
-										"NET_BIND_SERVICE",
-									},
-								},
-							},
+							// Note: For OpenShift compatibility, we rely on the 'anyuid' SCC
+							// instead of NET_BIND_SERVICE capability. The pod must bind to
+							// privileged ports (443, 6443) on the secondary network interface.
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "proxy",

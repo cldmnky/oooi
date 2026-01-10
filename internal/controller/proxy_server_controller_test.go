@@ -179,10 +179,10 @@ var _ = Describe("ProxyServer Controller", func() {
 			Expect(envoyContainer.Args).To(ContainElement(ContainSubstring("/etc/envoy/bootstrap.json")))
 			Expect(envoyContainer.VolumeMounts).To(ContainElement(HaveField("Name", "bootstrap-config")))
 
-			By("verifying Envoy container has NET_BIND_SERVICE capability for privileged ports")
-			Expect(envoyContainer.SecurityContext).NotTo(BeNil())
-			Expect(envoyContainer.SecurityContext.Capabilities).NotTo(BeNil())
-			Expect(envoyContainer.SecurityContext.Capabilities.Add).To(ContainElement(corev1.Capability("NET_BIND_SERVICE")))
+			By("verifying Pod security context allows running as root for privileged ports")
+			Expect(deployment.Spec.Template.Spec.SecurityContext).NotTo(BeNil())
+			Expect(deployment.Spec.Template.Spec.SecurityContext.RunAsNonRoot).NotTo(BeNil())
+			Expect(*deployment.Spec.Template.Spec.SecurityContext.RunAsNonRoot).To(BeFalse())
 
 			By("verifying Manager container configuration")
 			var managerContainer *corev1.Container
