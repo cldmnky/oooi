@@ -133,10 +133,17 @@ spec:
                       image:
                         description: Image is the container image for Envoy proxy.
                         type: string
+                      internalProxyService:
+                        description: |-
+                          InternalProxyService is the internal proxy service for pod network access.
+                          Can be a ClusterIP service name (e.g., "envoy-internal.namespace.svc.cluster.local")
+                          or a ClusterIP address. Used by DNS default view for management cluster pod access.
+                        type: string
                       serverIP:
                         description: |-
                           ServerIP is the static IP address assigned to the Envoy proxy pod
                           on the secondary network. Must be within the NetworkConfig CIDR.
+                          This is used for external access (VM/multus network).
                         type: string
                     type: object
                 type: object

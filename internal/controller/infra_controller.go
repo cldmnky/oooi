@@ -197,31 +197,39 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 	// Build hosted cluster domain from ClusterName and BaseDomain
 	hostedClusterDomain := dnsSpec.ClusterName + "." + dnsSpec.BaseDomain
 
-	// Get proxy IP (for static DNS entries to point to)
-	proxyIP := infra.Spec.InfraComponents.Proxy.ServerIP
+	// Get proxy IPs (external for VMs on secondary network, internal for management pods)
+	externalProxyIP := infra.Spec.InfraComponents.Proxy.ServerIP
+	internalProxyIP := infra.Spec.InfraComponents.Proxy.InternalProxyService
 
 	// Build static DNS entries for HCP endpoints
-	// These all point to the Envoy L4 proxy which routes to actual services
+	// These entries use the external proxy IP - the controller will create
+	// separate entries for the internal proxy IP in the default view
+	// Common HCP endpoints:
+	// - api.<hostedClusterDomain>: Main Kubernetes API endpoint
+	// - api-int.<hostedClusterDomain>: Internal API endpoint
+	// - oauth.<hostedClusterDomain>: OAuth server endpoint
+	// - ignition.<hostedClusterDomain>: Ignition configuration server
+	// - konnectivity.<hostedClusterDomain>: Konnectivity proxy endpoint
 	staticEntries := []hostedclusterv1alpha1.DNSStaticEntry{
 		{
 			Hostname: "api." + hostedClusterDomain,
-			IP:       proxyIP,
+			IP:       externalProxyIP,
 		},
 		{
 			Hostname: "api-int." + hostedClusterDomain,
-			IP:       proxyIP,
+			IP:       externalProxyIP,
 		},
 		{
-			Hostname: "oauth-openshift.apps." + hostedClusterDomain,
-			IP:       proxyIP,
+			Hostname: "oauth." + hostedClusterDomain,
+			IP:       externalProxyIP,
 		},
 		{
-			Hostname: "console-openshift-console.apps." + hostedClusterDomain,
-			IP:       proxyIP,
+			Hostname: "ignition." + hostedClusterDomain,
+			IP:       externalProxyIP,
 		},
 		{
-			Hostname: "*.apps." + hostedClusterDomain,
-			IP:       proxyIP,
+			Hostname: "konnectivity." + hostedClusterDomain,
+			IP:       externalProxyIP,
 		},
 	}
 
@@ -233,7 +241,8 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 		Spec: hostedclusterv1alpha1.DNSServerSpec{
 			NetworkConfig: hostedclusterv1alpha1.DNSNetworkConfig{
 				ServerIP:                   dnsSpec.ServerIP,
-				ProxyIP:                    proxyIP,
+				ProxyIP:                    externalProxyIP,
+				InternalProxyIP:            internalProxyIP,
 				SecondaryNetworkCIDR:       infra.Spec.NetworkConfig.CIDR,
 				NetworkAttachmentName:      nadName,
 				NetworkAttachmentNamespace: nadNamespace,

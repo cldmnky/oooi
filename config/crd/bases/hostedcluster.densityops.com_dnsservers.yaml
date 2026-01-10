@@ -83,6 +83,12 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
+                  internalProxyIP:
+                    description: |-
+                      InternalProxyIP is the IP/hostname for internal proxy (pod network access)
+                      DNS entries in the default view will point to this address
+                      Can be a ClusterIP service name or IP address
+                    type: string
                   networkAttachmentName:
                     description: NetworkAttachmentName is the name of the NetworkAttachmentDefinition
                       to attach
@@ -92,8 +98,9 @@ spec:
                       NetworkAttachmentDefinition
                     type: string
                   proxyIP:
-                    description: ProxyIP is the IP address of the Envoy L4 proxy that
-                      DNS entries will point to
+                    description: |-
+                      ProxyIP is the IP address of the Envoy L4 proxy for external/multus network access
+                      DNS entries in the multus view will point to this IP
                     pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
                     type: string
                   secondaryNetworkCIDR:
@@ -223,6 +230,16 @@ spec:
                   recently observed DNSServer
                 format: int64
                 type: integer
+              serviceClusterIP:
+                description: |-
+                  ServiceClusterIP is the ClusterIP of the DNS Service
+                  Use this IP when configuring OpenShift DNS operator forwarding
+                type: string
+              serviceName:
+                description: |-
+                  ServiceName is the name of the Service exposing the DNS server
+                  This can be used to configure OpenShift DNS operator forwarding
+                type: string
             type: object
         type: object
     served: true

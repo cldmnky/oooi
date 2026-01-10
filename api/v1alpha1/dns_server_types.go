@@ -64,10 +64,17 @@ type DNSNetworkConfig struct {
 	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`
 	ServerIP string `json:"serverIP"`
 
-	// ProxyIP is the IP address of the Envoy L4 proxy that DNS entries will point to
+	// ProxyIP is the IP address of the Envoy L4 proxy for external/multus network access
+	// DNS entries in the multus view will point to this IP
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`
 	ProxyIP string `json:"proxyIP"`
+
+	// InternalProxyIP is the IP/hostname for internal proxy (pod network access)
+	// DNS entries in the default view will point to this address
+	// Can be a ClusterIP service name or IP address
+	// +optional
+	InternalProxyIP string `json:"internalProxyIP,omitempty"`
 
 	// SecondaryNetworkCIDR is the CIDR of the secondary network for view plugin matching
 	// Queries from this CIDR will see HCP endpoints (split-horizon)
@@ -121,6 +128,16 @@ type DNSServerStatus struct {
 	// DeploymentName is the name of the Deployment running the DNS server
 	// +optional
 	DeploymentName string `json:"deploymentName,omitempty"`
+
+	// ServiceName is the name of the Service exposing the DNS server
+	// This can be used to configure OpenShift DNS operator forwarding
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+
+	// ServiceClusterIP is the ClusterIP of the DNS Service
+	// Use this IP when configuring OpenShift DNS operator forwarding
+	// +optional
+	ServiceClusterIP string `json:"serviceClusterIP,omitempty"`
 
 	// ObservedGeneration reflects the generation of the most recently observed DNSServer
 	// +optional

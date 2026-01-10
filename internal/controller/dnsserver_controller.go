@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,10 +63,20 @@ func (r *DNSServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Get the Service to retrieve its ClusterIP for status
+	serviceName := dnsServer.Name + "-dns"
+	foundService := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: dnsServer.Namespace}, foundService); err != nil {
+		log.Error(err, "unable to fetch DNS Service for status update")
+		return ctrl.Result{}, err
+	}
+
 	// Update status
 	dnsServer.Status.ObservedGeneration = dnsServer.Generation
 	dnsServer.Status.ConfigMapName = dnsServer.Name + "-dns-config"
 	dnsServer.Status.DeploymentName = dnsServer.Name + "-dns"
+	dnsServer.Status.ServiceName = serviceName
+	dnsServer.Status.ServiceClusterIP = foundService.Spec.ClusterIP
 
 	condition := metav1.Condition{
 		Type:               "Ready",
@@ -137,10 +148,20 @@ func (r *DNSServerReconciler) ensureDNSDeployment(ctx context.Context, dnsServer
 
 // newDNSConfigMap returns a ConfigMap object for the Corefile DNS configuration
 func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.DNSServer) *corev1.ConfigMap {
-	// Build hosts entries
-	var hostsEntries strings.Builder
+	// Build hosts entries for multus view (external proxy - for VMs on secondary network)
+	var multusHostsEntries strings.Builder
 	for _, entry := range dnsServer.Spec.StaticEntries {
-		hostsEntries.WriteString(fmt.Sprintf("        %s %s\n", entry.IP, entry.Hostname))
+		multusHostsEntries.WriteString(fmt.Sprintf("        %s %s\n", entry.IP, entry.Hostname))
+	}
+
+	// Build hosts entries for default view (internal proxy - for management cluster pods)
+	var defaultHostsEntries strings.Builder
+	internalProxyIP := dnsServer.Spec.NetworkConfig.InternalProxyIP
+	if internalProxyIP != "" {
+		// If internal proxy is configured, create entries pointing to it
+		for _, entry := range dnsServer.Spec.StaticEntries {
+			defaultHostsEntries.WriteString(fmt.Sprintf("        %s %s\n", internalProxyIP, entry.Hostname))
+		}
 	}
 
 	// Get upstream DNS servers (default to 8.8.8.8 if not specified)
@@ -173,13 +194,44 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 		secondaryCIDR = "192.168.0.0/16" // Default fallback
 	}
 
+	// Build default view content based on whether internal proxy is configured
+	var defaultViewContent string
+	if internalProxyIP != "" {
+		// Internal proxy configured - provide HCP records pointing to internal proxy
+		defaultViewContent = fmt.Sprintf(`        # HCP domain with static A records pointing to internal proxy
+        %s {
+            hosts {
+%s                fallthrough
+            }
+            forward . %s {
+                policy sequential
+                health_check 5s
+            }
+            cache %s
+        }
+        
+        # All other domains forward to upstream
+        . {
+            forward . %s
+            cache %s
+        }`, dnsServer.Spec.HostedClusterDomain, defaultHostsEntries.String(), upstream, cacheTTL, upstream, cacheTTL)
+	} else {
+		// No internal proxy - just forward all to upstream (HCP hidden)
+		defaultViewContent = fmt.Sprintf(`        # All queries forward to upstream DNS (no internal proxy configured)
+        . {
+            forward . %s
+            cache %s
+        }`, upstream, cacheTTL)
+	}
+
 	// Build Corefile using view plugin for source-based routing
-	// View plugin routes queries based on source IP address
-	// - Queries from secondary network CIDR see HCP endpoints (split-horizon)
-	// - All other queries forward to upstream only (HCP hidden)
-	corefile := fmt.Sprintf(`# Hosted Control Plane split-horizon DNS using view plugin
-# Source-based routing: queries from %s see HCP endpoints
-# All other sources (pod network) see upstream DNS only
+	// View plugin routes queries based on source IP address:
+	// - Multus view: Queries from secondary network CIDR see HCP pointing to external proxy
+	// - Default view: Queries from pod network see HCP pointing to internal proxy (if configured)
+	corefile := fmt.Sprintf(`# Hosted Control Plane dual-view split-horizon DNS using view plugin
+# Source-based routing with two proxy targets:
+# - Multus view (VMs): queries from %s → HCP resolves to external proxy
+# - Default view (Pods): queries from pod network → HCP resolves to internal proxy
 
 .:%d {
     # View plugin for source-based routing
@@ -187,7 +239,7 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
         # Match queries from secondary network CIDR (tenant VMs)
         expr incidr(client_ip(), '%s')
         
-        # HCP domain with static A records (visible to tenant VMs only)
+        # HCP domain with static A records pointing to external proxy
         %s {
             hosts {
 %s                fallthrough
@@ -207,13 +259,8 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     }
     
     # Default view for all other sources (pod network)
-    # HCP endpoints are NOT visible here
     view default {
-        # All queries forward to upstream DNS
-        . {
-            forward . %s
-            cache %s
-        }
+%s
     }
     
     # Shared plugins (apply to all views)
@@ -224,9 +271,9 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     health :8080
 }
 `, secondaryCIDR, dnsPort, secondaryCIDR,
-		dnsServer.Spec.HostedClusterDomain, hostsEntries.String(), upstream, cacheTTL,
+		dnsServer.Spec.HostedClusterDomain, multusHostsEntries.String(), upstream, cacheTTL,
 		upstream, cacheTTL,
-		upstream, cacheTTL, reloadInterval)
+		defaultViewContent, reloadInterval)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
