@@ -34,6 +34,10 @@ const (
 
 	certmanagerVersion = "v1.16.3"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
+
+	// Multus CNI configuration
+	multusVersion  = "v4.2.3"
+	multusThickURL = "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/%s/deployments/multus-daemonset-thick.yml"
 )
 
 func warnError(err error) {
@@ -171,8 +175,80 @@ func LoadImageToKindClusterWithName(name string) error {
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	cmd := exec.Command("kind", kindOptions...)
+
+	// First try the standard approach
+	kindLoad := exec.Command("kind", "load", "docker-image", name, "--name", cluster)
+	if _, err := Run(kindLoad); err == nil {
+		return nil
+	}
+
+	// Fallback: save image to tar and load as archive
+	// Build a safe archive path avoiding slashes from image names
+	base := name
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	base = strings.ReplaceAll(base, ":", "-")
+	tmpArchive := fmt.Sprintf("%s/%s-image.tar", os.TempDir(), base)
+
+	// Prefer podman if available
+	var saveCmd *exec.Cmd
+	if _, err := exec.LookPath("podman"); err == nil {
+		saveCmd = exec.Command("podman", "save", "-o", tmpArchive, name)
+	} else if _, err := exec.LookPath("docker"); err == nil {
+		saveCmd = exec.Command("docker", "save", "-o", tmpArchive, name)
+	} else {
+		return fmt.Errorf("neither podman nor docker found for saving image %s", name)
+	}
+
+	if _, err := Run(saveCmd); err != nil {
+		return fmt.Errorf("failed to save image archive: %w", err)
+	}
+
+	kindLoadArchive := exec.Command("kind", "load", "image-archive", tmpArchive, "--name", cluster)
+	if _, err := Run(kindLoadArchive); err != nil {
+		return fmt.Errorf("failed to load image archive into kind: %w", err)
+	}
+
+	return nil
+}
+
+// InstallMultus installs the Multus CNI thick plugin
+func InstallMultus() error {
+	url := fmt.Sprintf(multusThickURL, multusVersion)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Installing Multus CNI from %s\n", url)
+	cmd := exec.Command("kubectl", "apply", "-f", url)
+	_, err := Run(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Wait for Multus to be ready
+	_, _ = fmt.Fprintf(GinkgoWriter, "Waiting for Multus pods to be ready...\n")
+	cmd = exec.Command("kubectl", "wait", "--for=condition=ready", "pod",
+		"-l", "app=multus", "-n", "kube-system", "--timeout=300s")
+	_, err = Run(cmd)
+	return err
+}
+
+// IsMultusInstalled checks if Multus CNI is installed by verifying the daemonset exists
+func IsMultusInstalled() bool {
+	cmd := exec.Command("kubectl", "get", "daemonset", "kube-multus-ds", "-n", "kube-system")
+	_, err := Run(cmd)
+	return err == nil
+}
+
+// IsNADReady checks if a NetworkAttachmentDefinition is created and ready
+func IsNADReady(name, namespace string) bool {
+	cmd := exec.Command("kubectl", "get", "net-attach-def", name, "-n", namespace)
+	_, err := Run(cmd)
+	return err == nil
+}
+
+// CreateTestNADs creates the test NetworkAttachmentDefinitions
+func CreateTestNADs() error {
+	_, _ = fmt.Fprintf(GinkgoWriter, "Creating test NetworkAttachmentDefinitions...\n")
+	cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/test-nads.yaml")
 	_, err := Run(cmd)
 	return err
 }

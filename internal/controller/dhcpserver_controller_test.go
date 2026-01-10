@@ -184,6 +184,35 @@ var _ = Describe("DHCPServer Controller", func() {
 			Expect(updatedDHCPServer.Status.Conditions).NotTo(BeEmpty())
 		})
 
+		It("should create deployment with correct container args", func() {
+			By("reconciling the DHCPServer resource")
+			controllerReconciler := &DHCPServerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the Deployment was created with correct container args")
+			deployment := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-dhcp",
+				Namespace: resourceNamespace,
+			}, deployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying container args match dhcp command flags")
+			container := deployment.Spec.Template.Spec.Containers[0]
+			Expect(container.Args).To(Equal([]string{
+				"dhcp",
+				"--config-file",
+				"/etc/dhcp/hyperdhcp.yaml",
+			}))
+		})
+
 		It("should handle DHCPServer deletion gracefully", func() {
 			By("deleting the DHCPServer resource")
 			dhcpServer := &hostedclusterv1alpha1.DHCPServer{}

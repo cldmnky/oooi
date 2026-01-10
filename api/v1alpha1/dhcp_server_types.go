@@ -54,8 +54,10 @@ type DHCPNetworkConfig struct {
 	Gateway string `json:"gateway"`
 
 	// ServerIP is the static IP address assigned to the DHCP server
+	// Can be specified with or without CIDR notation (e.g., "192.168.1.2" or "192.168.1.2/24")
+	// If CIDR is omitted, /24 will be assumed for static IPAM
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`
+	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?$`
 	ServerIP string `json:"serverIP"`
 
 	// DNSServers is a list of DNS servers to advertise to clients

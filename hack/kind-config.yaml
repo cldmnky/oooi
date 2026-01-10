@@ -1,0 +1,21 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: oooi-test-e2e
+networking:
+  # Disable default CNI so we can install Calico
+  disableDefaultCNI: true
+  # Set pod subnet for the cluster
+  podSubnet: "10.244.0.0/16"
+  # Set service subnet for the cluster
+  serviceSubnet: "10.96.0.0/12"
+  # Use iptables for kube-proxy (works with Calico)
+  kubeProxyMode: "iptables"
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.31.4
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
