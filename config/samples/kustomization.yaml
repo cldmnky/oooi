@@ -3,4 +3,7 @@ resources:
 - hostedcluster_v1alpha1_infra.yaml
 - hostedcluster_v1alpha1_dhcpserver.yaml
 - hostedcluster_v1alpha1_dnsserver.yaml
+- hostedcluster_v1alpha1_proxyserver.yaml
+# OpenShift example with SCC requirements (commented out by default)
+# - openshift-example.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
