@@ -2,4 +2,5 @@
 resources:
 - hostedcluster_v1alpha1_infra.yaml
 - hostedcluster_v1alpha1_dhcpserver.yaml
+- hostedcluster_v1alpha1_dnsserver.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -69,6 +69,16 @@ var _ = Describe("Infra Controller", func() {
 								RangeEnd:   "192.168.100.100",
 								LeaseTime:  "1h",
 							},
+							DNS: hostedclusterv1alpha1.DNSConfig{
+								Enabled:     true,
+								ServerIP:    "192.168.100.3",
+								BaseDomain:  "example.com",
+								ClusterName: "test-cluster",
+							},
+							Proxy: hostedclusterv1alpha1.ProxyConfig{
+								Enabled:  true,
+								ServerIP: "192.168.100.10",
+							},
 						},
 					},
 				}

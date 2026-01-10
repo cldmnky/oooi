@@ -143,8 +143,15 @@ type ProxyConfig struct {
 
 	// ServerIP is the static IP address assigned to the Envoy proxy pod
 	// on the secondary network. Must be within the NetworkConfig CIDR.
+	// This is used for external access (VM/multus network).
 	// +optional
 	ServerIP string `json:"serverIP,omitempty"`
+
+	// InternalProxyService is the internal proxy service for pod network access.
+	// Can be a ClusterIP service name (e.g., "envoy-internal.namespace.svc.cluster.local")
+	// or a ClusterIP address. Used by DNS default view for management cluster pod access.
+	// +optional
+	InternalProxyService string `json:"internalProxyService,omitempty"`
 
 	// ControlPlaneNamespace is the namespace where the hosted control plane
 	// services are running (e.g., "clusters-<clustername>").

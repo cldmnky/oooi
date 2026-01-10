@@ -1,0 +1,248 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: dnsservers.hostedcluster.densityops.com
+spec:
+  group: hostedcluster.densityops.com
+  names:
+    kind: DNSServer
+    listKind: DNSServerList
+    plural: dnsservers
+    shortNames:
+    - dns
+    singular: dnsserver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostedClusterDomain
+      name: Domain
+      type: string
+    - jsonPath: .spec.networkConfig.serverIP
+      name: ServerIP
+      type: string
+    - jsonPath: .spec.networkConfig.proxyIP
+      name: ProxyIP
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DNSServer is the Schema for the dnsservers API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DNSServerSpec defines the desired state of DNSServer
+            properties:
+              cacheTTL:
+                default: 30s
+                description: CacheTTL is the DNS response cache time-to-live
+                pattern: ^[0-9]+(s|m|h)$
+                type: string
+              hostedClusterDomain:
+                description: |-
+                  HostedClusterDomain is the base domain for the hosted control plane
+                  Example: "my-cluster.example.com"
+                minLength: 1
+                type: string
+              image:
+                default: quay.io/cldmnky/oooi:latest
+                description: Image is the container image for the DNS server
+                type: string
+              networkConfig:
+                description: NetworkConfig defines the network parameters for the
+                  DNS server
+                properties:
+                  dnsPort:
+                    default: 53
+                    description: DNSPort is the port the DNS server listens on
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  internalProxyIP:
+                    description: |-
+                      InternalProxyIP is the IP/hostname for internal proxy (pod network access)
+                      DNS entries in the default view will point to this address
+                      Can be a ClusterIP service name or IP address
+                    type: string
+                  networkAttachmentName:
+                    description: NetworkAttachmentName is the name of the NetworkAttachmentDefinition
+                      to attach
+                    type: string
+                  networkAttachmentNamespace:
+                    description: NetworkAttachmentNamespace is the namespace of the
+                      NetworkAttachmentDefinition
+                    type: string
+                  proxyIP:
+                    description: |-
+                      ProxyIP is the IP address of the Envoy L4 proxy for external/multus network access
+                      DNS entries in the multus view will point to this IP
+                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
+                    type: string
+                  secondaryNetworkCIDR:
+                    description: |-
+                      SecondaryNetworkCIDR is the CIDR of the secondary network for view plugin matching
+                      Queries from this CIDR will see HCP endpoints (split-horizon)
+                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
+                    type: string
+                  serverIP:
+                    description: ServerIP is the static IP address assigned to the
+                      DNS server on the secondary network
+                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
+                    type: string
+                required:
+                - proxyIP
+                - serverIP
+                type: object
+              reloadInterval:
+                default: 5s
+                description: ReloadInterval is how often CoreDNS checks for Corefile
+                  changes
+                pattern: ^[0-9]+(s|m|h)$
+                type: string
+              staticEntries:
+                description: StaticEntries defines static DNS A records for control
+                  plane endpoints
+                items:
+                  description: DNSStaticEntry defines a static DNS record
+                  properties:
+                    hostname:
+                      description: Hostname is the fully qualified domain name
+                      minLength: 1
+                      type: string
+                    ip:
+                      description: IP is the IPv4 address this hostname resolves to
+                      pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
+                      type: string
+                  required:
+                  - hostname
+                  - ip
+                  type: object
+                type: array
+              upstreamDNS:
+                description: UpstreamDNS defines upstream DNS servers for non-HCP
+                  domain resolution
+                items:
+                  type: string
+                type: array
+            required:
+            - hostedClusterDomain
+            - networkConfig
+            type: object
+          status:
+            description: DNSServerStatus defines the observed state of DNSServer
+            properties:
+              conditions:
+                description: Conditions represents the latest available observations
+                  of the DNSServer's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              configMapName:
+                description: ConfigMapName is the name of the ConfigMap containing
+                  the Corefile
+                type: string
+              deploymentName:
+                description: DeploymentName is the name of the Deployment running
+                  the DNS server
+                type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation of the most
+                  recently observed DNSServer
+                format: int64
+                type: integer
+              serviceClusterIP:
+                description: |-
+                  ServiceClusterIP is the ClusterIP of the DNS Service
+                  Use this IP when configuring OpenShift DNS operator forwarding
+                type: string
+              serviceName:
+                description: |-
+                  ServiceName is the name of the Service exposing the DNS server
+                  This can be used to configure OpenShift DNS operator forwarding
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
