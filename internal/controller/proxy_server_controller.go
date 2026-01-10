@@ -322,6 +322,13 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 						{
 							Name:  "envoy",
 							Image: proxyImage,
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{
+										"NET_BIND_SERVICE",
+									},
+								},
+							},
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "proxy",

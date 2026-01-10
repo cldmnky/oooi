@@ -179,6 +179,11 @@ var _ = Describe("ProxyServer Controller", func() {
 			Expect(envoyContainer.Args).To(ContainElement(ContainSubstring("/etc/envoy/bootstrap.json")))
 			Expect(envoyContainer.VolumeMounts).To(ContainElement(HaveField("Name", "bootstrap-config")))
 
+			By("verifying Envoy container has NET_BIND_SERVICE capability for privileged ports")
+			Expect(envoyContainer.SecurityContext).NotTo(BeNil())
+			Expect(envoyContainer.SecurityContext.Capabilities).NotTo(BeNil())
+			Expect(envoyContainer.SecurityContext.Capabilities.Add).To(ContainElement(corev1.Capability("NET_BIND_SERVICE")))
+
 			By("verifying Manager container configuration")
 			var managerContainer *corev1.Container
 			for i := range deployment.Spec.Template.Spec.Containers {
