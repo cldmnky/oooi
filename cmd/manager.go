@@ -227,6 +227,13 @@ func runManager(cmd *cobra.Command, args []string) {
 		setupLog.Error(err, "unable to create controller", "controller", "DNSServer")
 		os.Exit(1)
 	}
+	if err := (&controller.ProxyServerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ProxyServer")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
