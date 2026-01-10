@@ -1,0 +1,152 @@
+# OpenShift Deployment Example
+#
+# This example shows how to deploy the oooi operator with ProxyServer
+# on OpenShift, including the required Security Context Constraints (SCC).
+#
+# Prerequisites:
+# 1. OpenShift cluster with Multus CNI
+# 2. NetworkAttachmentDefinition for secondary network (VLAN)
+# 3. Appropriate SCC permissions
+#
+# Deployment Steps:
+#
+# Step 1: Create namespace
+# $ oc new-project hosted-clusters
+#
+# Step 2: Apply SCC (choose one option)
+#
+# Option A: Use existing 'anyuid' SCC (simpler, for testing)
+# $ oc adm policy add-scc-to-user anyuid -z default -n hosted-clusters
+#
+# Option B: Create custom SCC (recommended for production)
+# $ oc apply -f - <<EOF
+# apiVersion: security.openshift.io/v1
+# kind: SecurityContextConstraints
+# metadata:
+#   name: oooi-proxy
+# allowHostDirVolumePlugin: false
+# allowHostIPC: false
+# allowHostNetwork: false
+# allowHostPID: false
+# allowHostPorts: false
+# allowPrivilegeEscalation: true
+# allowPrivilegedContainer: false
+# runAsUser:
+#   type: RunAsAny
+# seLinuxContext:
+#   type: MustRunAs
+# fsGroup:
+#   type: RunAsAny
+# supplementalGroups:
+#   type: RunAsAny
+# volumes:
+# - configMap
+# - downwardAPI
+# - emptyDir
+# - persistentVolumeClaim
+# - projected
+# - secret
+# EOF
+# $ oc adm policy add-scc-to-user oooi-proxy -z default -n hosted-clusters
+#
+# Step 3: Create NetworkAttachmentDefinition
+# $ oc apply -f - <<EOF
+# apiVersion: k8s.cni.cncf.io/v1
+# kind: NetworkAttachmentDefinition
+# metadata:
+#   name: tenant-vlan-100
+#   namespace: hosted-clusters
+# spec:
+#   config: |
+#     {
+#       "cniVersion": "0.3.1",
+#       "type": "macvlan",
+#       "master": "eth1",
+#       "mode": "bridge",
+#       "ipam": {
+#         "type": "static"
+#       }
+#     }
+# EOF
+#
+# Step 4: Deploy the operator
+# $ make deploy IMG=quay.io/cldmnky/oooi:latest
+#
+# Step 5: Create Infra resource
+# $ oc apply -f config/samples/hostedcluster_v1alpha1_infra.yaml
+#
+# Step 6: Verify deployment
+# $ oc get proxyservers -n hosted-clusters
+# $ oc get pods -n hosted-clusters -l app=proxy-server
+# $ oc get pod <proxy-pod-name> -o jsonpath='{.metadata.annotations.openshift\.io/scc}'
+#
+# Troubleshooting:
+# - If pod fails with "runAsNonRoot" error, check SCC is properly assigned
+# - If NetworkAttachmentDefinition not found, verify namespace matches
+# - Use 'oc logs' to check Envoy and manager container logs
+#
+# For more details, see: docs/openshift-scc-requirements.md
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hosted-clusters
+
+---
+# NetworkAttachmentDefinition example (adjust to your network setup)
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: tenant-vlan-100
+  namespace: hosted-clusters
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "type": "macvlan",
+      "master": "eth1",
+      "mode": "bridge",
+      "ipam": {
+        "type": "static"
+      }
+    }
+
+---
+# Infra resource with DHCP, DNS, and Proxy
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: Infra
+metadata:
+  name: mycluster-infra
+  namespace: hosted-clusters
+spec:
+  networkConfig:
+    cidr: "192.168.100.0/24"
+    gateway: "192.168.100.1"
+    networkAttachmentDefinition: "tenant-vlan-100"
+    dnsServers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+  
+  infraComponents:
+    # DHCP server for tenant VMs
+    dhcp:
+      enabled: true
+      serverIP: "192.168.100.2"
+      rangeStart: "192.168.100.10"
+      rangeEnd: "192.168.100.250"
+      leaseTime: "1h"
+    
+    # Split-horizon DNS server
+    dns:
+      enabled: true
+      serverIP: "192.168.100.3"
+      baseDomain: "example.com"
+      clusterName: "mycluster"
+    
+    # Envoy proxy for control plane access
+    proxy:
+      enabled: true
+      serverIP: "192.168.100.4"
+      proxyImage: "envoyproxy/envoy:v1.36.4"
+      managerImage: "quay.io/cldmnky/oooi:latest"

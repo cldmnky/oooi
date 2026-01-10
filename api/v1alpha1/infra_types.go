@@ -164,9 +164,15 @@ type ProxyConfig struct {
 	// +kubebuilder:default="kube-apiserver"
 	APIServerService string `json:"apiServerService,omitempty"`
 
-	// Image is the container image for Envoy proxy.
+	// ProxyImage is the container image for Envoy proxy.
 	// +optional
-	Image string `json:"image,omitempty"`
+	// +kubebuilder:default="envoyproxy/envoy:v1.36.4"
+	ProxyImage string `json:"proxyImage,omitempty"`
+
+	// ManagerImage is the container image for the xDS control plane (oooi).
+	// +optional
+	// +kubebuilder:default="quay.io/cldmnky/oooi:latest"
+	ManagerImage string `json:"managerImage,omitempty"`
 }
 
 // InfraStatus defines the observed state of Infra.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
@@ -16,6 +17,8 @@ import (
 type Server struct {
 	corefilePath string
 	instance     *caddy.Instance
+	mu           sync.Mutex
+	stopped      bool
 }
 
 func NewServer(corefilePath string) (*Server, error) {
@@ -47,9 +50,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start shutdown handler in background
 	go func() {
 		<-ctx.Done()
-		if s.instance != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.instance != nil && !s.stopped {
 			s.instance.ShutdownCallbacks()
 			s.instance.Stop()
+			s.stopped = true
 		}
 		close(shutdownComplete)
 	}()
@@ -73,6 +79,13 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.stopped {
+		return nil // Already stopped
+	}
+
 	if s.instance != nil {
 		if errs := s.instance.ShutdownCallbacks(); len(errs) > 0 {
 			return fmt.Errorf("shutdown callbacks failed: %v", errs)
@@ -80,6 +93,7 @@ func (s *Server) Stop() error {
 		if err := s.instance.Stop(); err != nil {
 			return fmt.Errorf("failed to stop instance: %w", err)
 		}
+		s.stopped = true
 	}
 	return nil
 }

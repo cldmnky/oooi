@@ -1,0 +1,96 @@
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: ProxyServer
+metadata:
+  labels:
+    app.kubernetes.io/name: oooi
+    app.kubernetes.io/managed-by: kustomize
+  name: proxyserver-sample
+  namespace: default
+spec:
+  # Network configuration for the proxy server
+  networkConfig:
+    serverIP: "192.168.100.10"
+    networkAttachmentName: "tenant-vlan-100"
+    networkAttachmentNamespace: "default"
+  
+  # Backend services to proxy
+  # These are typical OpenShift Hosted Control Plane services
+  backends:
+    # Kubernetes API Server (external endpoint)
+    - name: kube-apiserver
+      hostname: "api.mycluster.example.com"
+      port: 6443
+      targetService: "kube-apiserver"
+      targetPort: 6443
+      targetNamespace: "clusters-mycluster"
+      protocol: "TCP"
+      timeoutSeconds: 30
+    
+    # Kubernetes API Server (internal endpoint)
+    - name: kube-apiserver-internal
+      hostname: "api-int.mycluster.example.com"
+      port: 6443
+      targetService: "kube-apiserver"
+      targetPort: 6443
+      targetNamespace: "clusters-mycluster"
+      protocol: "TCP"
+      timeoutSeconds: 30
+    
+    # OAuth OpenShift service
+    - name: oauth-openshift
+      hostname: "oauth-openshift.apps.mycluster.example.com"
+      port: 443
+      targetService: "oauth-openshift"
+      targetPort: 6443
+      targetNamespace: "clusters-mycluster"
+      protocol: "TCP"
+      timeoutSeconds: 30
+    
+    # Ignition server for machine config
+    - name: ignition-server
+      hostname: "ignition-server.mycluster.example.com"
+      port: 443
+      targetService: "ignition-server"
+      targetPort: 22623
+      targetNamespace: "clusters-mycluster"
+      protocol: "TCP"
+      timeoutSeconds: 30
+    
+    # Konnectivity server
+    - name: konnectivity-server
+      hostname: "konnectivity-server.mycluster.example.com"
+      port: 443
+      targetService: "konnectivity-server"
+      targetPort: 8132
+      targetNamespace: "clusters-mycluster"
+      protocol: "TCP"
+      timeoutSeconds: 30
+  
+  # Container images (optional - defaults shown)
+  proxyImage: "envoyproxy/envoy:v1.36.4"
+  managerImage: "quay.io/cldmnky/oooi:latest"
+  
+  # Proxy configuration
+  port: 443  # Main listening port
+  xdsPort: 18000  # Internal xDS communication port
+  logLevel: "info"  # Options: trace, debug, info, warning, error, critical
+
+---
+# Example: Minimal ProxyServer with required fields only
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: ProxyServer
+metadata:
+  name: proxyserver-minimal
+  namespace: default
+spec:
+  networkConfig:
+    serverIP: "192.168.100.11"
+    networkAttachmentName: "tenant-vlan-100"
+  
+  backends:
+    - name: api-server
+      hostname: "api.example.com"
+      port: 6443
+      targetService: "kube-apiserver"
+      targetPort: 6443
+      targetNamespace: "default"

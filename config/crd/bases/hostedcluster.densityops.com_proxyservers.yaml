@@ -1,0 +1,288 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: proxyservers.hostedcluster.densityops.com
+spec:
+  group: hostedcluster.densityops.com
+  names:
+    kind: ProxyServer
+    listKind: ProxyServerList
+    plural: proxyservers
+    shortNames:
+    - proxy
+    - proxies
+    singular: proxyserver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.networkConfig.serverIP
+      name: ServerIP
+      type: string
+    - jsonPath: .spec.port
+      name: Port
+      type: integer
+    - jsonPath: .status.backendCount
+      name: Backends
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ProxyServer is the Schema for the proxyservers API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ProxyServerSpec defines the desired state of ProxyServer
+            properties:
+              backends:
+                description: |-
+                  Backends defines the list of services to proxy with SNI-based routing
+                  Each backend specifies an SNI hostname and the target Kubernetes service
+                items:
+                  description: ProxyBackend defines a single proxied service with
+                    SNI-based routing
+                  properties:
+                    hostname:
+                      description: |-
+                        Hostname is the SNI hostname that clients will use to connect
+                        Example: "api.my-cluster.example.com"
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name is a unique identifier for this backend (e.g.,
+                        "kube-apiserver")
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    port:
+                      description: |-
+                        Port is the external port clients connect to
+                        For HTTPS services, typically 443. For other services, use appropriate ports.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    protocol:
+                      default: TCP
+                      description: Protocol to use for the cluster (TCP is used for
+                        L4 proxying)
+                      enum:
+                      - TCP
+                      - UDP
+                      type: string
+                    targetNamespace:
+                      description: TargetNamespace is the namespace where the target
+                        service resides
+                      minLength: 1
+                      type: string
+                    targetPort:
+                      description: |-
+                        TargetPort is the port on the target service
+                        Example: 6443 for kube-apiserver
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    targetService:
+                      description: |-
+                        TargetService is the Kubernetes service name to forward traffic to
+                        Example: "kube-apiserver"
+                      minLength: 1
+                      type: string
+                    timeoutSeconds:
+                      default: 30
+                      description: TimeoutSeconds is the timeout for connections to
+                        the target service
+                      format: int32
+                      minimum: 1
+                      type: integer
+                  required:
+                  - hostname
+                  - name
+                  - port
+                  - targetNamespace
+                  - targetPort
+                  - targetService
+                  type: object
+                minItems: 1
+                type: array
+              logLevel:
+                default: info
+                description: LogLevel for Envoy logging
+                enum:
+                - trace
+                - debug
+                - info
+                - warning
+                - error
+                - critical
+                type: string
+              managerImage:
+                default: quay.io/cldmnky/oooi:latest
+                description: ManagerImage is the container image for the xDS control
+                  plane (oooi)
+                type: string
+              networkConfig:
+                description: NetworkConfig defines the network parameters for the
+                  proxy server
+                properties:
+                  networkAttachmentName:
+                    description: NetworkAttachmentName is the name of the NetworkAttachmentDefinition
+                      to attach
+                    type: string
+                  networkAttachmentNamespace:
+                    description: NetworkAttachmentNamespace is the namespace of the
+                      NetworkAttachmentDefinition
+                    type: string
+                  serverIP:
+                    description: ServerIP is the static IP address assigned to the
+                      proxy server on the secondary network
+                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
+                    type: string
+                required:
+                - serverIP
+                type: object
+              port:
+                default: 443
+                description: Port is the listening port for the proxy on the secondary
+                  network
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              proxyImage:
+                default: envoyproxy/envoy:v1.36.4
+                description: Image is the container image for the proxy (Envoy)
+                type: string
+              xdsPort:
+                default: 18000
+                description: XDSPort is the gRPC port for xDS communication between
+                  manager and Envoy
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+            required:
+            - backends
+            - networkConfig
+            type: object
+          status:
+            description: ProxyServerStatus defines the observed state of ProxyServer
+            properties:
+              backendCount:
+                description: BackendCount is the number of successfully configured
+                  backends
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions represents the latest available observations
+                  of the ProxyServer's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              configMapName:
+                description: ConfigMapName is the name of the ConfigMap containing
+                  the Envoy bootstrap configuration
+                type: string
+              deploymentName:
+                description: DeploymentName is the name of the Deployment running
+                  the proxy
+                type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation of the most
+                  recently observed ProxyServer
+                format: int64
+                type: integer
+              serviceIP:
+                description: ServiceIP is the ClusterIP of the proxy Service (for
+                  internal access)
+                type: string
+              serviceName:
+                description: ServiceName is the name of the Service exposing the proxy
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

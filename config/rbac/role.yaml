@@ -37,6 +37,7 @@ rules:
   - dhcpservers
   - dnsservers
   - infras
+  - proxyservers
   verbs:
   - create
   - delete
@@ -51,6 +52,7 @@ rules:
   - dhcpservers/finalizers
   - dnsservers/finalizers
   - infras/finalizers
+  - proxyservers/finalizers
   verbs:
   - update
 - apiGroups:
@@ -59,6 +61,7 @@ rules:
   - dhcpservers/status
   - dnsservers/status
   - infras/status
+  - proxyservers/status
   verbs:
   - get
   - patch

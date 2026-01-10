@@ -31,5 +31,5 @@ spec:
     proxy:
       enabled: true
       serverIP: "192.168.100.4"
-      controlPlaneNamespace: "clusters-mycluster"
-      apiServerService: "kube-apiserver"
+      proxyImage: "envoyproxy/envoy:v1.36.4"
+      managerImage: "quay.io/cldmnky/oooi:latest"

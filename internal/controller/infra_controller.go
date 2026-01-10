@@ -42,6 +42,7 @@ type InfraReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras/finalizers,verbs=update
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dhcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -106,6 +107,29 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
+	// Create ProxyServer CR if Proxy is enabled
+	if infra.Spec.InfraComponents.Proxy.Enabled {
+		proxyServer := r.proxyServerForInfra(infra)
+		if err := ctrl.SetControllerReference(infra, proxyServer, r.Scheme); err != nil {
+			log.Error(err, "Failed to set controller reference for ProxyServer")
+			return ctrl.Result{}, err
+		}
+
+		foundProxyServer := &hostedclusterv1alpha1.ProxyServer{}
+		err = r.Get(ctx, types.NamespacedName{Name: proxyServer.Name, Namespace: proxyServer.Namespace}, foundProxyServer)
+		if err != nil && errors.IsNotFound(err) {
+			log.Info("Creating a new ProxyServer", "ProxyServer.Namespace", proxyServer.Namespace, "ProxyServer.Name", proxyServer.Name)
+			err = r.Create(ctx, proxyServer)
+			if err != nil {
+				log.Error(err, "Failed to create new ProxyServer")
+				return ctrl.Result{}, err
+			}
+		} else if err != nil {
+			log.Error(err, "Failed to get ProxyServer")
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Update status
 	infra.Status.ObservedGeneration = infra.Generation
 	condition := metav1.Condition{
@@ -123,6 +147,9 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 	if infra.Spec.InfraComponents.DNS.Enabled {
 		infra.Status.ComponentStatus.DNSReady = true
+	}
+	if infra.Spec.InfraComponents.Proxy.Enabled {
+		infra.Status.ComponentStatus.ProxyReady = true
 	}
 
 	if err := r.Status().Update(ctx, infra); err != nil {
@@ -258,12 +285,110 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 	}
 }
 
+// proxyServerForInfra returns a ProxyServer object for the Infra
+func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra) *hostedclusterv1alpha1.ProxyServer {
+	proxySpec := infra.Spec.InfraComponents.Proxy
+
+	// Parse NetworkAttachmentDefinition name and namespace
+	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
+	nadNamespace := infra.Namespace
+	if parts := strings.Split(nadName, "/"); len(parts) == 2 {
+		nadNamespace = parts[0]
+		nadName = parts[1]
+	}
+
+	// Build hosted cluster domain from ClusterName and BaseDomain
+	hostedClusterDomain := infra.Spec.InfraComponents.DNS.ClusterName + "." + infra.Spec.InfraComponents.DNS.BaseDomain
+
+	// Get the control plane namespace
+	controlPlaneNamespace := proxySpec.ControlPlaneNamespace
+	if controlPlaneNamespace == "" {
+		controlPlaneNamespace = infra.Namespace + "-" + infra.Name
+	}
+
+	// Build backends for standard HCP services
+	// These are the core services that need to be proxied through SNI-based routing
+	backends := []hostedclusterv1alpha1.ProxyBackend{
+		{
+			Name:            "kube-apiserver",
+			Hostname:        "api." + hostedClusterDomain,
+			Port:            443,
+			TargetService:   "kube-apiserver",
+			TargetPort:      6443,
+			TargetNamespace: controlPlaneNamespace,
+			Protocol:        "TCP",
+			TimeoutSeconds:  30,
+		},
+		{
+			Name:            "kube-apiserver-internal",
+			Hostname:        "api-int." + hostedClusterDomain,
+			Port:            443,
+			TargetService:   "kube-apiserver",
+			TargetPort:      6443,
+			TargetNamespace: controlPlaneNamespace,
+			Protocol:        "TCP",
+			TimeoutSeconds:  30,
+		},
+		{
+			Name:            "oauth-openshift",
+			Hostname:        "oauth." + hostedClusterDomain,
+			Port:            443,
+			TargetService:   "oauth-openshift",
+			TargetPort:      6443,
+			TargetNamespace: controlPlaneNamespace,
+			Protocol:        "TCP",
+			TimeoutSeconds:  30,
+		},
+		{
+			Name:            "ignition",
+			Hostname:        "ignition." + hostedClusterDomain,
+			Port:            443,
+			TargetService:   "ignition",
+			TargetPort:      22623,
+			TargetNamespace: controlPlaneNamespace,
+			Protocol:        "TCP",
+			TimeoutSeconds:  30,
+		},
+		{
+			Name:            "konnectivity",
+			Hostname:        "konnectivity." + hostedClusterDomain,
+			Port:            443,
+			TargetService:   "konnectivity",
+			TargetPort:      8132,
+			TargetNamespace: controlPlaneNamespace,
+			Protocol:        "TCP",
+			TimeoutSeconds:  30,
+		},
+	}
+
+	return &hostedclusterv1alpha1.ProxyServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      infra.Name + "-proxy",
+			Namespace: infra.Namespace,
+		},
+		Spec: hostedclusterv1alpha1.ProxyServerSpec{
+			NetworkConfig: hostedclusterv1alpha1.ProxyNetworkConfig{
+				ServerIP:                   proxySpec.ServerIP,
+				NetworkAttachmentName:      nadName,
+				NetworkAttachmentNamespace: nadNamespace,
+			},
+			Backends:     backends,
+			ProxyImage:   proxySpec.ProxyImage,
+			ManagerImage: proxySpec.ManagerImage,
+			Port:         443,
+			XDSPort:      18000,
+			LogLevel:     "info",
+		},
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.Infra{}).
 		Owns(&hostedclusterv1alpha1.DHCPServer{}).
 		Owns(&hostedclusterv1alpha1.DNSServer{}).
+		Owns(&hostedclusterv1alpha1.ProxyServer{}).
 		Named("infra").
 		Complete(r)
 }
