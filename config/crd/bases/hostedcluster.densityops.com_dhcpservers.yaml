@@ -106,9 +106,11 @@ spec:
                       NetworkAttachmentDefinition
                     type: string
                   serverIP:
-                    description: ServerIP is the static IP address assigned to the
-                      DHCP server
-                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
+                    description: |-
+                      ServerIP is the static IP address assigned to the DHCP server
+                      Can be specified with or without CIDR notation (e.g., "192.168.1.2" or "192.168.1.2/24")
+                      If CIDR is omitted, /24 will be assumed for static IPAM
+                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?$
                     type: string
                 required:
                 - cidr

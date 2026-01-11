@@ -120,28 +120,91 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= oooi-test-e2e
 
+# E2E test configuration for CNI plugins
+CALICO_VERSION ?= v3.29.1
+MULTUS_VERSION ?= v4.2.3
+PODMAN_RUNTIME ?= false
+
+# Detect podman availability
+PODMAN_AVAILABLE := $(shell command -v podman >/dev/null 2>&1 && echo true || echo false)
+
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+setup-test-e2e: kind ## Set up a Kind cluster with OVN-Kubernetes and Multus CNI for e2e tests
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
 	@case "$$($(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
+			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Ensuring CNI setup..."; \
+			$(MAKE) install-cni-plugins; \
+			$(MAKE) install-calico; \
+			$(MAKE) install-multus; \
+			$(MAKE) create-test-nads; \
+			;; \
 		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+			echo "Creating Kind cluster '$(KIND_CLUSTER)' with Calico and Multus CNI..."; \
+			if [ "$(PODMAN_AVAILABLE)" = "true" ] && [ "$(PODMAN_RUNTIME)" = "true" ]; then \
+				echo "Using podman runtime..."; \
+				$(KIND) create cluster --name $(KIND_CLUSTER) --config hack/kind-config-podman.yaml; \
+			else \
+				$(KIND) create cluster --name $(KIND_CLUSTER) --config hack/kind-config.yaml; \
+			fi; \
+			echo "Waiting for cluster to be ready..."; \
+			sleep 10; \
+			$(MAKE) install-cni-plugins; \
+			$(MAKE) install-calico; \
+			$(MAKE) install-multus; \
+			$(MAKE) create-test-nads; \
+		esac
+
+.PHONY: install-cni-plugins
+install-cni-plugins: ## Install additional CNI plugins (ipvlan, macvlan, etc.) in the Kind cluster
+	@echo "Installing additional CNI plugins..."
+	@bash test/e2e/install-cni-plugins.sh $(KIND_CLUSTER)
+	@echo "CNI plugins installed successfully"
+
+.PHONY: install-calico
+install-calico: ## Install Calico CNI in the Kind cluster
+	@echo "Installing Calico CNI..."
+	kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.1/manifests/calico.yaml
+	@echo "Waiting for Calico pods to be ready..."
+	kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout=300s || true
+	kubectl wait --for=condition=ready pod -l k8s-app=calico-kube-controllers -n kube-system --timeout=300s || true
+	@echo "Calico CNI installed successfully"
+
+.PHONY: install-multus
+install-multus: ## Install Multus CNI thin plugin in the Kind cluster
+	@echo "Installing Multus CNI v$(MULTUS_VERSION)..."
+	kubectl apply -f "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/$(MULTUS_VERSION)/deployments/multus-daemonset.yml"
+	@echo "Waiting for Multus to be ready..."
+	kubectl wait --for=condition=ready pod -l app=multus -n kube-system --timeout=300s || true
+	@echo "Multus CNI installed successfully"
+
+.PHONY: create-test-nads
+create-test-nads: ## Create test NetworkAttachmentDefinitions for secondary networks
+	@echo "Creating oooi-system namespace if it doesn't exist..."
+	kubectl create namespace oooi-system --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Creating test NetworkAttachmentDefinitions..."
+	kubectl apply -f test/e2e/test-nads.yaml
+	@echo "Test NADs created successfully"
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+	KIND_CLUSTER=$(KIND_CLUSTER) CERT_MANAGER_INSTALL_SKIP=true go test ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: cleanup-test-e2e-deep
+cleanup-test-e2e-deep: ## Deep cleanup including removal of cached images and volumes
+	@echo "Performing deep cleanup of e2e test environment..."
+	@$(KIND) delete cluster --name $(KIND_CLUSTER) || true
+	@docker system prune -f || true
+	@podman system prune -f || true
+	@echo "Deep cleanup completed"
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -171,6 +234,21 @@ run: manifests generate fmt vet ## Run the manager from your host.
 .PHONY: container-build
 container-build: manifests generate fmt vet ko ## Build container image with ko for multi-arch support.
 	KO_DOCKER_REPO=$(IMAGE_TAG_BASE) KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 $(KO) build --platform linux/amd64,linux/arm64 --preserve-import-paths=false --bare=true .
+
+.PHONY: container-build-e2e
+container-build-e2e: manifests generate fmt vet ko ## Build container image locally for e2e tests.
+	@echo "Building image with ko..."
+	@KO_IMAGE=$$(KO_DOCKER_REPO=ko.local KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 $(KO) build --local --preserve-import-paths=false --bare=true . 2>&1 | tail -1); \
+	echo "Built image: $$KO_IMAGE"; \
+	echo "Tagging image as $(IMG)..."; \
+	if command -v podman >/dev/null 2>&1; then \
+		podman tag $$KO_IMAGE $(IMG); \
+	elif command -v docker >/dev/null 2>&1; then \
+		docker tag $$KO_IMAGE $(IMG); \
+	else \
+		echo "Error: Neither podman nor docker found"; \
+		exit 1; \
+	fi
 
 .PHONY: container-push
 container-push: ## Push container image with the manager.
@@ -279,6 +357,20 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 ko: $(KO) ## Download ko locally if necessary.
 $(KO): $(LOCALBIN)
 	test -s $(LOCALBIN)/ko || GOBIN=$(LOCALBIN) go install github.com/google/ko@latest
+
+.PHONY: kind
+kind: ## Download kind locally if necessary.
+ifeq (,$(wildcard $(LOCALBIN)/kind))
+ifeq (, $(shell which kind 2>/dev/null))
+	@{ \
+	set -e ;\
+	mkdir -p $(dir $(LOCALBIN)) ;\
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/kind@latest ;\
+	}
+else
+KIND = $(shell which kind)
+endif
+endif
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

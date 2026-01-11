@@ -19,9 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,12 +42,73 @@ type ProxyServerReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// newProxyServiceAccount creates a ServiceAccount for the proxy pods
+func (r *ProxyServerReconciler) newProxyServiceAccount(proxyServer *hostedclusterv1alpha1.ProxyServer) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxyServer.Name + "-proxy",
+			Namespace: proxyServer.Namespace,
+			Labels: map[string]string{
+				"app": "proxy-server",
+			},
+		},
+	}
+}
+
+// newProxyRole creates a Role with permissions to list/watch ProxyServer resources
+func (r *ProxyServerReconciler) newProxyRole(proxyServer *hostedclusterv1alpha1.ProxyServer) *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxyServer.Name + "-proxy",
+			Namespace: proxyServer.Namespace,
+			Labels: map[string]string{
+				"app": "proxy-server",
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"hostedcluster.densityops.com"},
+				Resources: []string{"proxyservers"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+		},
+	}
+}
+
+// newProxyRoleBinding creates a RoleBinding linking the ServiceAccount to the Role
+func (r *ProxyServerReconciler) newProxyRoleBinding(proxyServer *hostedclusterv1alpha1.ProxyServer) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxyServer.Name + "-proxy",
+			Namespace: proxyServer.Namespace,
+			Labels: map[string]string{
+				"app": "proxy-server",
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     proxyServer.Name + "-proxy",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      proxyServer.Name + "-proxy",
+				Namespace: proxyServer.Namespace,
+			},
+		},
+	}
+}
+
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -66,7 +129,7 @@ func (r *ProxyServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Get the Service to retrieve its ClusterIP for status
-	serviceName := proxyServer.Name + "-proxy"
+	serviceName := proxyServer.Name
 	foundService := &corev1.Service{}
 	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: proxyServer.Namespace}, foundService); err != nil {
 		log.Error(err, "unable to fetch proxy Service for status update")
@@ -76,7 +139,7 @@ func (r *ProxyServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Update status
 	proxyServer.Status.ObservedGeneration = proxyServer.Generation
 	proxyServer.Status.ConfigMapName = proxyServer.Name + "-proxy-bootstrap"
-	proxyServer.Status.DeploymentName = proxyServer.Name + "-proxy"
+	proxyServer.Status.DeploymentName = proxyServer.Name
 	proxyServer.Status.ServiceName = serviceName
 	proxyServer.Status.ServiceIP = foundService.Spec.ClusterIP
 	proxyServer.Status.BackendCount = int32(len(proxyServer.Spec.Backends))
@@ -102,6 +165,50 @@ func (r *ProxyServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // ensureProxyDeployment ensures that a proxy deployment and all required resources exist
 func (r *ProxyServerReconciler) ensureProxyDeployment(ctx context.Context, proxyServer *hostedclusterv1alpha1.ProxyServer) error {
 	log := logf.FromContext(ctx)
+
+	// Ensure ServiceAccount
+	serviceAccount := r.newProxyServiceAccount(proxyServer)
+	if err := ctrl.SetControllerReference(proxyServer, serviceAccount, r.Scheme); err != nil {
+		log.Error(err, "unable to set owner reference on ServiceAccount")
+		return err
+	}
+	if err := r.createOrUpdateWithRetries(ctx, serviceAccount, func() error {
+		return ctrl.SetControllerReference(proxyServer, serviceAccount, r.Scheme)
+	}); err != nil {
+		log.Error(err, "unable to ensure ServiceAccount")
+		return err
+	}
+
+	// Ensure Role with ProxyServer permissions
+	role := r.newProxyRole(proxyServer)
+	if err := ctrl.SetControllerReference(proxyServer, role, r.Scheme); err != nil {
+		log.Error(err, "unable to set owner reference on Role")
+		return err
+	}
+	if err := r.createOrUpdateWithRetries(ctx, role, func() error {
+		desiredRole := r.newProxyRole(proxyServer)
+		role.Rules = desiredRole.Rules
+		return ctrl.SetControllerReference(proxyServer, role, r.Scheme)
+	}); err != nil {
+		log.Error(err, "unable to ensure Role")
+		return err
+	}
+
+	// Ensure RoleBinding
+	roleBinding := r.newProxyRoleBinding(proxyServer)
+	if err := ctrl.SetControllerReference(proxyServer, roleBinding, r.Scheme); err != nil {
+		log.Error(err, "unable to set owner reference on RoleBinding")
+		return err
+	}
+	if err := r.createOrUpdateWithRetries(ctx, roleBinding, func() error {
+		desiredRoleBinding := r.newProxyRoleBinding(proxyServer)
+		roleBinding.RoleRef = desiredRoleBinding.RoleRef
+		roleBinding.Subjects = desiredRoleBinding.Subjects
+		return ctrl.SetControllerReference(proxyServer, roleBinding, r.Scheme)
+	}); err != nil {
+		log.Error(err, "unable to ensure RoleBinding")
+		return err
+	}
 
 	// Ensure ConfigMap with Envoy bootstrap config
 	configMap := r.newEnvoyBootstrapConfigMap(proxyServer)
@@ -299,9 +406,22 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 		nadNamespace = proxyServer.Namespace
 	}
 
+	// Build network attachment annotation with static IP
+	// Format: [{"name": "<nad-name>", "namespace": "<nad-namespace>", "ips": ["<ip>/<prefix>"]}]
+	networkAnnotation := fmt.Sprintf(`[
+  {
+    "name": "%s",
+    "namespace": "%s",
+    "ips": ["%s"]
+  }
+]`,
+		nadName,
+		nadNamespace,
+		ensureIPWithCIDR(proxyServer.Spec.NetworkConfig.ServerIP))
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyServer.Name + "-proxy",
+			Name:      proxyServer.Name,
 			Namespace: proxyServer.Namespace,
 			Labels:    labels,
 		},
@@ -314,11 +434,11 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 					Annotations: map[string]string{
-						"k8s.v1.cni.cncf.io/networks": fmt.Sprintf("%s/%s", nadNamespace, nadName),
+						"k8s.v1.cni.cncf.io/networks": networkAnnotation,
 					},
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "default",
+					ServiceAccountName: proxyServer.Name + "-proxy",
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &runAsNonRoot,
 					},
@@ -367,8 +487,7 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 						{
 							Name:  "manager",
 							Image: managerImage,
-							Command: []string{
-								"/oooi",
+							Args: []string{
 								"proxy",
 								"--xds-port", fmt.Sprintf("%d", xdsPort),
 								"--namespace", proxyServer.Namespace,
@@ -424,7 +543,7 @@ func (r *ProxyServerReconciler) newProxyService(proxyServer *hostedclusterv1alph
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyServer.Name + "-proxy",
+			Name:      proxyServer.Name,
 			Namespace: proxyServer.Namespace,
 			Labels:    labels,
 		},
@@ -488,12 +607,25 @@ func (r *ProxyServerReconciler) createOrUpdateWithRetries(ctx context.Context, o
 }
 
 // SetupWithManager sets up the controller with the Manager.
+
+// ensureIPWithCIDR ensures an IP address has CIDR notation
+// If the IP already has CIDR notation (contains '/'), returns as-is
+// Otherwise, appends /24 as default
+func ensureIPWithCIDR(ip string) string {
+	if strings.Contains(ip, "/") {
+		return ip
+	}
+	return ip + "/24"
+}
 func (r *ProxyServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.ProxyServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Named("proxyserver").
 		Complete(r)
 }

@@ -65,8 +65,10 @@ type ProxyServerSpec struct {
 // ProxyNetworkConfig defines the network configuration for the proxy server
 type ProxyNetworkConfig struct {
 	// ServerIP is the static IP address assigned to the proxy server on the secondary network
+	// Can be specified with or without CIDR notation (e.g., "192.168.1.4" or "192.168.1.4/24")
+	// If CIDR is omitted, /24 will be assumed for static IPAM
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`
+	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?$`
 	ServerIP string `json:"serverIP"`
 
 	// NetworkAttachmentName is the name of the NetworkAttachmentDefinition to attach

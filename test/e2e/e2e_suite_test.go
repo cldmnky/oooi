@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -37,9 +38,14 @@ var (
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
 
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
-	projectImage = "example.com/oooi:v0.0.1"
+	// projectImage is the name of the image which will be built and loaded
+	// with the code source changes to be tested. Allow override via env var IMG.
+	projectImage = func() string {
+		if v := os.Getenv("IMG"); v != "" {
+			return v
+		}
+		return "quay.io/cldmnky/oooi:latest"
+	}()
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -53,8 +59,25 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	By("verifying Multus CNI is installed")
+	if !utils.IsMultusInstalled() {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Installing Multus CNI...\n")
+		Expect(utils.InstallMultus()).To(Succeed(), "Failed to install Multus CNI")
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Multus CNI is already installed\n")
+	}
+
+	By("creating test NetworkAttachmentDefinitions")
+	Expect(utils.CreateTestNADs()).To(Succeed(), "Failed to create test NADs")
+
+	By("verifying test NADs are ready")
+	Eventually(func(g Gomega) {
+		g.Expect(utils.IsNADReady("test-vlan-100", namespace)).To(BeTrue())
+		g.Expect(utils.IsNADReady("test-vlan-200", namespace)).To(BeTrue())
+	}, 2*time.Minute, time.Second).Should(Succeed())
+
 	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "container-build")
+	cmd := exec.Command("make", "container-build-e2e")
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 

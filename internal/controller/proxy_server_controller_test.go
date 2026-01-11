@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -147,7 +148,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("checking that Deployment was created")
 			deployment := &appsv1.Deployment{}
 			deploymentName := types.NamespacedName{
-				Name:      proxyServerName + "-proxy",
+				Name:      proxyServerName,
 				Namespace: proxyServerNamespace,
 			}
 			Eventually(func() error {
@@ -194,20 +195,25 @@ var _ = Describe("ProxyServer Controller", func() {
 			}
 			Expect(managerContainer).NotTo(BeNil())
 			Expect(managerContainer.Image).To(Equal("quay.io/cldmnky/oooi:test"))
-			Expect(managerContainer.Command).To(ContainElement("/oooi"))
-			Expect(managerContainer.Command).To(ContainElement("proxy"))
-			Expect(managerContainer.Command).To(ContainElement("--xds-port"))
-			Expect(managerContainer.Command).To(ContainElement("18000"))
+			Expect(managerContainer.Args).To(ContainElement("proxy"))
+			Expect(managerContainer.Args).To(ContainElement("--xds-port"))
+			Expect(managerContainer.Args).To(ContainElement("18000"))
 
 			By("verifying Deployment has Multus network annotation")
 			Expect(deployment.Spec.Template.Annotations).To(HaveKey("k8s.v1.cni.cncf.io/networks"))
-			expectedNetworkAnnotation := "default/tenant-network"
+			expectedNetworkAnnotation := `[
+  {
+    "name": "tenant-network",
+    "namespace": "default",
+    "ips": ["10.10.10.3/24"]
+  }
+]`
 			Expect(deployment.Spec.Template.Annotations["k8s.v1.cni.cncf.io/networks"]).To(Equal(expectedNetworkAnnotation))
 
 			By("checking that Service was created")
 			service := &corev1.Service{}
 			serviceName := types.NamespacedName{
-				Name:      proxyServerName + "-proxy",
+				Name:      proxyServerName,
 				Namespace: proxyServerNamespace,
 			}
 			Eventually(func() error {
@@ -240,8 +246,8 @@ var _ = Describe("ProxyServer Controller", func() {
 				return updatedProxyServer.Status.ConfigMapName
 			}, timeout, interval).Should(Equal(proxyServerName + "-proxy-bootstrap"))
 
-			Expect(updatedProxyServer.Status.DeploymentName).To(Equal(proxyServerName + "-proxy"))
-			Expect(updatedProxyServer.Status.ServiceName).To(Equal(proxyServerName + "-proxy"))
+			Expect(updatedProxyServer.Status.DeploymentName).To(Equal(proxyServerName))
+			Expect(updatedProxyServer.Status.ServiceName).To(Equal(proxyServerName))
 			Expect(updatedProxyServer.Status.BackendCount).To(Equal(int32(2)))
 			Expect(updatedProxyServer.Status.ServiceIP).NotTo(BeEmpty())
 			Expect(updatedProxyServer.Status.Conditions).To(HaveLen(1))
@@ -314,7 +320,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			service := &corev1.Service{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "multi-port-proxy-proxy",
+					Name:      "multi-port-proxy",
 					Namespace: proxyServerNamespace,
 				}, service)
 			}, timeout, interval).Should(Succeed())
@@ -328,7 +334,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("getting initial Deployment")
 			initialDeployment := &appsv1.Deployment{}
 			deploymentName := types.NamespacedName{
-				Name:      proxyServerName + "-proxy",
+				Name:      proxyServerName,
 				Namespace: proxyServerNamespace,
 			}
 
@@ -424,7 +430,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "invalid-proxy-proxy",
+					Name:      "invalid-proxy",
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -495,7 +501,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "custom-xds-proxy-proxy",
+					Name:      "custom-xds-proxy",
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -508,7 +514,7 @@ var _ = Describe("ProxyServer Controller", func() {
 				}
 			}
 			Expect(managerContainer).NotTo(BeNil())
-			Expect(managerContainer.Command).To(ContainElement("19000"))
+			Expect(managerContainer.Args).To(ContainElement("19000"))
 		})
 
 		It("should handle deletion via owner references", func() {
@@ -535,7 +541,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      proxyServerName + "-proxy",
+					Name:      proxyServerName,
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -543,7 +549,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			service := &corev1.Service{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      proxyServerName + "-proxy",
+					Name:      proxyServerName,
 					Namespace: proxyServerNamespace,
 				}, service)
 			}, timeout, interval).Should(Succeed())
@@ -619,7 +625,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "minimal-proxy-proxy",
+					Name:      "minimal-proxy",
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -653,7 +659,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			service := &corev1.Service{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "minimal-proxy-proxy",
+					Name:      "minimal-proxy",
 					Namespace: proxyServerNamespace,
 				}, service)
 			}, timeout, interval).Should(Succeed())
@@ -726,14 +732,133 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "no-nad-ns-proxy-proxy",
+					Name:      "no-nad-ns-proxy",
 					Namespace: "custom-namespace",
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
 
 			Expect(deployment.Spec.Template.Annotations).To(HaveKey("k8s.v1.cni.cncf.io/networks"))
 			// Should default to ProxyServer's namespace
-			Expect(deployment.Spec.Template.Annotations["k8s.v1.cni.cncf.io/networks"]).To(Equal("custom-namespace/tenant-network"))
+			expectedNetworkAnnotation := `[
+  {
+    "name": "tenant-network",
+    "namespace": "custom-namespace",
+    "ips": ["10.10.10.8/24"]
+  }
+]`
+			Expect(deployment.Spec.Template.Annotations["k8s.v1.cni.cncf.io/networks"]).To(Equal(expectedNetworkAnnotation))
+		})
+
+		It("should create RBAC resources for proxy pods", func() {
+			ctx := context.Background()
+			proxyServerName := "rbac-test-proxy"
+			proxyServerNamespace := "default"
+
+			By("creating a ProxyServer resource")
+			rbacProxy := &hostedclusterv1alpha1.ProxyServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      proxyServerName,
+					Namespace: proxyServerNamespace,
+				},
+				Spec: hostedclusterv1alpha1.ProxyServerSpec{
+					NetworkConfig: hostedclusterv1alpha1.ProxyNetworkConfig{
+						ServerIP:                   "10.10.10.100",
+						NetworkAttachmentName:      "tenant-network",
+						NetworkAttachmentNamespace: proxyServerNamespace,
+					},
+					Backends: []hostedclusterv1alpha1.ProxyBackend{
+						{
+							Name:            "test-backend",
+							Hostname:        "test.example.com",
+							Port:            6443,
+							TargetService:   "test-svc",
+							TargetPort:      6443,
+							TargetNamespace: "default",
+							Protocol:        "TCP",
+							TimeoutSeconds:  30,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rbacProxy)).To(Succeed())
+
+			defer func() {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: proxyServerName, Namespace: proxyServerNamespace}, rbacProxy)
+				if err == nil {
+					Expect(k8sClient.Delete(ctx, rbacProxy)).To(Succeed())
+				}
+			}()
+
+			By("reconciling the ProxyServer")
+			reconciler := &ProxyServerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      proxyServerName,
+					Namespace: proxyServerNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying ServiceAccount was created")
+			serviceAccount := &corev1.ServiceAccount{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      proxyServerName + "-proxy",
+					Namespace: proxyServerNamespace,
+				}, serviceAccount)
+			}, timeout, interval).Should(Succeed())
+			Expect(serviceAccount.Labels).To(HaveKeyWithValue("app", "proxy-server"))
+			Expect(serviceAccount.OwnerReferences).To(HaveLen(1))
+			Expect(serviceAccount.OwnerReferences[0].Name).To(Equal(proxyServerName))
+
+			By("verifying Role was created with ProxyServer permissions")
+			role := &rbacv1.Role{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      proxyServerName + "-proxy",
+					Namespace: proxyServerNamespace,
+				}, role)
+			}, timeout, interval).Should(Succeed())
+			Expect(role.Labels).To(HaveKeyWithValue("app", "proxy-server"))
+			Expect(role.OwnerReferences).To(HaveLen(1))
+			Expect(role.OwnerReferences[0].Name).To(Equal(proxyServerName))
+			// Verify role has permission to list and watch ProxyServers
+			Expect(role.Rules).To(HaveLen(1))
+			Expect(role.Rules[0].APIGroups).To(ContainElement("hostedcluster.densityops.com"))
+			Expect(role.Rules[0].Resources).To(ContainElement("proxyservers"))
+			Expect(role.Rules[0].Verbs).To(ContainElement("get"))
+			Expect(role.Rules[0].Verbs).To(ContainElement("list"))
+			Expect(role.Rules[0].Verbs).To(ContainElement("watch"))
+
+			By("verifying RoleBinding was created")
+			roleBinding := &rbacv1.RoleBinding{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      proxyServerName + "-proxy",
+					Namespace: proxyServerNamespace,
+				}, roleBinding)
+			}, timeout, interval).Should(Succeed())
+			Expect(roleBinding.Labels).To(HaveKeyWithValue("app", "proxy-server"))
+			Expect(roleBinding.OwnerReferences).To(HaveLen(1))
+			Expect(roleBinding.OwnerReferences[0].Name).To(Equal(proxyServerName))
+			Expect(roleBinding.RoleRef.Name).To(Equal(proxyServerName + "-proxy"))
+			Expect(roleBinding.RoleRef.Kind).To(Equal("Role"))
+			Expect(roleBinding.Subjects).To(HaveLen(1))
+			Expect(roleBinding.Subjects[0].Kind).To(Equal("ServiceAccount"))
+			Expect(roleBinding.Subjects[0].Name).To(Equal(proxyServerName + "-proxy"))
+
+			By("verifying Deployment uses the created ServiceAccount")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      proxyServerName,
+					Namespace: proxyServerNamespace,
+				}, deployment)
+			}, timeout, interval).Should(Succeed())
+			Expect(deployment.Spec.Template.Spec.ServiceAccountName).To(Equal(proxyServerName + "-proxy"))
 		})
 	})
 

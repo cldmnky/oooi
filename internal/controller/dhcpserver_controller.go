@@ -246,8 +246,7 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 	}
 
 	replicas := int32(1)
-	runAsUser := int64(1000)
-	privileged := true
+	runAsNonRoot := false
 
 	// Build network attachment annotation
 	// Format: [{"name": "<nad-name>", "namespace": "<nad-namespace>", "ips": ["<ip>/<prefix>"]}]
@@ -264,7 +263,7 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      dhcpServer.Name + "-dhcp",
+			Name:      dhcpServer.Name,
 			Namespace: dhcpServer.Namespace,
 			Labels:    labels,
 		},
@@ -282,13 +281,16 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: dhcpServer.Name + "-dhcp",
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &runAsNonRoot,
+					},
 					Containers: []corev1.Container{
 						{
 							Name:  "dhcp-server",
 							Image: dhcpServer.Spec.Image,
 							Args: []string{
-								"server",
-								"--config",
+								"dhcp",
+								"--config-file",
 								"/etc/dhcp/hyperdhcp.yaml",
 							},
 							Ports: []corev1.ContainerPort{
@@ -297,10 +299,6 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 									ContainerPort: 67,
 									Protocol:      corev1.ProtocolUDP,
 								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								RunAsUser:  &runAsUser,
-								Privileged: &privileged,
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{

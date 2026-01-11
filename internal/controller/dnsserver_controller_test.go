@@ -124,7 +124,7 @@ var _ = Describe("DNSServer Controller", func() {
 			By("verifying the Deployment was created")
 			deployment := &appsv1.Deployment{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-dns",
+				Name:      resourceName,
 				Namespace: resourceNamespace,
 			}, deployment)
 			Expect(err).NotTo(HaveOccurred())
@@ -203,7 +203,7 @@ var _ = Describe("DNSServer Controller", func() {
 			By("verifying the Service was created")
 			service := &corev1.Service{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-dns",
+				Name:      resourceName,
 				Namespace: resourceNamespace,
 			}, service)
 			Expect(err).NotTo(HaveOccurred())
@@ -246,7 +246,7 @@ var _ = Describe("DNSServer Controller", func() {
 
 			By("verifying status fields are populated")
 			Expect(dnsServer.Status.ConfigMapName).To(Equal(resourceName + "-dns-config"))
-			Expect(dnsServer.Status.DeploymentName).To(Equal(resourceName + "-dns"))
+			Expect(dnsServer.Status.DeploymentName).To(Equal(resourceName))
 			Expect(dnsServer.Status.ObservedGeneration).To(Equal(dnsServer.Generation))
 
 			By("verifying Ready condition is present")
@@ -693,7 +693,7 @@ var _ = Describe("DNSServer Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying ServiceName is populated")
-			Expect(dnsServer.Status.ServiceName).To(Equal(resourceName + "-dns"))
+			Expect(dnsServer.Status.ServiceName).To(Equal(resourceName))
 
 			By("verifying ServiceClusterIP is populated")
 			Expect(dnsServer.Status.ServiceClusterIP).NotTo(BeEmpty())

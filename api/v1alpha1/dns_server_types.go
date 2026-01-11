@@ -60,8 +60,10 @@ type DNSServerSpec struct {
 // DNSNetworkConfig defines the network configuration for the DNS server
 type DNSNetworkConfig struct {
 	// ServerIP is the static IP address assigned to the DNS server on the secondary network
+	// Can be specified with or without CIDR notation (e.g., "192.168.1.3" or "192.168.1.3/24")
+	// If CIDR is omitted, /24 will be assumed for static IPAM
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`
+	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?$`
 	ServerIP string `json:"serverIP"`
 
 	// ProxyIP is the IP address of the Envoy L4 proxy for external/multus network access

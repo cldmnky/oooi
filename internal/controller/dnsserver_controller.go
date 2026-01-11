@@ -43,7 +43,10 @@ type DNSServerReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -64,7 +67,7 @@ func (r *DNSServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Get the Service to retrieve its ClusterIP for status
-	serviceName := dnsServer.Name + "-dns"
+	serviceName := dnsServer.Name
 	foundService := &corev1.Service{}
 	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: dnsServer.Namespace}, foundService); err != nil {
 		log.Error(err, "unable to fetch DNS Service for status update")
@@ -74,7 +77,7 @@ func (r *DNSServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update status
 	dnsServer.Status.ObservedGeneration = dnsServer.Generation
 	dnsServer.Status.ConfigMapName = dnsServer.Name + "-dns-config"
-	dnsServer.Status.DeploymentName = dnsServer.Name + "-dns"
+	dnsServer.Status.DeploymentName = dnsServer.Name
 	dnsServer.Status.ServiceName = serviceName
 	dnsServer.Status.ServiceClusterIP = foundService.Spec.ClusterIP
 
@@ -113,6 +116,19 @@ func (r *DNSServerReconciler) ensureDNSDeployment(ctx context.Context, dnsServer
 		return ctrl.SetControllerReference(dnsServer, configMap, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure ConfigMap")
+		return err
+	}
+
+	// Ensure ServiceAccount
+	sa := r.newDNSServiceAccount(dnsServer)
+	if err := ctrl.SetControllerReference(dnsServer, sa, r.Scheme); err != nil {
+		log.Error(err, "unable to set owner reference on ServiceAccount")
+		return err
+	}
+	if err := r.createOrUpdateWithRetries(ctx, sa, func() error {
+		return ctrl.SetControllerReference(dnsServer, sa, r.Scheme)
+	}); err != nil {
+		log.Error(err, "unable to ensure ServiceAccount")
 		return err
 	}
 
@@ -194,86 +210,121 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 		secondaryCIDR = "192.168.0.0/16" // Default fallback
 	}
 
-	// Build default view content based on whether internal proxy is configured
-	var defaultViewContent string
-	if internalProxyIP != "" {
-		// Internal proxy configured - provide HCP records pointing to internal proxy
-		defaultViewContent = fmt.Sprintf(`        # HCP domain with static A records pointing to internal proxy
-        %s {
-            hosts {
-%s                fallthrough
-            }
-            forward . %s {
-                policy sequential
-                health_check 5s
-            }
-            cache %s
-        }
-        
-        # All other domains forward to upstream
-        . {
-            forward . %s
-            cache %s
-        }`, dnsServer.Spec.HostedClusterDomain, defaultHostsEntries.String(), upstream, cacheTTL, upstream, cacheTTL)
-	} else {
-		// No internal proxy - just forward all to upstream (HCP hidden)
-		defaultViewContent = fmt.Sprintf(`        # All queries forward to upstream DNS (no internal proxy configured)
-        . {
-            forward . %s
-            cache %s
-        }`, upstream, cacheTTL)
-	}
-
 	// Build Corefile using view plugin for source-based routing
+	// Each view gets its own server block with view directive at the top
 	// View plugin routes queries based on source IP address:
 	// - Multus view: Queries from secondary network CIDR see HCP pointing to external proxy
 	// - Default view: Queries from pod network see HCP pointing to internal proxy (if configured)
+
+	var corefileBody string
+	if internalProxyIP != "" {
+		// Internal proxy configured - provide HCP records pointing to internal proxy for default view
+		corefileBody = fmt.Sprintf(`# Multus view - traffic from secondary network (%s)
+# Routes VMs on isolated VLANs to external proxy
+.:%d {
+    view multus {
+        expr incidr(client_ip(), '%s')
+    }
+    
+    hosts {
+%s        fallthrough
+    }
+    
+    forward . %s {
+        policy sequential
+        health_check 5s
+    }
+    
+    cache %s
+    log
+    errors
+    reload %s
+}
+
+# Default view - traffic from pod network
+# Routes management cluster pods to internal proxy
+.:%d {
+    view default {
+        expr true
+    }
+    
+    hosts {
+%s        fallthrough
+    }
+    
+    forward . %s {
+        policy sequential
+        health_check 5s
+    }
+    
+    cache %s
+    log
+    errors
+    reload %s
+}
+
+# Shared health/metrics endpoints
+.:8181 {
+    ready
+}
+
+.:8080 {
+    health
+}`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, defaultHostsEntries.String(), upstream, cacheTTL, reloadInterval)
+	} else {
+		// No internal proxy - default view just forwards to upstream (HCP hidden from management cluster)
+		corefileBody = fmt.Sprintf(`# Multus view - traffic from secondary network (%s)
+# Routes VMs on isolated VLANs to external proxy
+.:%d {
+    view multus {
+        expr incidr(client_ip(), '%s')
+    }
+    
+    hosts {
+%s        fallthrough
+    }
+    
+    forward . %s {
+        policy sequential
+        health_check 5s
+    }
+    
+    cache %s
+    log
+    errors
+    reload %s
+}
+
+# Default view - traffic from pod network
+# No internal proxy configured, all traffic forwarded to upstream
+.:%d {
+    view default {
+        expr true
+    }
+    
+    forward . %s
+    cache %s
+    log
+    errors
+    reload %s
+}
+
+# Shared health/metrics endpoints
+.:8181 {
+    ready
+}
+
+.:8080 {
+    health
+}`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, upstream, cacheTTL, reloadInterval)
+	}
+
 	corefile := fmt.Sprintf(`# Hosted Control Plane dual-view split-horizon DNS using view plugin
 # Source-based routing with two proxy targets:
 # - Multus view (VMs): queries from %s → HCP resolves to external proxy
 # - Default view (Pods): queries from pod network → HCP resolves to internal proxy
 
-.:%d {
-    # View plugin for source-based routing
-    view multus {
-        # Match queries from secondary network CIDR (tenant VMs)
-        expr incidr(client_ip(), '%s')
-        
-        # HCP domain with static A records pointing to external proxy
-        %s {
-            hosts {
-%s                fallthrough
-            }
-            forward . %s {
-                policy sequential
-                health_check 5s
-            }
-            cache %s
-        }
-        
-        # All other domains forward to upstream
-        . {
-            forward . %s
-            cache %s
-        }
-    }
-    
-    # Default view for all other sources (pod network)
-    view default {
-%s
-    }
-    
-    # Shared plugins (apply to all views)
-    log
-    errors
-    reload %s
-    ready :8181
-    health :8080
-}
-`, secondaryCIDR, dnsPort, secondaryCIDR,
-		dnsServer.Spec.HostedClusterDomain, multusHostsEntries.String(), upstream, cacheTTL,
-		upstream, cacheTTL,
-		defaultViewContent, reloadInterval)
+%s`, secondaryCIDR, corefileBody)
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -289,6 +340,19 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 	}
 }
 
+// newDNSServiceAccount returns a ServiceAccount object for the DNS server
+func (r *DNSServerReconciler) newDNSServiceAccount(dnsServer *hostedclusterv1alpha1.DNSServer) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dnsServer.Name + "-dns",
+			Namespace: dnsServer.Namespace,
+			Labels: map[string]string{
+				"app": dnsServer.Name,
+			},
+		},
+	}
+}
+
 // newDNSDeployment returns a Deployment object for the DNS server
 func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.DNSServer) *appsv1.Deployment {
 	labels := map[string]string{
@@ -297,8 +361,7 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 	}
 
 	replicas := int32(1)
-	runAsUser := int64(1000)
-	privileged := true
+	runAsNonRoot := false
 
 	// Get DNS port (default to 53)
 	dnsPort := dnsServer.Spec.NetworkConfig.DNSPort
@@ -309,6 +372,11 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 	// Build network attachment annotation if NetworkAttachmentName is specified
 	annotations := make(map[string]string)
 	if dnsServer.Spec.NetworkConfig.NetworkAttachmentName != "" {
+		// Ensure IP has CIDR notation for static IPAM
+		serverIP := dnsServer.Spec.NetworkConfig.ServerIP
+		if !strings.Contains(serverIP, "/") {
+			serverIP = serverIP + "/24" // default to /24
+		}
 		networkAnnotation := fmt.Sprintf(`[
   {
     "name": "%s",
@@ -318,13 +386,13 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 ]`,
 			dnsServer.Spec.NetworkConfig.NetworkAttachmentName,
 			dnsServer.Spec.NetworkConfig.NetworkAttachmentNamespace,
-			dnsServer.Spec.NetworkConfig.ServerIP)
+			serverIP)
 		annotations["k8s.v1.cni.cncf.io/networks"] = networkAnnotation
 	}
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      dnsServer.Name + "-dns",
+			Name:      dnsServer.Name,
 			Namespace: dnsServer.Namespace,
 			Labels:    labels,
 		},
@@ -339,6 +407,10 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: dnsServer.Name + "-dns",
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &runAsNonRoot,
+					},
 					Containers: []corev1.Container{
 						{
 							Name:  "dns-server",
@@ -369,10 +441,6 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 									ContainerPort: 8181,
 									Protocol:      corev1.ProtocolTCP,
 								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								RunAsUser:  &runAsUser,
-								Privileged: &privileged,
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -442,7 +510,7 @@ func (r *DNSServerReconciler) newDNSService(dnsServer *hostedclusterv1alpha1.DNS
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      dnsServer.Name + "-dns",
+			Name:      dnsServer.Name,
 			Namespace: dnsServer.Namespace,
 			Labels:    labels,
 		},

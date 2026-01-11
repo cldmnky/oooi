@@ -1,0 +1,31 @@
+# OVN-Kubernetes Helm values for Kind e2e testing
+# Simplified configuration to avoid CEL validation cost issues
+
+# Disable interconnect mode for simplicity
+global:
+  enableInterconnect: false
+  enableMultiNetwork: false
+  enableNetworkSegmentation: false
+  enableMultiExternalGateway: false
+  image:
+    repository: "ghcr.io/ovn-kubernetes/ovn-kubernetes/ovn-kube-ubuntu"
+    tag: "master"
+    pullPolicy: "IfNotPresent"
+
+# Monitoring configuration (required by templates)
+monitoring:
+  enabled: false
+  commonServiceMonitorSelectorLabels: {}
+
+# Skip CallToK8s validation to avoid issues with Helm template
+skipCallToK8s: true
+
+# Tags to control which subcharts are installed
+tags:
+  ovnkube-db-raft: true
+  ovnkube-control-plane: false
+  ovnkube-single-node-zone: false
+  ovnkube-zone-controller: false
+  ovnkube-node-dpu: false
+  ovnkube-node-dpu-host: false
+  ovn-ipsec: false

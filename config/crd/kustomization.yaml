@@ -3,6 +3,9 @@
 # It should be run by config/default
 resources:
 - bases/hostedcluster.densityops.com_infras.yaml
+- bases/hostedcluster.densityops.com_dhcpservers.yaml
+- bases/hostedcluster.densityops.com_dnsservers.yaml
+- bases/hostedcluster.densityops.com_proxyservers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
