@@ -236,7 +236,7 @@ container-build: manifests generate fmt vet ko ## Build container image with ko 
 	KO_DOCKER_REPO=$(IMAGE_TAG_BASE) KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 $(KO) build --platform linux/amd64,linux/arm64 --preserve-import-paths=false --bare=true .
 
 .PHONY: container-build-e2e
-container-build-e2e: manifests generate fmt vet ko ## Build container image locally for e2e tests.
+container-build-e2e: manifests generate fmt vet ## Build container image locally for e2e tests.
 	@echo "Building image with ko..."
 	@KO_IMAGE=$$(KO_DOCKER_REPO=ko.local KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 $(KO) build --local --preserve-import-paths=false --bare=true . 2>&1 | tail -1); \
 	echo "Built image: $$KO_IMAGE"; \

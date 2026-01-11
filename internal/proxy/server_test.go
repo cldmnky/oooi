@@ -193,7 +193,7 @@ func TestXDSServer_UpdateProxyConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-			xs, err := NewXDSServer(k8sClient, 18000)
+			xs, err := NewXDSServer(k8sClient, 0) // Use dynamic port allocation
 			require.NoError(t, err)
 			defer xs.Stop()
 
@@ -667,7 +667,7 @@ func TestXDSServer_WatchProxyServers(t *testing.T) {
 				WithObjects(objects...).
 				Build()
 
-			xs, err := NewXDSServer(k8sClient, 18002)
+			xs, err := NewXDSServer(k8sClient, 0) // Use dynamic port allocation
 			require.NoError(t, err)
 			defer xs.Stop()
 
@@ -697,7 +697,7 @@ func TestXDSServer_Stop(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	xs, err := NewXDSServer(k8sClient, 18003)
+	xs, err := NewXDSServer(k8sClient, 0) // Use dynamic port allocation
 	require.NoError(t, err)
 	require.NotNil(t, xs.grpcServer)
 
@@ -721,7 +721,7 @@ func TestXDSServer_ConcurrentUpdates(t *testing.T) {
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	xs, err := NewXDSServer(k8sClient, 18004)
+	xs, err := NewXDSServer(k8sClient, 0) // Use dynamic port allocation
 	require.NoError(t, err)
 	defer xs.Stop()
 
