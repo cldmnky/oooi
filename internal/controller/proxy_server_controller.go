@@ -129,7 +129,7 @@ func (r *ProxyServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Get the Service to retrieve its ClusterIP for status
-	serviceName := proxyServer.Name + "-proxy"
+	serviceName := proxyServer.Name
 	foundService := &corev1.Service{}
 	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: proxyServer.Namespace}, foundService); err != nil {
 		log.Error(err, "unable to fetch proxy Service for status update")
@@ -139,7 +139,7 @@ func (r *ProxyServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Update status
 	proxyServer.Status.ObservedGeneration = proxyServer.Generation
 	proxyServer.Status.ConfigMapName = proxyServer.Name + "-proxy-bootstrap"
-	proxyServer.Status.DeploymentName = proxyServer.Name + "-proxy"
+	proxyServer.Status.DeploymentName = proxyServer.Name
 	proxyServer.Status.ServiceName = serviceName
 	proxyServer.Status.ServiceIP = foundService.Spec.ClusterIP
 	proxyServer.Status.BackendCount = int32(len(proxyServer.Spec.Backends))
@@ -421,7 +421,7 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyServer.Name + "-proxy",
+			Name:      proxyServer.Name,
 			Namespace: proxyServer.Namespace,
 			Labels:    labels,
 		},
@@ -543,7 +543,7 @@ func (r *ProxyServerReconciler) newProxyService(proxyServer *hostedclusterv1alph
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyServer.Name + "-proxy",
+			Name:      proxyServer.Name,
 			Namespace: proxyServer.Namespace,
 			Labels:    labels,
 		},

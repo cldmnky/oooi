@@ -363,17 +363,17 @@ spec:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("testing DNS service is reachable via ClusterIP from pod network")
-			// Query the DNS server directly by its ClusterIP, targeting a known HCP hostname.
-			// We don't require successful resolution; we only verify the command runs against our DNS IP.
+			// Query the DNS server directly by its ClusterIP with a domain that should exist in any cluster.
+			// kubernetes.default.svc.cluster.local should resolve to 10.96.0.1 in any cluster.
 			dnsIPCmd := exec.Command("kubectl", "get", "service", "test-infra-dns", "-n", namespace, "-o", "jsonpath={.spec.clusterIP}")
 			dnsIP, err := utils.Run(dnsIPCmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to retrieve DNS service IP")
 			dnsIP = strings.TrimSpace(dnsIP)
 
 			Eventually(func(g Gomega) {
-				// Query the DNS server directly by its ClusterIP; use @<ip> syntax to force query to specific server
+				// Query kubernetes.default service which should exist and be resolvable
 				cmd := exec.Command("kubectl", "exec", "dns-test-pod-network", "-n", namespace, "--",
-					"sh", "-c", fmt.Sprintf("nslookup -type=A api.testcluster.example.com %s 2>&1 || true", dnsIP))
+					"sh", "-c", fmt.Sprintf("nslookup -type=A kubernetes.default %s 2>&1 || true", dnsIP))
 				output, _ := utils.Run(cmd)
 				// Verify the query targeted our DNS server (check for server IP in output)
 				g.Expect(output).NotTo(BeEmpty(), "nslookup should produce output")
@@ -399,14 +399,13 @@ spec:
     image: nicolaka/netshoot:latest
     command: ["sh", "-c", "sleep 600"]
     securityContext:
-      allowPrivilegeEscalation: false
-      runAsNonRoot: true
-      runAsUser: 1000
+      allowPrivilegeEscalation: true
+      runAsUser: 0
       seccompProfile:
         type: RuntimeDefault
       capabilities:
         drop: ["ALL"]
-        add: ["NET_RAW"]
+        add: ["NET_RAW", "NET_ADMIN", "SYS_PTRACE"]
   restartPolicy: Never
 `, namespace, namespace)
 

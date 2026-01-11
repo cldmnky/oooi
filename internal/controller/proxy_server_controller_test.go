@@ -148,7 +148,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("checking that Deployment was created")
 			deployment := &appsv1.Deployment{}
 			deploymentName := types.NamespacedName{
-				Name:      proxyServerName + "-proxy",
+				Name:      proxyServerName,
 				Namespace: proxyServerNamespace,
 			}
 			Eventually(func() error {
@@ -213,7 +213,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("checking that Service was created")
 			service := &corev1.Service{}
 			serviceName := types.NamespacedName{
-				Name:      proxyServerName + "-proxy",
+				Name:      proxyServerName,
 				Namespace: proxyServerNamespace,
 			}
 			Eventually(func() error {
@@ -246,8 +246,8 @@ var _ = Describe("ProxyServer Controller", func() {
 				return updatedProxyServer.Status.ConfigMapName
 			}, timeout, interval).Should(Equal(proxyServerName + "-proxy-bootstrap"))
 
-			Expect(updatedProxyServer.Status.DeploymentName).To(Equal(proxyServerName + "-proxy"))
-			Expect(updatedProxyServer.Status.ServiceName).To(Equal(proxyServerName + "-proxy"))
+			Expect(updatedProxyServer.Status.DeploymentName).To(Equal(proxyServerName))
+			Expect(updatedProxyServer.Status.ServiceName).To(Equal(proxyServerName))
 			Expect(updatedProxyServer.Status.BackendCount).To(Equal(int32(2)))
 			Expect(updatedProxyServer.Status.ServiceIP).NotTo(BeEmpty())
 			Expect(updatedProxyServer.Status.Conditions).To(HaveLen(1))
@@ -320,7 +320,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			service := &corev1.Service{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "multi-port-proxy-proxy",
+					Name:      "multi-port-proxy",
 					Namespace: proxyServerNamespace,
 				}, service)
 			}, timeout, interval).Should(Succeed())
@@ -334,7 +334,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("getting initial Deployment")
 			initialDeployment := &appsv1.Deployment{}
 			deploymentName := types.NamespacedName{
-				Name:      proxyServerName + "-proxy",
+				Name:      proxyServerName,
 				Namespace: proxyServerNamespace,
 			}
 
@@ -430,7 +430,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "invalid-proxy-proxy",
+					Name:      "invalid-proxy",
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -501,7 +501,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "custom-xds-proxy-proxy",
+					Name:      "custom-xds-proxy",
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -541,7 +541,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      proxyServerName + "-proxy",
+					Name:      proxyServerName,
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -549,7 +549,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			service := &corev1.Service{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      proxyServerName + "-proxy",
+					Name:      proxyServerName,
 					Namespace: proxyServerNamespace,
 				}, service)
 			}, timeout, interval).Should(Succeed())
@@ -625,7 +625,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "minimal-proxy-proxy",
+					Name:      "minimal-proxy",
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -659,7 +659,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			service := &corev1.Service{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "minimal-proxy-proxy",
+					Name:      "minimal-proxy",
 					Namespace: proxyServerNamespace,
 				}, service)
 			}, timeout, interval).Should(Succeed())
@@ -732,7 +732,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "no-nad-ns-proxy-proxy",
+					Name:      "no-nad-ns-proxy",
 					Namespace: "custom-namespace",
 				}, deployment)
 			}, timeout, interval).Should(Succeed())
@@ -854,7 +854,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			deployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      proxyServerName + "-proxy",
+					Name:      proxyServerName,
 					Namespace: proxyServerNamespace,
 				}, deployment)
 			}, timeout, interval).Should(Succeed())

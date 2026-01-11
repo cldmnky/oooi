@@ -113,7 +113,7 @@ var _ = Describe("DHCPServer Controller", func() {
 			By("verifying the Deployment was created")
 			deployment := &appsv1.Deployment{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-dhcp",
+				Name:      resourceName,
 				Namespace: resourceNamespace,
 			}, deployment)
 			Expect(err).NotTo(HaveOccurred())
@@ -199,7 +199,7 @@ var _ = Describe("DHCPServer Controller", func() {
 			By("verifying the Deployment was created with correct container args")
 			deployment := &appsv1.Deployment{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-dhcp",
+				Name:      resourceName,
 				Namespace: resourceNamespace,
 			}, deployment)
 			Expect(err).NotTo(HaveOccurred())

@@ -263,7 +263,7 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      dhcpServer.Name + "-dhcp",
+			Name:      dhcpServer.Name,
 			Namespace: dhcpServer.Namespace,
 			Labels:    labels,
 		},

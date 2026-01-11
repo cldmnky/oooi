@@ -67,7 +67,7 @@ func (r *DNSServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Get the Service to retrieve its ClusterIP for status
-	serviceName := dnsServer.Name + "-dns"
+	serviceName := dnsServer.Name
 	foundService := &corev1.Service{}
 	if err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: dnsServer.Namespace}, foundService); err != nil {
 		log.Error(err, "unable to fetch DNS Service for status update")
@@ -77,7 +77,7 @@ func (r *DNSServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update status
 	dnsServer.Status.ObservedGeneration = dnsServer.Generation
 	dnsServer.Status.ConfigMapName = dnsServer.Name + "-dns-config"
-	dnsServer.Status.DeploymentName = dnsServer.Name + "-dns"
+	dnsServer.Status.DeploymentName = dnsServer.Name
 	dnsServer.Status.ServiceName = serviceName
 	dnsServer.Status.ServiceClusterIP = foundService.Spec.ClusterIP
 
@@ -392,7 +392,7 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      dnsServer.Name + "-dns",
+			Name:      dnsServer.Name,
 			Namespace: dnsServer.Namespace,
 			Labels:    labels,
 		},
@@ -510,7 +510,7 @@ func (r *DNSServerReconciler) newDNSService(dnsServer *hostedclusterv1alpha1.DNS
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      dnsServer.Name + "-dns",
+			Name:      dnsServer.Name,
 			Namespace: dnsServer.Namespace,
 			Labels:    labels,
 		},
