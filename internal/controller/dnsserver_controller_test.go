@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"regexp"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -366,8 +365,8 @@ var _ = Describe("DNSServer Controller", func() {
 			}
 
 			By("cleaning up")
-			k8sClient.Delete(ctx, dnsServer)
-			k8sClient.Delete(ctx, namespace)
+			Expect(k8sClient.Delete(ctx, dnsServer)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, namespace)).To(Succeed())
 		})
 
 		It("should have separate hosts entries for each view", func() {
@@ -463,8 +462,8 @@ var _ = Describe("DNSServer Controller", func() {
 			Expect(internalIPCount).To(Equal(3), "Internal proxy IP should appear 3 times (one per endpoint)")
 
 			By("cleaning up")
-			k8sClient.Delete(ctx, dnsServer)
-			k8sClient.Delete(ctx, namespace)
+			Expect(k8sClient.Delete(ctx, dnsServer)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, namespace)).To(Succeed())
 		})
 	})
 
@@ -544,7 +543,10 @@ var _ = Describe("DNSServer Controller", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: resourceNamespace}, namespace)
 			if err == nil {
 				// Delete namespace (ignore errors if already being deleted)
-				k8sClient.Delete(ctx, namespace)
+				deleteErr := k8sClient.Delete(ctx, namespace)
+				if deleteErr != nil && !errors.IsNotFound(deleteErr) && !errors.IsConflict(deleteErr) {
+					Expect(deleteErr).NotTo(HaveOccurred())
+				}
 			}
 		})
 
@@ -671,7 +673,10 @@ var _ = Describe("DNSServer Controller", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: resourceNamespace}, namespace)
 			if err == nil {
 				// Delete namespace (ignore errors if already being deleted)
-				k8sClient.Delete(ctx, namespace)
+				deleteErr := k8sClient.Delete(ctx, namespace)
+				if deleteErr != nil && !errors.IsNotFound(deleteErr) && !errors.IsConflict(deleteErr) {
+					Expect(deleteErr).NotTo(HaveOccurred())
+				}
 			}
 		})
 
@@ -709,13 +714,6 @@ var _ = Describe("DNSServer Controller", func() {
 		})
 	})
 })
-
-// Helper function to extract regex match from string
-func extractMatch(text, pattern string) string {
-	re := regexp.MustCompile(pattern)
-	match := re.FindString(text)
-	return match
-}
 
 // Helper function to find a condition by type
 func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {

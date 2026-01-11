@@ -581,8 +581,3 @@ func (r *DNSServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("dnsserver").
 		Complete(r)
 }
-
-// ptr returns a pointer to the provided value
-func ptr(b bool) *bool {
-	return &b
-}

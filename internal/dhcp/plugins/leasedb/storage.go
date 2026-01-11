@@ -27,16 +27,21 @@ func loadDB(path string) (*sql.DB, error) {
 // loadRecords loads the DHCPv6/v4 Records global map with records stored on
 // the specified file. The records have to be one per line, a mac address and an
 // IP address.
+
 func loadRecords(db *sql.DB) (map[string]*Record, error) {
+	records := make(map[string]*Record)
 	rows, err := db.Query("SELECT mac, ip, expiry FROM leases4")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query leases database: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("failed to close rows: %w", cerr)
+		}
+	}()
 	var (
 		mac, ip string
 		expiry  int
-		records = make(map[string]*Record)
 	)
 	for rows.Next() {
 		if err := rows.Scan(&mac, &ip, &expiry); err != nil {
@@ -55,7 +60,7 @@ func loadRecords(db *sql.DB) (map[string]*Record, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed lease database row scanning: %w", err)
 	}
-	return records, nil
+	return records, err
 }
 
 // saveIPAddress writes out a lease to storage

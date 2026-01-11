@@ -17,11 +17,8 @@ limitations under the License.
 package e2e
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,9 +30,6 @@ import (
 
 // namespace where the project is deployed in
 const namespace = "oooi-system"
-
-// serviceAccountName created for the project
-const serviceAccountName = "oooi-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
 const metricsServiceName = "oooi-controller-manager-metrics-service"
@@ -182,7 +176,16 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("verifying metrics endpoint has port 8443")
-			cmd = exec.Command("kubectl", "get", "endpoints", metricsServiceName, "-n", namespace, "-o", "jsonpath={.subsets[0].ports[0].port}")
+			cmd = exec.Command(
+				"kubectl",
+				"get",
+				"endpoints",
+				metricsServiceName,
+				"-n",
+				namespace,
+				"-o",
+				"jsonpath={.subsets[0].ports[0].port}",
+			)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("8443"))
@@ -365,7 +368,16 @@ spec:
 			By("testing DNS service is reachable via ClusterIP from pod network")
 			// Query the DNS server directly by its ClusterIP with a domain that should exist in any cluster.
 			// kubernetes.default.svc.cluster.local should resolve to 10.96.0.1 in any cluster.
-			dnsIPCmd := exec.Command("kubectl", "get", "service", "test-infra-dns", "-n", namespace, "-o", "jsonpath={.spec.clusterIP}")
+			dnsIPCmd := exec.Command(
+				"kubectl",
+				"get",
+				"service",
+				"test-infra-dns",
+				"-n",
+				namespace,
+				"-o",
+				"jsonpath={.spec.clusterIP}",
+			)
 			dnsIP, err := utils.Run(dnsIPCmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to retrieve DNS service IP")
 			dnsIP = strings.TrimSpace(dnsIP)
@@ -435,8 +447,12 @@ spec:
 			Eventually(func(g Gomega) {
 				// Try to ping DNS server on secondary network (192.168.100.3)
 				// If ping fails due to capabilities, try nc (netcat) as alternative connectivity check
-				cmd := exec.Command("kubectl", "exec", "test-pod-nad", "-n", namespace, "--",
-					"sh", "-c", "ping -c 1 -W 2 192.168.100.3 2>&1 || nc -zv -w 2 192.168.100.3 53 2>&1 || nslookup -type=A localhost 192.168.100.3 2>&1 || echo 'Connectivity check attempted'")
+				connectivityCmd := "ping -c 1 -W 2 192.168.100.3 2>&1 || " +
+					"nc -zv -w 2 192.168.100.3 53 2>&1 || " +
+					"nslookup -type=A localhost 192.168.100.3 2>&1 || " +
+					"echo 'Connectivity check attempted'"
+				cmd := exec.Command("kubectl", "exec", "test-pod-nad", "-n", namespace,
+					"--", "sh", "-c", connectivityCmd)
 				output, _ := utils.Run(cmd)
 				_, _ = fmt.Fprintf(GinkgoWriter, "Secondary network connectivity check output: %s\n", output)
 				// Accept any non-empty output; actual connectivity verified by presence of DNS pod on net1
@@ -555,62 +571,3 @@ spec:
 		})
 	})
 })
-
-// serviceAccountToken returns a token for the specified service account in the given namespace.
-// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
-// and parsing the resulting token from the API response.
-func serviceAccountToken() (string, error) {
-	const tokenRequestRawString = `{
-		"apiVersion": "authentication.k8s.io/v1",
-		"kind": "TokenRequest"
-	}`
-
-	// Temporary file to store the token request
-	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
-	tokenRequestFile := filepath.Join("/tmp", secretName)
-	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
-	if err != nil {
-		return "", err
-	}
-
-	var out string
-	verifyTokenCreation := func(g Gomega) {
-		// Execute kubectl command to create the token
-		cmd := exec.Command("kubectl", "create", "--raw", fmt.Sprintf(
-			"/api/v1/namespaces/%s/serviceaccounts/%s/token",
-			namespace,
-			serviceAccountName,
-		), "-f", tokenRequestFile)
-
-		output, err := cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred())
-
-		// Parse the JSON output to extract the token
-		var token tokenRequest
-		err = json.Unmarshal(output, &token)
-		g.Expect(err).NotTo(HaveOccurred())
-
-		out = token.Status.Token
-	}
-	Eventually(verifyTokenCreation).Should(Succeed())
-
-	return out, err
-}
-
-// getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
-func getMetricsOutput() string {
-	By("getting the curl-metrics logs")
-	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-	metricsOutput, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
-	return metricsOutput
-}
-
-// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
-// containing only the token field that we need to extract.
-type tokenRequest struct {
-	Status struct {
-		Token string `json:"token"`
-	} `json:"status"`
-}

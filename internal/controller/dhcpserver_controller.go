@@ -95,7 +95,7 @@ func (r *DHCPServerReconciler) ensureDHCPDeployment(ctx context.Context, dhcpSer
 		log.Error(err, "unable to set owner reference on ConfigMap")
 		return err
 	}
-	if _, err := r.createOrUpdateWithRetries(ctx, configMap, func() error {
+	if err := r.createOrUpdateWithRetries(ctx, configMap, func() error {
 		desiredConfigMap := r.newDHCPConfigMap(dhcpServer)
 		configMap.Data = desiredConfigMap.Data
 		configMap.Labels = desiredConfigMap.Labels
@@ -111,7 +111,7 @@ func (r *DHCPServerReconciler) ensureDHCPDeployment(ctx context.Context, dhcpSer
 		log.Error(err, "unable to set owner reference on PVC")
 		return err
 	}
-	if _, err := r.createOrUpdateWithRetries(ctx, pvc, func() error {
+	if err := r.createOrUpdateWithRetries(ctx, pvc, func() error {
 		return ctrl.SetControllerReference(dhcpServer, pvc, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure PVC")
@@ -124,7 +124,7 @@ func (r *DHCPServerReconciler) ensureDHCPDeployment(ctx context.Context, dhcpSer
 		log.Error(err, "unable to set owner reference on ServiceAccount")
 		return err
 	}
-	if _, err := r.createOrUpdateWithRetries(ctx, sa, func() error {
+	if err := r.createOrUpdateWithRetries(ctx, sa, func() error {
 		return ctrl.SetControllerReference(dhcpServer, sa, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure ServiceAccount")
@@ -138,7 +138,7 @@ func (r *DHCPServerReconciler) ensureDHCPDeployment(ctx context.Context, dhcpSer
 		return err
 	}
 
-	if _, err := r.createOrUpdateWithRetries(ctx, deployment, func() error {
+	if err := r.createOrUpdateWithRetries(ctx, deployment, func() error {
 		return ctrl.SetControllerReference(dhcpServer, deployment, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure DHCP deployment")

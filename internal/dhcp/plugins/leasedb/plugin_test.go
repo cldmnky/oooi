@@ -156,7 +156,7 @@ func TestHandler4LeaseRenewal(t *testing.T) {
 	pluginState := &PluginState{}
 	pluginState.LeaseTime = 1 * time.Second
 	pluginState.Recordsv4 = make(map[string]*Record)
-	pluginState.registerBackingDB(":memory:")
+	require.NoError(t, pluginState.registerBackingDB(":memory:"))
 
 	// Add an expired lease
 	mac := net.HardwareAddr{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xf0}
@@ -165,7 +165,7 @@ func TestHandler4LeaseRenewal(t *testing.T) {
 		expires: int(time.Now().Add(-1 * time.Hour).Unix()),
 	}
 	pluginState.Recordsv4[mac.String()] = expiredRecord
-	pluginState.saveIPAddress(mac, expiredRecord)
+	require.NoError(t, pluginState.saveIPAddress(mac, expiredRecord))
 
 	// Request should renew the lease
 	req := &dhcpv4.DHCPv4{ClientHWAddr: mac}

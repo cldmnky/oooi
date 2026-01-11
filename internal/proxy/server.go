@@ -138,7 +138,6 @@ func (xs *XDSServer) UpdateProxyConfig(ctx context.Context, proxy *hostedcluster
 
 // buildEnvoyResources builds Envoy listeners and clusters from ProxyServer backends
 func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServer) ([]types.Resource, []types.Resource, error) {
-	var listeners []types.Resource
 	var clusters []types.Resource
 
 	// Group backends by port
@@ -147,6 +146,8 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 		backend := &proxy.Spec.Backends[i]
 		portBackends[backend.Port] = append(portBackends[backend.Port], backend)
 	}
+	listeners := make([]types.Resource, 0, len(portBackends))
+	clusters = make([]types.Resource, 0, len(proxy.Spec.Backends))
 
 	// Create listener for each unique port
 	for port, backends := range portBackends {

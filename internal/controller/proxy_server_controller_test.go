@@ -41,6 +41,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			proxyServerNamespace = "default"
 			timeout              = time.Second * 10
 			interval             = time.Millisecond * 250
+			managerContainerName = "manager"
 		)
 
 		ctx := context.Background()
@@ -188,7 +189,7 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("verifying Manager container configuration")
 			var managerContainer *corev1.Container
 			for i := range deployment.Spec.Template.Spec.Containers {
-				if deployment.Spec.Template.Spec.Containers[i].Name == "manager" {
+				if deployment.Spec.Template.Spec.Containers[i].Name == managerContainerName {
 					managerContainer = &deployment.Spec.Template.Spec.Containers[i]
 					break
 				}
@@ -508,7 +509,7 @@ var _ = Describe("ProxyServer Controller", func() {
 
 			var managerContainer *corev1.Container
 			for i := range deployment.Spec.Template.Spec.Containers {
-				if deployment.Spec.Template.Spec.Containers[i].Name == "manager" {
+				if deployment.Spec.Template.Spec.Containers[i].Name == managerContainerName {
 					managerContainer = &deployment.Spec.Template.Spec.Containers[i]
 					break
 				}
@@ -635,7 +636,7 @@ var _ = Describe("ProxyServer Controller", func() {
 				if deployment.Spec.Template.Spec.Containers[i].Name == "envoy" {
 					envoyContainer = &deployment.Spec.Template.Spec.Containers[i]
 				}
-				if deployment.Spec.Template.Spec.Containers[i].Name == "manager" {
+				if deployment.Spec.Template.Spec.Containers[i].Name == managerContainerName {
 					managerContainer = &deployment.Spec.Template.Spec.Containers[i]
 				}
 			}

@@ -45,5 +45,6 @@ func TestConfigFilePointer(t *testing.T) {
 
 	// Modify the original string shouldn't affect the config
 	configFile = "modified.yaml"
+	assert.Equal(t, "modified.yaml", configFile)
 	assert.Equal(t, "test.yaml", *cfg.ConfigFile)
 }

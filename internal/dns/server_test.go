@@ -58,7 +58,8 @@ var _ = Describe("DNS Server", Serial, func() {
 		// This works around a race condition in CoreDNS v1.11.3's server.Stop()
 		time.Sleep(100 * time.Millisecond)
 		if tmpDir != "" {
-			os.RemoveAll(tmpDir)
+			expectErr := os.RemoveAll(tmpDir)
+			Expect(expectErr).NotTo(HaveOccurred())
 		}
 	})
 

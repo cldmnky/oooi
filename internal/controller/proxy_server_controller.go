@@ -36,6 +36,8 @@ import (
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
 
+const defaultManagerImage = "quay.io/cldmnky/oooi:latest"
+
 // ProxyServerReconciler reconciles a ProxyServer object
 type ProxyServerReconciler struct {
 	client.Client
@@ -387,7 +389,7 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 
 	managerImage := proxyServer.Spec.ManagerImage
 	if managerImage == "" {
-		managerImage = "quay.io/cldmnky/oooi:latest"
+		managerImage = defaultManagerImage
 	}
 
 	xdsPort := proxyServer.Spec.XDSPort

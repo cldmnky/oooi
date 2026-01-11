@@ -37,7 +37,8 @@ const (
 
 	// Multus CNI configuration
 	multusVersion  = "v4.2.3"
-	multusThickURL = "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/%s/deployments/multus-daemonset-thick.yml"
+	multusThickURL = "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/%s/" +
+		"deployments/multus-daemonset-thick.yml"
 )
 
 func warnError(err error) {

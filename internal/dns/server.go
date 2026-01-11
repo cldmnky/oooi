@@ -54,7 +54,9 @@ func (s *Server) Start(ctx context.Context) error {
 		defer s.mu.Unlock()
 		if s.instance != nil && !s.stopped {
 			s.instance.ShutdownCallbacks()
-			s.instance.Stop()
+			if err := s.instance.Stop(); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to stop coredns instance: %v\n", err)
+			}
 			s.stopped = true
 		}
 		close(shutdownComplete)

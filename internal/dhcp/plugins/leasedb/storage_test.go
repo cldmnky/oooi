@@ -28,9 +28,14 @@ func testDBSetup() (*sql.DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to prepare insert statement: %w", err)
 		}
-		defer stmt.Close()
 		if _, err := stmt.Exec(record.mac, record.ip.IP.String(), record.ip.expires); err != nil {
+			if closeErr := stmt.Close(); closeErr != nil {
+				return nil, fmt.Errorf("failed to insert record into test db: %v (closing statement failed: %w)", err, closeErr)
+			}
 			return nil, fmt.Errorf("failed to insert record into test db: %w", err)
+		}
+		if err := stmt.Close(); err != nil {
+			return nil, fmt.Errorf("failed to close insert statement: %w", err)
 		}
 	}
 	return db, nil
@@ -166,7 +171,9 @@ func TestLoadDB(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, db)
 				if db != nil {
-					db.Close()
+					if err := db.Close(); err != nil {
+						t.Fatalf("failed to close database: %v", err)
+					}
 				}
 			}
 		})
@@ -209,7 +216,11 @@ func TestLoadRecordsErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db, err := loadDB(":memory:")
 			assert.NoError(t, err)
-			defer db.Close()
+			defer func() {
+				if err := db.Close(); err != nil {
+					t.Fatalf("failed to close database: %v", err)
+				}
+			}()
 
 			if tt.setupFunc != nil {
 				err := tt.setupFunc(db)
@@ -275,7 +286,9 @@ func TestSaveIPAddressErrors(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Close the database to force an error
-	pl.leasedb.Close()
+	if err := pl.leasedb.Close(); err != nil {
+		t.Fatalf("failed to close lease database: %v", err)
+	}
 
 	mac, _ := net.ParseMAC("02:00:00:00:00:08")
 	rec := &Record{IP: net.IPv4(10, 0, 0, 8), expires: 0}

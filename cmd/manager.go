@@ -63,19 +63,25 @@ func init() {
 	// Add flags to the manager command
 	managerCmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	managerCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	managerCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081",
+		"The address the probe endpoint binds to.")
 	managerCmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	managerCmd.Flags().BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	managerCmd.Flags().StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	managerCmd.Flags().StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	managerCmd.Flags().StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	managerCmd.Flags().StringVar(&webhookCertPath, "webhook-cert-path", "",
+		"The directory that contains the webhook certificate.")
+	managerCmd.Flags().StringVar(&webhookCertName, "webhook-cert-name", "tls.crt",
+		"The name of the webhook certificate file.")
+	managerCmd.Flags().StringVar(&webhookCertKey, "webhook-cert-key", "tls.key",
+		"The name of the webhook key file.")
 	managerCmd.Flags().StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
-	managerCmd.Flags().StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
-	managerCmd.Flags().StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	managerCmd.Flags().StringVar(&metricsCertName, "metrics-cert-name", "tls.crt",
+		"The name of the metrics server certificate file.")
+	managerCmd.Flags().StringVar(&metricsCertKey, "metrics-cert-key", "tls.key",
+		"The name of the metrics server key file.")
 	managerCmd.Flags().BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 }
