@@ -519,7 +519,7 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 							Command: []string{"/usr/local/bin/envoy"},
 							Args: []string{
 								"-c", "/etc/envoy/bootstrap.json",
-								"-l", proxyServer.Spec.LogLevel,
+								"-l", logLevel,
 								"--log-path", "/tmp/envoy.log",
 							},
 							Resources: corev1.ResourceRequirements{
