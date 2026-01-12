@@ -41,7 +41,8 @@ const defaultManagerImage = "quay.io/cldmnky/oooi:latest"
 // ProxyServerReconciler reconciles a ProxyServer object
 type ProxyServerReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	EnableOpenShift bool
 }
 
 // newProxyServiceAccount creates a ServiceAccount for the proxy pods

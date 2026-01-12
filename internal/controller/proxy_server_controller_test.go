@@ -799,8 +799,9 @@ var _ = Describe("ProxyServer Controller", func() {
 
 			By("reconciling the ProxyServer")
 			reconciler := &ProxyServerReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				EnableOpenShift: true,
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
