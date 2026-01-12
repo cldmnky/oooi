@@ -63,132 +63,167 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	// Create DHCPServer CR if DHCP is enabled
-	if infra.Spec.InfraComponents.DHCP.Enabled {
-		dhcpServer := r.dhcpServerForInfra(infra)
-		if err := ctrl.SetControllerReference(infra, dhcpServer, r.Scheme); err != nil {
-			log.Error(err, "Failed to set controller reference for DHCPServer")
-			return ctrl.Result{}, err
-		}
-
-		foundDHCPServer := &hostedclusterv1alpha1.DHCPServer{}
-		err = r.Get(ctx, types.NamespacedName{Name: dhcpServer.Name, Namespace: dhcpServer.Namespace}, foundDHCPServer)
-		if err != nil && errors.IsNotFound(err) {
-			log.Info("Creating a new DHCPServer", "DHCPServer.Namespace", dhcpServer.Namespace, "DHCPServer.Name", dhcpServer.Name)
-			err = r.Create(ctx, dhcpServer)
-			if err != nil {
-				log.Error(err, "Failed to create new DHCPServer")
-				return ctrl.Result{}, err
-			}
-		} else if err != nil {
-			log.Error(err, "Failed to get DHCPServer")
-			return ctrl.Result{}, err
-		} else {
-			// Update existing DHCPServer if spec differs
-			if !reflect.DeepEqual(foundDHCPServer.Spec, dhcpServer.Spec) {
-				log.Info("Updating DHCPServer spec", "DHCPServer.Name", dhcpServer.Name)
-				foundDHCPServer.Spec = dhcpServer.Spec
-				if err := r.Update(ctx, foundDHCPServer); err != nil {
-					log.Error(err, "Failed to update DHCPServer")
-					return ctrl.Result{}, err
-				}
-			}
-		}
+	// Reconcile infrastructure components
+	if err := r.reconcileDHCPComponent(ctx, infra); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	// Create DNSServer CR if DNS is enabled
-	if infra.Spec.InfraComponents.DNS.Enabled {
-		dnsServer := r.dnsServerForInfra(infra)
-		if err := ctrl.SetControllerReference(infra, dnsServer, r.Scheme); err != nil {
-			log.Error(err, "Failed to set controller reference for DNSServer")
-			return ctrl.Result{}, err
-		}
-
-		foundDNSServer := &hostedclusterv1alpha1.DNSServer{}
-		err = r.Get(ctx, types.NamespacedName{Name: dnsServer.Name, Namespace: dnsServer.Namespace}, foundDNSServer)
-		if err != nil && errors.IsNotFound(err) {
-			log.Info("Creating a new DNSServer", "DNSServer.Namespace", dnsServer.Namespace, "DNSServer.Name", dnsServer.Name)
-			err = r.Create(ctx, dnsServer)
-			if err != nil {
-				log.Error(err, "Failed to create new DNSServer")
-				return ctrl.Result{}, err
-			}
-		} else if err != nil {
-			log.Error(err, "Failed to get DNSServer")
-			return ctrl.Result{}, err
-		} else {
-			// Update existing DNSServer if spec differs
-			if !reflect.DeepEqual(foundDNSServer.Spec, dnsServer.Spec) {
-				log.Info("Updating DNSServer spec", "DNSServer.Name", dnsServer.Name)
-				foundDNSServer.Spec = dnsServer.Spec
-				if err := r.Update(ctx, foundDNSServer); err != nil {
-					log.Error(err, "Failed to update DNSServer")
-					return ctrl.Result{}, err
-				}
-			}
-		}
+	if err := r.reconcileDNSComponent(ctx, infra); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	// Create ProxyServer CR if Proxy is enabled
-	if infra.Spec.InfraComponents.Proxy.Enabled {
-		proxyServer := r.proxyServerForInfra(infra)
-		if err := ctrl.SetControllerReference(infra, proxyServer, r.Scheme); err != nil {
-			log.Error(err, "Failed to set controller reference for ProxyServer")
-			return ctrl.Result{}, err
-		}
-
-		foundProxyServer := &hostedclusterv1alpha1.ProxyServer{}
-		err = r.Get(ctx, types.NamespacedName{Name: proxyServer.Name, Namespace: proxyServer.Namespace}, foundProxyServer)
-		if err != nil && errors.IsNotFound(err) {
-			log.Info("Creating a new ProxyServer", "ProxyServer.Namespace", proxyServer.Namespace, "ProxyServer.Name", proxyServer.Name)
-			err = r.Create(ctx, proxyServer)
-			if err != nil {
-				log.Error(err, "Failed to create new ProxyServer")
-				return ctrl.Result{}, err
-			}
-		} else if err != nil {
-			log.Error(err, "Failed to get ProxyServer")
-			return ctrl.Result{}, err
-		} else {
-			// Update existing ProxyServer if spec differs
-			if !reflect.DeepEqual(foundProxyServer.Spec, proxyServer.Spec) {
-				log.Info("Updating ProxyServer spec", "ProxyServer.Name", proxyServer.Name)
-				foundProxyServer.Spec = proxyServer.Spec
-				if err := r.Update(ctx, foundProxyServer); err != nil {
-					log.Error(err, "Failed to update ProxyServer")
-					return ctrl.Result{}, err
-				}
-			}
-		}
-
-		// Create NetworkPolicy in HCP namespace if ControlPlaneNamespace is specified
-		if infra.Spec.InfraComponents.Proxy.ControlPlaneNamespace != "" {
-			networkPolicy := r.networkPolicyForInfra(infra)
-			// Note: Cannot set owner reference for cross-namespace resources
-			// Kubernetes disallows cross-namespace owner references
-
-			foundNetworkPolicy := &networkingv1.NetworkPolicy{}
-			err = r.Get(ctx, types.NamespacedName{
-				Name:      networkPolicy.Name,
-				Namespace: networkPolicy.Namespace,
-			}, foundNetworkPolicy)
-			if err != nil && errors.IsNotFound(err) {
-				log.Info("Creating NetworkPolicy in HCP namespace",
-					"namespace", networkPolicy.Namespace,
-					"name", networkPolicy.Name)
-				err = r.Create(ctx, networkPolicy)
-				if err != nil {
-					log.Error(err, "Failed to create NetworkPolicy")
-					return ctrl.Result{}, err
-				}
-			} else if err != nil {
-				log.Error(err, "Failed to get NetworkPolicy")
-				return ctrl.Result{}, err
-			}
-		}
+	if err := r.reconcileProxyComponent(ctx, infra); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Update status
+	return r.updateInfraStatus(ctx, infra)
+}
+
+// reconcileDHCPComponent handles DHCP server creation and updates
+func (r *InfraReconciler) reconcileDHCPComponent(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+	log := logf.FromContext(ctx)
+
+	if !infra.Spec.InfraComponents.DHCP.Enabled {
+		return nil
+	}
+
+	dhcpServer := r.dhcpServerForInfra(infra)
+	if err := ctrl.SetControllerReference(infra, dhcpServer, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for DHCPServer")
+		return err
+	}
+
+	foundDHCPServer := &hostedclusterv1alpha1.DHCPServer{}
+	err := r.Get(ctx, types.NamespacedName{Name: dhcpServer.Name, Namespace: dhcpServer.Namespace}, foundDHCPServer)
+	if err != nil && errors.IsNotFound(err) {
+		log.Info("Creating a new DHCPServer", "DHCPServer.Namespace", dhcpServer.Namespace, "DHCPServer.Name", dhcpServer.Name)
+		return r.Create(ctx, dhcpServer)
+	} else if err != nil {
+		log.Error(err, "Failed to get DHCPServer")
+		return err
+	}
+
+	// Update existing DHCPServer if spec differs
+	if !reflect.DeepEqual(foundDHCPServer.Spec, dhcpServer.Spec) {
+		log.Info("Updating DHCPServer spec", "DHCPServer.Name", dhcpServer.Name)
+		foundDHCPServer.Spec = dhcpServer.Spec
+		return r.Update(ctx, foundDHCPServer)
+	}
+
+	return nil
+}
+
+// reconcileDNSComponent handles DNS server creation and updates
+func (r *InfraReconciler) reconcileDNSComponent(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+	log := logf.FromContext(ctx)
+
+	if !infra.Spec.InfraComponents.DNS.Enabled {
+		return nil
+	}
+
+	dnsServer := r.dnsServerForInfra(infra)
+	if err := ctrl.SetControllerReference(infra, dnsServer, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for DNSServer")
+		return err
+	}
+
+	foundDNSServer := &hostedclusterv1alpha1.DNSServer{}
+	err := r.Get(ctx, types.NamespacedName{Name: dnsServer.Name, Namespace: dnsServer.Namespace}, foundDNSServer)
+	if err != nil && errors.IsNotFound(err) {
+		log.Info("Creating a new DNSServer", "DNSServer.Namespace", dnsServer.Namespace, "DNSServer.Name", dnsServer.Name)
+		return r.Create(ctx, dnsServer)
+	} else if err != nil {
+		log.Error(err, "Failed to get DNSServer")
+		return err
+	}
+
+	// Update existing DNSServer if spec differs
+	if !reflect.DeepEqual(foundDNSServer.Spec, dnsServer.Spec) {
+		log.Info("Updating DNSServer spec", "DNSServer.Name", dnsServer.Name)
+		foundDNSServer.Spec = dnsServer.Spec
+		return r.Update(ctx, foundDNSServer)
+	}
+
+	return nil
+}
+
+// reconcileProxyComponent handles proxy server creation, updates, and network policy
+func (r *InfraReconciler) reconcileProxyComponent(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+	log := logf.FromContext(ctx)
+
+	if !infra.Spec.InfraComponents.Proxy.Enabled {
+		return nil
+	}
+
+	proxyServer := r.proxyServerForInfra(infra)
+	if err := ctrl.SetControllerReference(infra, proxyServer, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for ProxyServer")
+		return err
+	}
+
+	foundProxyServer := &hostedclusterv1alpha1.ProxyServer{}
+	err := r.Get(ctx, types.NamespacedName{Name: proxyServer.Name, Namespace: proxyServer.Namespace}, foundProxyServer)
+	if err != nil && errors.IsNotFound(err) {
+		log.Info("Creating a new ProxyServer", "ProxyServer.Namespace", proxyServer.Namespace, "ProxyServer.Name", proxyServer.Name)
+		err = r.Create(ctx, proxyServer)
+		if err != nil {
+			log.Error(err, "Failed to create new ProxyServer")
+			return err
+		}
+	} else if err != nil {
+		log.Error(err, "Failed to get ProxyServer")
+		return err
+	} else {
+		// Update existing ProxyServer if spec differs
+		if !reflect.DeepEqual(foundProxyServer.Spec, proxyServer.Spec) {
+			log.Info("Updating ProxyServer spec", "ProxyServer.Name", proxyServer.Name)
+			foundProxyServer.Spec = proxyServer.Spec
+			if err := r.Update(ctx, foundProxyServer); err != nil {
+				log.Error(err, "Failed to update ProxyServer")
+				return err
+			}
+		}
+	}
+
+	// Create NetworkPolicy in HCP namespace if ControlPlaneNamespace is specified
+	if infra.Spec.InfraComponents.Proxy.ControlPlaneNamespace != "" {
+		return r.reconcileNetworkPolicy(ctx, infra)
+	}
+
+	return nil
+}
+
+// reconcileNetworkPolicy creates the network policy for the proxy component
+func (r *InfraReconciler) reconcileNetworkPolicy(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+	log := logf.FromContext(ctx)
+
+	networkPolicy := r.networkPolicyForInfra(infra)
+	// Note: Cannot set owner reference for cross-namespace resources
+	// Kubernetes disallows cross-namespace owner references
+
+	foundNetworkPolicy := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      networkPolicy.Name,
+		Namespace: networkPolicy.Namespace,
+	}, foundNetworkPolicy)
+	if err != nil && errors.IsNotFound(err) {
+		log.Info("Creating NetworkPolicy in HCP namespace",
+			"namespace", networkPolicy.Namespace,
+			"name", networkPolicy.Name)
+		return r.Create(ctx, networkPolicy)
+	} else if err != nil {
+		log.Error(err, "Failed to get NetworkPolicy")
+		return err
+	}
+
+	return nil
+}
+
+// updateInfraStatus updates the status of the Infra resource
+func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
 	infra.Status.ObservedGeneration = infra.Generation
 	condition := metav1.Condition{
 		Type:               "Ready",

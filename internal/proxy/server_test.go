@@ -363,7 +363,16 @@ func TestXDSServer_buildEnvoyResources(t *testing.T) {
 				listenerProto := l.(*listener.Listener)
 				assert.NotNil(t, listenerProto.Address)
 				assert.NotEmpty(t, listenerProto.FilterChains)
-				assert.NotEmpty(t, listenerProto.ListenerFilters, "should have TLS inspector")
+
+				// Check if this is a plain TCP port (6443) - should not have TLS inspector
+				port := listenerProto.Address.GetSocketAddress().GetPortValue()
+				if port == 6443 {
+					// Plain TCP ports should not have TLS inspector
+					assert.Empty(t, listenerProto.ListenerFilters, "plain TCP port should not have TLS inspector")
+				} else {
+					// Other ports should have TLS inspector
+					assert.NotEmpty(t, listenerProto.ListenerFilters, "non-plain-TCP port should have TLS inspector")
+				}
 			}
 
 			// Verify cluster structure
@@ -391,7 +400,7 @@ func TestXDSServer_buildEnvoyResources_SNIRouting(t *testing.T) {
 				{
 					Name:            "kube-apiserver",
 					Hostname:        "api.test.example.com",
-					Port:            6443,
+					Port:            443,
 					TargetService:   "kube-apiserver",
 					TargetPort:      6443,
 					TargetNamespace: "default",
@@ -401,7 +410,7 @@ func TestXDSServer_buildEnvoyResources_SNIRouting(t *testing.T) {
 				{
 					Name:            "oauth-server",
 					Hostname:        "oauth.test.example.com",
-					Port:            6443,
+					Port:            443,
 					TargetService:   "oauth-openshift",
 					TargetPort:      6443,
 					TargetNamespace: "default",
