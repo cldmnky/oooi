@@ -243,23 +243,25 @@ func (r *ProxyServerReconciler) ensureProxyDeployment(ctx context.Context, proxy
 		return err
 	}
 
-	// Ensure OpenShift SCC RoleBinding for privileged ports
-	sccRoleBinding := r.newSCCRoleBinding(proxyServer, serviceAccount.Name)
-	if err := ctrl.SetControllerReference(proxyServer, sccRoleBinding, r.Scheme); err != nil {
-		log.Error(err, "unable to set owner reference on SCC RoleBinding")
-		return err
+	// Ensure OpenShift SCC RoleBinding for privileged ports (only when OpenShift support is enabled)
+	if r.EnableOpenShift {
+		sccRoleBinding := r.newSCCRoleBinding(proxyServer, serviceAccount.Name)
+		if err := ctrl.SetControllerReference(proxyServer, sccRoleBinding, r.Scheme); err != nil {
+			log.Error(err, "unable to set owner reference on SCC RoleBinding")
+			return err
+		}
+		if err := r.createOrUpdateWithRetries(ctx, sccRoleBinding, func() error {
+			desiredRB := r.newSCCRoleBinding(proxyServer, serviceAccount.Name)
+			sccRoleBinding.RoleRef = desiredRB.RoleRef
+			sccRoleBinding.Subjects = desiredRB.Subjects
+			sccRoleBinding.Labels = desiredRB.Labels
+			return ctrl.SetControllerReference(proxyServer, sccRoleBinding, r.Scheme)
+		}); err != nil {
+			log.Error(err, "unable to ensure SCC RoleBinding")
+			return err
+		}
+		log.Info("Ensured OpenShift SCC RoleBinding", "serviceAccount", serviceAccount.Name)
 	}
-	if err := r.createOrUpdateWithRetries(ctx, sccRoleBinding, func() error {
-		desiredRB := r.newSCCRoleBinding(proxyServer, serviceAccount.Name)
-		sccRoleBinding.RoleRef = desiredRB.RoleRef
-		sccRoleBinding.Subjects = desiredRB.Subjects
-		sccRoleBinding.Labels = desiredRB.Labels
-		return ctrl.SetControllerReference(proxyServer, sccRoleBinding, r.Scheme)
-	}); err != nil {
-		log.Error(err, "unable to ensure SCC RoleBinding")
-		return err
-	}
-	log.Info("Ensured OpenShift SCC RoleBinding", "serviceAccount", serviceAccount.Name)
 
 	// Ensure ConfigMap with Envoy bootstrap config
 	configMap := r.newEnvoyBootstrapConfigMap(proxyServer)
