@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -161,6 +162,214 @@ var _ = Describe("Infra Controller", func() {
 			By("Verifying status conditions are set")
 			Expect(updatedInfra.Status.Conditions).NotTo(BeEmpty())
 			Expect(updatedInfra.Status.ComponentStatus.DHCPReady).To(BeTrue())
+		})
+
+		It("should use explicit NetworkAttachmentNamespace when specified", func() {
+			By("Creating namespaces")
+			customNS := "custom-namespace"
+			infraNS := "infra-namespace"
+
+			customNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: customNS,
+				},
+			}
+			err := k8sClient.Create(ctx, customNamespace)
+			if err != nil && !errors.IsAlreadyExists(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			infraNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: infraNS,
+				},
+			}
+			err = k8sClient.Create(ctx, infraNamespace)
+			if err != nil && !errors.IsAlreadyExists(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("Creating an Infra with explicit NAD namespace")
+			infraName := "test-nad-ns"
+
+			infra := &hostedclusterv1alpha1.Infra{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      infraName,
+					Namespace: infraNS,
+				},
+				Spec: hostedclusterv1alpha1.InfraSpec{
+					NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+						CIDR:                        "192.168.100.0/24",
+						Gateway:                     "192.168.100.1",
+						NetworkAttachmentDefinition: "tenant-vlan-100",
+						NetworkAttachmentNamespace:  customNS,
+						DNSServers:                  []string{"8.8.8.8"},
+					},
+					InfraComponents: hostedclusterv1alpha1.InfraComponents{
+						DHCP: hostedclusterv1alpha1.DHCPConfig{
+							Enabled:    true,
+							ServerIP:   "192.168.100.2",
+							RangeStart: "192.168.100.10",
+							RangeEnd:   "192.168.100.100",
+							LeaseTime:  "1h",
+						},
+						DNS: hostedclusterv1alpha1.DNSConfig{
+							Enabled:     true,
+							ServerIP:    "192.168.100.3",
+							BaseDomain:  "example.com",
+							ClusterName: "test-cluster",
+						},
+						Proxy: hostedclusterv1alpha1.ProxyConfig{
+							Enabled:  true,
+							ServerIP: "192.168.100.10",
+						},
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, infra)).To(Succeed())
+
+			By("Reconciling the Infra resource")
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      infraName,
+					Namespace: infraNS,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying DHCP server uses the custom namespace")
+			dhcpServer := &hostedclusterv1alpha1.DHCPServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      infraName + "-dhcp",
+				Namespace: infraNS,
+			}, dhcpServer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dhcpServer.Spec.NetworkConfig.NetworkAttachmentNamespace).To(Equal(customNS))
+
+			By("Verifying DNS server uses the custom namespace")
+			dnsServer := &hostedclusterv1alpha1.DNSServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      infraName + "-dns",
+				Namespace: infraNS,
+			}, dnsServer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dnsServer.Spec.NetworkConfig.NetworkAttachmentNamespace).To(Equal(customNS))
+
+			By("Verifying Proxy server uses the custom namespace")
+			proxyServer := &hostedclusterv1alpha1.ProxyServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      infraName + "-proxy",
+				Namespace: infraNS,
+			}, proxyServer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proxyServer.Spec.NetworkConfig.NetworkAttachmentNamespace).To(Equal(customNS))
+
+			By("Cleaning up")
+			Expect(k8sClient.Delete(ctx, infra)).To(Succeed())
+		})
+
+		It("should default to Infra namespace when NetworkAttachmentNamespace is not specified", func() {
+			By("Creating namespace")
+			infraNS := "test-namespace"
+
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: infraNS,
+				},
+			}
+			err := k8sClient.Create(ctx, testNamespace)
+			if err != nil && !errors.IsAlreadyExists(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("Creating an Infra without explicit NAD namespace")
+			infraName := "test-default-nad-ns"
+
+			infra := &hostedclusterv1alpha1.Infra{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      infraName,
+					Namespace: infraNS,
+				},
+				Spec: hostedclusterv1alpha1.InfraSpec{
+					NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+						CIDR:                        "192.168.100.0/24",
+						Gateway:                     "192.168.100.1",
+						NetworkAttachmentDefinition: "tenant-vlan-100",
+						DNSServers:                  []string{"8.8.8.8"},
+					},
+					InfraComponents: hostedclusterv1alpha1.InfraComponents{
+						DHCP: hostedclusterv1alpha1.DHCPConfig{
+							Enabled:    true,
+							ServerIP:   "192.168.100.2",
+							RangeStart: "192.168.100.10",
+							RangeEnd:   "192.168.100.100",
+							LeaseTime:  "1h",
+						},
+						DNS: hostedclusterv1alpha1.DNSConfig{
+							Enabled:     true,
+							ServerIP:    "192.168.100.3",
+							BaseDomain:  "example.com",
+							ClusterName: "test-cluster",
+						},
+						Proxy: hostedclusterv1alpha1.ProxyConfig{
+							Enabled:  true,
+							ServerIP: "192.168.100.10",
+						},
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, infra)).To(Succeed())
+
+			By("Reconciling the Infra resource")
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      infraName,
+					Namespace: infraNS,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying DHCP server uses the Infra namespace as default")
+			dhcpServer := &hostedclusterv1alpha1.DHCPServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      infraName + "-dhcp",
+				Namespace: infraNS,
+			}, dhcpServer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dhcpServer.Spec.NetworkConfig.NetworkAttachmentNamespace).To(Equal(infraNS))
+
+			By("Verifying DNS server uses the Infra namespace as default")
+			dnsServer := &hostedclusterv1alpha1.DNSServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      infraName + "-dns",
+				Namespace: infraNS,
+			}, dnsServer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dnsServer.Spec.NetworkConfig.NetworkAttachmentNamespace).To(Equal(infraNS))
+
+			By("Verifying Proxy server uses the Infra namespace as default")
+			proxyServer := &hostedclusterv1alpha1.ProxyServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      infraName + "-proxy",
+				Namespace: infraNS,
+			}, proxyServer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proxyServer.Spec.NetworkConfig.NetworkAttachmentNamespace).To(Equal(infraNS))
+
+			By("Cleaning up")
+			Expect(k8sClient.Delete(ctx, infra)).To(Succeed())
 		})
 	})
 })

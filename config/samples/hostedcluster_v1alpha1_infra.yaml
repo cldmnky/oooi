@@ -10,6 +10,9 @@ spec:
     cidr: "192.168.100.0/24"
     gateway: "192.168.100.1"
     networkAttachmentDefinition: "test-vlan-100"
+    # Optional: Specify the namespace where the NetworkAttachmentDefinition resides
+    # If not specified, defaults to the Infra CR's namespace
+    networkAttachmentNamespace: "default"
     dnsServers:
       - "8.8.8.8"
       - "8.8.4.4"
