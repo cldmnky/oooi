@@ -61,11 +61,19 @@ spec:
     cidr: "192.168.100.0/24"
     gateway: "192.168.100.1"
     networkAttachmentDefinition: "vlan100"
-    dnsServers:
+    dnsServers:  # Upstream DNS servers for CoreDNS to forward to
       - "8.8.8.8"
       - "8.8.4.4"
   
   infraComponents:
+    # DHCP Configuration
+    dhcp:
+      enabled: true
+      serverIP: "192.168.100.2"
+      rangeStart: "192.168.100.100"
+      rangeEnd: "192.168.100.200"
+      leaseTime: "1h"
+    
     # DNS Configuration
     dns:
       enabled: true
@@ -83,8 +91,17 @@ spec:
 ```
 
 **Key Fields**:
+- `networkConfig.dnsServers`: **Upstream DNS servers** that CoreDNS forwards non-HCP queries to (e.g., 8.8.8.8, corporate DNS)
+- `infraComponents.dns.enabled`: When `true`, DHCP automatically configures clients to use the DNS server IP
+- `infraComponents.dns.serverIP`: IP address of CoreDNS server on secondary network (192.168.100.3)
 - `proxy.serverIP`: External Envoy proxy IP on secondary network (for VMs)
 - `proxy.internalProxyService`: Internal proxy service name or ClusterIP (for management pods)
+
+**DNS Flow**:
+1. DHCP assigns VMs with DNS server = 192.168.100.3 (CoreDNS)
+2. CoreDNS resolves HCP domains (api.*, oauth.*) to proxy at 192.168.100.10
+3. CoreDNS forwards all other queries to upstream DNS (8.8.8.8, 8.8.4.4)
+4. VMs get both HCP access and external DNS resolution
 
 ### 2. Deploy the Infrastructure
 
@@ -464,6 +481,62 @@ Both proxies should route traffic to the actual HCP services in the control plan
 | `configMapName` | Name of ConfigMap with Corefile |
 | `deploymentName` | Name of DNS Deployment |
 | `conditions` | Status conditions |
+
+## Troubleshooting
+
+### DHCP Not Using DNS Server
+
+**Symptom**: VMs get 8.8.8.8 instead of the CoreDNS server IP
+
+**Solution**: Ensure `infraComponents.dns.enabled: true` in your Infra CR. When DNS is enabled, DHCP automatically uses the DNS server IP.
+
+```bash
+# Check DHCP configuration
+kubectl get dhcpserver <name> -n <namespace> -o jsonpath='{.spec.networkConfig.dnsServers}'
+# Should show: ["<dns-server-ip>"]
+
+# Check DNS is enabled in Infra
+kubectl get infra <name> -n <namespace> -o jsonpath='{.spec.infraComponents.dns.enabled}'
+# Should show: true
+```
+
+### DNS Not Forwarding to Upstream
+
+**Symptom**: CoreDNS resolves HCP domains but fails on external queries
+
+**Solution**: Set `networkConfig.dnsServers` in Infra CR with upstream DNS servers
+
+```bash
+# Check CoreDNS upstream configuration
+kubectl get dnsserver <name> -n <namespace> -o jsonpath='{.spec.upstreamDNS}'
+# Should show: ["8.8.8.8","8.8.4.4"] or your upstream servers
+
+# Check CoreDNS Corefile
+kubectl get configmap <name>-dns-config -n <namespace> -o jsonpath='{.data.Corefile}' | grep "forward ."
+# Should show: forward . 8.8.8.8 8.8.4.4 (or your servers)
+```
+
+### Complete DNS Flow Verification
+
+```bash
+# 1. Check Infra configuration
+kubectl get infra <name> -n <namespace> -o yaml
+
+# 2. Verify DHCP uses DNS server
+kubectl get dhcpserver <name>-dhcp -n <namespace> -o jsonpath='{.spec.networkConfig.dnsServers}'
+
+# 3. Verify DNS has upstream servers
+kubectl get dnsserver <name>-dns -n <namespace> -o jsonpath='{.spec.upstreamDNS}'
+
+# 4. Check DHCP ConfigMap
+kubectl get configmap <name>-dhcp-dhcp-config -n <namespace> -o yaml | grep dns
+
+# 5. Check CoreDNS Corefile
+kubectl get configmap <name>-dns-dns-config -n <namespace> -o jsonpath='{.data.Corefile}'
+
+# 6. Test DNS resolution from a pod
+kubectl run -it --rm debug --image=busybox --restart=Never -- nslookup api.<cluster>.<domain> <dns-server-ip>
+```
 
 ## See Also
 

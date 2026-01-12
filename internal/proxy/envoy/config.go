@@ -94,20 +94,7 @@ func BuildEnvoyBootstrapConfig(proxy *hostedclusterv1alpha1.ProxyServer, xdsPort
       }
     }
   },
-  "layered_runtime": {
-    "layers": [
-      {
-        "name": "static_layer",
-        "static_layer": {
-          "envoy": {
-            "reloadable_features": {
-              "http_transport_normalization_enable_path_merge": false
-            }
-          }
-        }
-      }
-    ]
-  }
+
 }`, proxy.Name, proxy.Name, xdsPort)
 }
 

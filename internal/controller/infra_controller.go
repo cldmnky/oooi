@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -80,6 +81,16 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		} else if err != nil {
 			log.Error(err, "Failed to get DHCPServer")
 			return ctrl.Result{}, err
+		} else {
+			// Update existing DHCPServer if spec differs
+			if !reflect.DeepEqual(foundDHCPServer.Spec, dhcpServer.Spec) {
+				log.Info("Updating DHCPServer spec", "DHCPServer.Name", dhcpServer.Name)
+				foundDHCPServer.Spec = dhcpServer.Spec
+				if err := r.Update(ctx, foundDHCPServer); err != nil {
+					log.Error(err, "Failed to update DHCPServer")
+					return ctrl.Result{}, err
+				}
+			}
 		}
 	}
 
@@ -176,6 +187,19 @@ func (r *InfraReconciler) dhcpServerForInfra(infra *hostedclusterv1alpha1.Infra)
 		nadNamespace = infra.Spec.NetworkConfig.NetworkAttachmentNamespace
 	}
 
+	// Determine DNS servers for DHCP clients:
+	// 1. If DNS is enabled, use our DNS server IP (which forwards to upstream)
+	// 2. Otherwise, use explicitly configured DNS servers from NetworkConfig
+	// 3. Otherwise, leave empty (will default to 8.8.8.8 in DHCP controller)
+	var dnsServers []string
+	if infra.Spec.InfraComponents.DNS.Enabled {
+		// Use our DNS server - it will handle forwarding to upstream
+		dnsServers = []string{infra.Spec.InfraComponents.DNS.ServerIP}
+	} else {
+		// No DNS server deployed, use upstream directly
+		dnsServers = infra.Spec.NetworkConfig.DNSServers
+	}
+
 	return &hostedclusterv1alpha1.DHCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      infra.Name + "-dhcp",
@@ -186,7 +210,7 @@ func (r *InfraReconciler) dhcpServerForInfra(infra *hostedclusterv1alpha1.Infra)
 				CIDR:                       infra.Spec.NetworkConfig.CIDR,
 				Gateway:                    infra.Spec.NetworkConfig.Gateway,
 				ServerIP:                   dhcpSpec.ServerIP,
-				DNSServers:                 infra.Spec.NetworkConfig.DNSServers,
+				DNSServers:                 dnsServers,
 				NetworkAttachmentName:      nadName,
 				NetworkAttachmentNamespace: nadNamespace,
 			},

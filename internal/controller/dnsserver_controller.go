@@ -23,6 +23,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,7 +38,8 @@ import (
 // DNSServerReconciler reconciles a DNSServer object
 type DNSServerReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	EnableOpenShift bool
 }
 
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
@@ -47,6 +49,9 @@ type DNSServerReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=bind
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,resourceNames=anyuid,verbs=use
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -130,6 +135,25 @@ func (r *DNSServerReconciler) ensureDNSDeployment(ctx context.Context, dnsServer
 	}); err != nil {
 		log.Error(err, "unable to ensure ServiceAccount")
 		return err
+	}
+
+	// Ensure OpenShift SCC RoleBinding if enabled
+	if r.EnableOpenShift {
+		rb := r.newSCCRoleBinding(dnsServer, sa.Name)
+		if err := ctrl.SetControllerReference(dnsServer, rb, r.Scheme); err != nil {
+			log.Error(err, "unable to set owner reference on RoleBinding")
+			return err
+		}
+		if err := r.createOrUpdateWithRetries(ctx, rb, func() error {
+			desiredRB := r.newSCCRoleBinding(dnsServer, sa.Name)
+			rb.RoleRef = desiredRB.RoleRef
+			rb.Subjects = desiredRB.Subjects
+			return ctrl.SetControllerReference(dnsServer, rb, r.Scheme)
+		}); err != nil {
+			log.Error(err, "unable to ensure SCC RoleBinding")
+			return err
+		}
+		log.Info("Ensured OpenShift SCC RoleBinding", "serviceAccount", sa.Name)
 	}
 
 	// Ensure Deployment
@@ -270,7 +294,8 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 
 .:8080 {
     health
-}`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, defaultHostsEntries.String(), upstream, cacheTTL, reloadInterval)
+}
+`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, defaultHostsEntries.String(), upstream, cacheTTL, reloadInterval)
 	} else {
 		// No internal proxy - default view just forwards to upstream (HCP hidden from management cluster)
 		corefileBody = fmt.Sprintf(`# Multus view - traffic from secondary network (%s)
@@ -316,7 +341,8 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 
 .:8080 {
     health
-}`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, upstream, cacheTTL, reloadInterval)
+}
+`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, upstream, cacheTTL, reloadInterval)
 	}
 
 	corefile := fmt.Sprintf(`# Hosted Control Plane dual-view split-horizon DNS using view plugin
@@ -353,6 +379,31 @@ func (r *DNSServerReconciler) newDNSServiceAccount(dnsServer *hostedclusterv1alp
 	}
 }
 
+// newSCCRoleBinding returns a RoleBinding that grants the anyuid SCC to the service account
+func (r *DNSServerReconciler) newSCCRoleBinding(dnsServer *hostedclusterv1alpha1.DNSServer, serviceAccountName string) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dnsServer.Name + "-anyuid-scc",
+			Namespace: dnsServer.Namespace,
+			Labels: map[string]string{
+				"app": dnsServer.Name,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:openshift:scc:anyuid",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      serviceAccountName,
+				Namespace: dnsServer.Namespace,
+			},
+		},
+	}
+}
+
 // newDNSDeployment returns a Deployment object for the DNS server
 func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.DNSServer) *appsv1.Deployment {
 	labels := map[string]string{
@@ -362,6 +413,7 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 
 	replicas := int32(1)
 	runAsNonRoot := false
+	runAsUser := int64(0)
 
 	// Get DNS port (default to 53)
 	dnsPort := dnsServer.Spec.NetworkConfig.DNSPort
@@ -410,6 +462,7 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 					ServiceAccountName: dnsServer.Name + "-dns",
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &runAsNonRoot,
+						RunAsUser:    &runAsUser,
 					},
 					Containers: []corev1.Container{
 						{

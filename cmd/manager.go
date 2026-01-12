@@ -53,6 +53,7 @@ var (
 	probeAddr            string
 	secureMetrics        bool
 	enableHTTP2          bool
+	enableOpenShift      bool
 )
 
 func init() {
@@ -84,6 +85,10 @@ func init() {
 		"The name of the metrics server key file.")
 	managerCmd.Flags().BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	managerCmd.Flags().BoolVar(&enableOpenShift, "enable-openshift", false,
+		"Enable OpenShift-specific features such as Security Context Constraints (SCC) management. "+
+			"When enabled, the operator will create RoleBindings to grant anyuid SCC to service accounts "+
+			"for DHCP, DNS, and Proxy components that need to bind to privileged ports.")
 }
 
 var managerCmd = &cobra.Command{
@@ -220,15 +225,17 @@ func runManager(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 	if err := (&controller.DHCPServerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		EnableOpenShift: enableOpenShift,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DHCPServer")
 		os.Exit(1)
 	}
 	if err := (&controller.DNSServerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		EnableOpenShift: enableOpenShift,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DNSServer")
 		os.Exit(1)
