@@ -102,6 +102,37 @@ func (r *ProxyServerReconciler) newProxyRoleBinding(proxyServer *hostedclusterv1
 	}
 }
 
+// boolPtr returns a pointer to a bool value
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+// newSCCRoleBinding returns a RoleBinding that grants the privileged SCC to the service account
+// Matches the pattern used by DHCP and DNS servers
+func (r *ProxyServerReconciler) newSCCRoleBinding(proxyServer *hostedclusterv1alpha1.ProxyServer, serviceAccountName string) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxyServer.Name + "-privileged-scc",
+			Namespace: proxyServer.Namespace,
+			Labels: map[string]string{
+				"app": proxyServer.Name,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:openshift:scc:privileged",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      serviceAccountName,
+				Namespace: proxyServer.Namespace,
+			},
+		},
+	}
+}
+
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers/finalizers,verbs=update
@@ -210,6 +241,26 @@ func (r *ProxyServerReconciler) ensureProxyDeployment(ctx context.Context, proxy
 	}); err != nil {
 		log.Error(err, "unable to ensure RoleBinding")
 		return err
+	}
+
+	// Ensure OpenShift SCC RoleBinding for privileged ports (only when OpenShift support is enabled)
+	if r.EnableOpenShift {
+		sccRoleBinding := r.newSCCRoleBinding(proxyServer, serviceAccount.Name)
+		if err := ctrl.SetControllerReference(proxyServer, sccRoleBinding, r.Scheme); err != nil {
+			log.Error(err, "unable to set owner reference on SCC RoleBinding")
+			return err
+		}
+		if err := r.createOrUpdateWithRetries(ctx, sccRoleBinding, func() error {
+			desiredRB := r.newSCCRoleBinding(proxyServer, serviceAccount.Name)
+			sccRoleBinding.RoleRef = desiredRB.RoleRef
+			sccRoleBinding.Subjects = desiredRB.Subjects
+			sccRoleBinding.Labels = desiredRB.Labels
+			return ctrl.SetControllerReference(proxyServer, sccRoleBinding, r.Scheme)
+		}); err != nil {
+			log.Error(err, "unable to ensure SCC RoleBinding")
+			return err
+		}
+		log.Info("Ensured OpenShift SCC RoleBinding", "serviceAccount", serviceAccount.Name)
 	}
 
 	// Ensure ConfigMap with Envoy bootstrap config
@@ -335,20 +386,6 @@ func (r *ProxyServerReconciler) newEnvoyBootstrapConfigMap(proxyServer *hostedcl
         "port_value": 9901
       }
     }
-  },
-  "layered_runtime": {
-    "layers": [
-      {
-        "name": "static_layer",
-        "static_layer": {
-          "envoy": {
-            "reloadable_features": {
-              "http_transport_normalization_enable_path_merge": false
-            }
-          }
-        }
-      }
-    ]
   }
 }`, proxyServer.Name, proxyServer.Name, xdsPort)
 
@@ -368,19 +405,15 @@ func (r *ProxyServerReconciler) newEnvoyBootstrapConfigMap(proxyServer *hostedcl
 
 // newProxyDeployment creates a Deployment with Envoy sidecar and oooi proxy manager
 func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1alpha1.ProxyServer) *appsv1.Deployment {
+	runAsNonRoot := false
+	runAsUser := int64(0)
+
 	labels := map[string]string{
 		"app":                          "proxy-server",
 		"hostedcluster.densityops.com": proxyServer.Name,
 	}
 
 	replicas := int32(1)
-	// Note: In OpenShift, we need to handle SCCs properly.
-	// For secondary network (Multus) scenarios where the pod binds directly
-	// to privileged ports (443, 6443), we have two options:
-	// 1. Run as root (UID 0) - works with 'anyuid' SCC
-	// 2. Use NET_BIND_SERVICE capability - requires custom SCC
-	// We use option 1 for better OpenShift compatibility.
-	runAsNonRoot := false
 
 	proxyImage := proxyServer.Spec.ProxyImage
 	if proxyImage == "" {
@@ -400,6 +433,11 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 	port := proxyServer.Spec.Port
 	if port == 0 {
 		port = 443
+	}
+
+	logLevel := proxyServer.Spec.LogLevel
+	if logLevel == "" {
+		logLevel = "info"
 	}
 
 	nadName := proxyServer.Spec.NetworkConfig.NetworkAttachmentName
@@ -443,14 +481,12 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 					ServiceAccountName: proxyServer.Name + "-proxy",
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &runAsNonRoot,
+						RunAsUser:    &runAsUser,
 					},
 					Containers: []corev1.Container{
 						{
 							Name:  "envoy",
 							Image: proxyImage,
-							// Note: For OpenShift compatibility, we rely on the 'anyuid' SCC
-							// instead of NET_BIND_SERVICE capability. The pod must bind to
-							// privileged ports (443, 6443) on the secondary network interface.
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "proxy",
@@ -463,17 +499,30 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 									Protocol:      corev1.ProtocolTCP,
 								},
 							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: boolPtr(true),
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{
+										"NET_BIND_SERVICE",
+									},
+								},
+							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "bootstrap-config",
 									MountPath: "/etc/envoy",
 									ReadOnly:  true,
 								},
+								{
+									Name:      "envoy-logs",
+									MountPath: "/tmp",
+								},
 							},
+							Command: []string{"/usr/local/bin/envoy"},
 							Args: []string{
-								"/usr/local/bin/envoy",
 								"-c", "/etc/envoy/bootstrap.json",
-								"-l", proxyServer.Spec.LogLevel,
+								"-l", logLevel,
+								"--log-path", "/tmp/envoy.log",
 							},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
@@ -523,6 +572,12 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 										Name: proxyServer.Name + "-proxy-bootstrap",
 									},
 								},
+							},
+						},
+						{
+							Name: "envoy-logs",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
 						},
 					},

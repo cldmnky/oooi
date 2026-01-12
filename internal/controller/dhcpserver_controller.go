@@ -23,6 +23,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,7 +37,8 @@ import (
 // DHCPServerReconciler reconciles a DHCPServer object
 type DHCPServerReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	EnableOpenShift bool
 }
 
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dhcpservers,verbs=get;list;watch;create;update;patch;delete
@@ -46,6 +48,11 @@ type DHCPServerReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete;bind
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,resourceNames=privileged,verbs=use
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -131,6 +138,56 @@ func (r *DHCPServerReconciler) ensureDHCPDeployment(ctx context.Context, dhcpSer
 		return err
 	}
 
+	// Ensure OpenShift SCC RoleBinding if enabled
+	if r.EnableOpenShift {
+		rb := r.newSCCRoleBinding(dhcpServer, sa.Name)
+		if err := ctrl.SetControllerReference(dhcpServer, rb, r.Scheme); err != nil {
+			log.Error(err, "unable to set owner reference on RoleBinding")
+			return err
+		}
+		if err := r.createOrUpdateWithRetries(ctx, rb, func() error {
+			desiredRB := r.newSCCRoleBinding(dhcpServer, sa.Name)
+			rb.RoleRef = desiredRB.RoleRef
+			rb.Subjects = desiredRB.Subjects
+			return ctrl.SetControllerReference(dhcpServer, rb, r.Scheme)
+		}); err != nil {
+			log.Error(err, "unable to ensure SCC RoleBinding")
+			return err
+		}
+		log.Info("Ensured OpenShift SCC RoleBinding", "serviceAccount", sa.Name)
+	}
+
+	// Ensure ClusterRole for KubeVirt VirtualMachineInstance access
+	clusterRole := r.newKubeVirtClusterRole(dhcpServer)
+	// Note: ClusterRole is cluster-scoped, so we can't set controller reference
+	// It will be labeled for tracking but must be manually cleaned up
+	if err := r.createOrUpdateWithRetries(ctx, clusterRole, func() error {
+		desiredCR := r.newKubeVirtClusterRole(dhcpServer)
+		clusterRole.Rules = desiredCR.Rules
+		clusterRole.Labels = desiredCR.Labels
+		return nil
+	}); err != nil {
+		log.Error(err, "unable to ensure KubeVirt ClusterRole")
+		return err
+	}
+	log.Info("Ensured KubeVirt ClusterRole", "clusterRole", clusterRole.Name)
+
+	// Ensure ClusterRoleBinding for KubeVirt VirtualMachineInstance access
+	clusterRoleBinding := r.newKubeVirtClusterRoleBinding(dhcpServer, sa.Name)
+	// Note: ClusterRoleBinding is cluster-scoped, so we can't set controller reference
+	// It will be labeled for tracking but must be manually cleaned up
+	if err := r.createOrUpdateWithRetries(ctx, clusterRoleBinding, func() error {
+		desiredCRB := r.newKubeVirtClusterRoleBinding(dhcpServer, sa.Name)
+		clusterRoleBinding.RoleRef = desiredCRB.RoleRef
+		clusterRoleBinding.Subjects = desiredCRB.Subjects
+		clusterRoleBinding.Labels = desiredCRB.Labels
+		return nil
+	}); err != nil {
+		log.Error(err, "unable to ensure KubeVirt ClusterRoleBinding")
+		return err
+	}
+	log.Info("Ensured KubeVirt ClusterRoleBinding", "serviceAccount", sa.Name)
+
 	// Ensure Deployment
 	deployment := r.newDHCPDeployment(dhcpServer)
 	if err := ctrl.SetControllerReference(dhcpServer, deployment, r.Scheme); err != nil {
@@ -202,7 +259,7 @@ server4:
 
 // newDHCPPVC returns a PersistentVolumeClaim object for DHCP lease storage
 func (r *DHCPServerReconciler) newDHCPPVC(dhcpServer *hostedclusterv1alpha1.DHCPServer) *corev1.PersistentVolumeClaim {
-	storageClassName := "standard"
+	// Use empty string to get the default storage class
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dhcpServer.Name + "-dhcp-leases",
@@ -212,7 +269,6 @@ func (r *DHCPServerReconciler) newDHCPPVC(dhcpServer *hostedclusterv1alpha1.DHCP
 			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
-			StorageClassName: &storageClassName,
 			AccessModes: []corev1.PersistentVolumeAccessMode{
 				corev1.ReadWriteOnce,
 			},
@@ -238,6 +294,74 @@ func (r *DHCPServerReconciler) newDHCPServiceAccount(dhcpServer *hostedclusterv1
 	}
 }
 
+// newKubeVirtClusterRole returns a ClusterRole that grants read access to VirtualMachineInstances
+func (r *DHCPServerReconciler) newKubeVirtClusterRole(dhcpServer *hostedclusterv1alpha1.DHCPServer) *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: dhcpServer.Name + "-kubevirt-reader",
+			Labels: map[string]string{
+				"app": dhcpServer.Name,
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"kubevirt.io"},
+				Resources: []string{"virtualmachineinstances"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+		},
+	}
+}
+
+// newKubeVirtClusterRoleBinding returns a ClusterRoleBinding that grants the KubeVirt reader role to the service account
+func (r *DHCPServerReconciler) newKubeVirtClusterRoleBinding(dhcpServer *hostedclusterv1alpha1.DHCPServer, serviceAccountName string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: dhcpServer.Name + "-kubevirt-reader",
+			Labels: map[string]string{
+				"app": dhcpServer.Name,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     dhcpServer.Name + "-kubevirt-reader",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      serviceAccountName,
+				Namespace: dhcpServer.Namespace,
+			},
+		},
+	}
+}
+
+// newSCCRoleBinding returns a RoleBinding that grants the privileged SCC to the service account
+func (r *DHCPServerReconciler) newSCCRoleBinding(dhcpServer *hostedclusterv1alpha1.DHCPServer, serviceAccountName string) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dhcpServer.Name + "-privileged-scc",
+			Namespace: dhcpServer.Namespace,
+			Labels: map[string]string{
+				"app": dhcpServer.Name,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:openshift:scc:privileged",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      serviceAccountName,
+				Namespace: dhcpServer.Namespace,
+			},
+		},
+	}
+}
+
 // newDHCPDeployment returns a Deployment object for the DHCP server
 func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alpha1.DHCPServer) *appsv1.Deployment {
 	labels := map[string]string{
@@ -247,6 +371,7 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 
 	replicas := int32(1)
 	runAsNonRoot := false
+	runAsUser := int64(0)
 
 	// Build network attachment annotation
 	// Format: [{"name": "<nad-name>", "namespace": "<nad-namespace>", "ips": ["<ip>/<prefix>"]}]
@@ -283,6 +408,7 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 					ServiceAccountName: dhcpServer.Name + "-dhcp",
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &runAsNonRoot,
+						RunAsUser:    &runAsUser,
 					},
 					Containers: []corev1.Container{
 						{
@@ -298,6 +424,14 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 									Name:          "dhcp",
 									ContainerPort: 67,
 									Protocol:      corev1.ProtocolUDP,
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{
+										"NET_RAW",
+										"NET_BIND_SERVICE",
+									},
 								},
 							},
 							VolumeMounts: []corev1.VolumeMount{

@@ -99,18 +99,47 @@ apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: Infra
 metadata:
   name: example-infra
-  namespace: clusters-example
+  namespace: clusters
 spec:
-  dhcpServer:
-    image: quay.io/cldmnky/dhcp-server:latest
-    subnet: "192.168.1.0/24"
-  dnsServer:
-    image: quay.io/cldmnky/dns-server:latest
-    upstreamServers:
-    - "8.8.8.8"
-  proxyServer:
-    image: quay.io/cldmnky/envoy-proxy:latest
+  networkConfig:
+    cidr: "192.168.100.0/24"
+    gateway: "192.168.100.1"
+    networkAttachmentDefinition: "vlan100"
+    networkAttachmentNamespace: "default"
+    dnsServers:  # Upstream DNS servers for CoreDNS forwarding
+      - "8.8.8.8"
+      - "8.8.4.4"
+  
+  infraComponents:
+    # DHCP Server Configuration
+    dhcp:
+      enabled: true
+      serverIP: "192.168.100.2"
+      rangeStart: "192.168.100.100"
+      rangeEnd: "192.168.100.200"
+      leaseTime: "1h"
+    
+    # DNS Server Configuration
+    dns:
+      enabled: true
+      serverIP: "192.168.100.3"
+      baseDomain: "example.com"
+      clusterName: "my-cluster"
+    
+    # Proxy Server Configuration
+    proxy:
+      enabled: true
+      serverIP: "192.168.100.10"
+      controlPlaneNamespace: "clusters-my-cluster"
 ```
+
+**Key Configuration Points**:
+
+- **`networkConfig.dnsServers`**: Upstream DNS servers that CoreDNS forwards non-HCP queries to
+- **`infraComponents.dns.enabled: true`**: When enabled, DHCP automatically uses the DNS server IP
+- **DNS Flow**: VMs → DHCP assigns CoreDNS IP → CoreDNS resolves HCP domains → CoreDNS forwards other queries to upstream
+
+See [DNS_SETUP.md](docs/DNS_SETUP.md) for detailed DNS configuration and [PROXY_SETUP.md](docs/PROXY_SETUP.md) for proxy configuration.
 
 ## Development
 

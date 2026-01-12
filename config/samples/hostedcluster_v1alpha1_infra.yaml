@@ -13,6 +13,9 @@ spec:
     # Optional: Specify the namespace where the NetworkAttachmentDefinition resides
     # If not specified, defaults to the Infra CR's namespace
     networkAttachmentNamespace: "default"
+    # Upstream DNS servers for CoreDNS to forward non-HCP queries to
+    # These are NOT the DNS servers assigned to DHCP clients
+    # When dns.enabled=true, DHCP clients get the CoreDNS server IP automatically
     dnsServers:
       - "8.8.8.8"
       - "8.8.4.4"
@@ -26,8 +29,8 @@ spec:
       leaseTime: "1h"
     
     dns:
-      enabled: true
-      serverIP: "192.168.100.3"
+      enabled: true  # When enabled, DHCP automatically uses dns.serverIP
+      serverIP: "192.168.100.3"  # VMs get this as their DNS server via DHCP
       baseDomain: "example.com"
       clusterName: "mycluster"
     

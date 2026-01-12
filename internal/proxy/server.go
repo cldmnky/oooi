@@ -44,10 +44,6 @@ import (
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
 
-const (
-	nodeID = "proxy-node"
-)
-
 // XDSServer manages the Envoy configuration via xDS protocol using go-control-plane
 type XDSServer struct {
 	client      client.Client
@@ -126,8 +122,8 @@ func (xs *XDSServer) UpdateProxyConfig(ctx context.Context, proxy *hostedcluster
 		return err
 	}
 
-	// Update cache
-	if err := xs.cache.SetSnapshot(ctx, nodeID, snapshot); err != nil {
+	// Update cache with proxy name as node ID
+	if err := xs.cache.SetSnapshot(ctx, proxy.Name, snapshot); err != nil {
 		log.Error(err, "failed to set snapshot", "proxy", proxy.Name)
 		return err
 	}

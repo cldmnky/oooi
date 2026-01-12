@@ -178,8 +178,15 @@ var _ = Describe("ProxyServer Controller", func() {
 			}
 			Expect(envoyContainer).NotTo(BeNil())
 			Expect(envoyContainer.Image).To(Equal("envoyproxy/envoy:v1.36.4"))
+			Expect(envoyContainer.Command).To(ContainElement("/usr/local/bin/envoy"))
 			Expect(envoyContainer.Args).To(ContainElement(ContainSubstring("/etc/envoy/bootstrap.json")))
 			Expect(envoyContainer.VolumeMounts).To(ContainElement(HaveField("Name", "bootstrap-config")))
+			Expect(envoyContainer.SecurityContext).NotTo(BeNil())
+			Expect(envoyContainer.SecurityContext.Capabilities).NotTo(BeNil())
+			Expect(envoyContainer.SecurityContext.Capabilities.Add).To(ContainElement(corev1.Capability("NET_BIND_SERVICE")))
+			Expect(envoyContainer.SecurityContext.Capabilities.Add).NotTo(ContainElement(corev1.Capability("NET_RAW")))
+			Expect(envoyContainer.SecurityContext.AllowPrivilegeEscalation).NotTo(BeNil())
+			Expect(*envoyContainer.SecurityContext.AllowPrivilegeEscalation).To(BeTrue())
 
 			By("verifying Pod security context allows running as root for privileged ports")
 			Expect(deployment.Spec.Template.Spec.SecurityContext).NotTo(BeNil())
@@ -850,6 +857,22 @@ var _ = Describe("ProxyServer Controller", func() {
 			Expect(roleBinding.Subjects).To(HaveLen(1))
 			Expect(roleBinding.Subjects[0].Kind).To(Equal("ServiceAccount"))
 			Expect(roleBinding.Subjects[0].Name).To(Equal(proxyServerName + "-proxy"))
+
+			By("verifying privileged SCC RoleBinding was created")
+			sccRoleBinding := &rbacv1.RoleBinding{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      proxyServerName + "-privileged-scc",
+					Namespace: proxyServerNamespace,
+				}, sccRoleBinding)
+			}, timeout, interval).Should(Succeed())
+			Expect(sccRoleBinding.RoleRef.Kind).To(Equal("ClusterRole"))
+			Expect(sccRoleBinding.RoleRef.Name).To(Equal("system:openshift:scc:privileged"))
+			Expect(sccRoleBinding.Subjects).To(HaveLen(1))
+			Expect(sccRoleBinding.Subjects[0].Kind).To(Equal("ServiceAccount"))
+			Expect(sccRoleBinding.Subjects[0].Name).To(Equal(proxyServerName + "-proxy"))
+			Expect(sccRoleBinding.OwnerReferences).To(HaveLen(1))
+			Expect(sccRoleBinding.OwnerReferences[0].Name).To(Equal(proxyServerName))
 
 			By("verifying Deployment uses the created ServiceAccount")
 			deployment := &appsv1.Deployment{}
