@@ -20,6 +20,7 @@ import (
 	"context"
 	"reflect"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -43,6 +44,7 @@ type InfraReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dhcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -114,6 +116,16 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		} else if err != nil {
 			log.Error(err, "Failed to get DNSServer")
 			return ctrl.Result{}, err
+		} else {
+			// Update existing DNSServer if spec differs
+			if !reflect.DeepEqual(foundDNSServer.Spec, dnsServer.Spec) {
+				log.Info("Updating DNSServer spec", "DNSServer.Name", dnsServer.Name)
+				foundDNSServer.Spec = dnsServer.Spec
+				if err := r.Update(ctx, foundDNSServer); err != nil {
+					log.Error(err, "Failed to update DNSServer")
+					return ctrl.Result{}, err
+				}
+			}
 		}
 	}
 
@@ -137,6 +149,42 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		} else if err != nil {
 			log.Error(err, "Failed to get ProxyServer")
 			return ctrl.Result{}, err
+		} else {
+			// Update existing ProxyServer if spec differs
+			if !reflect.DeepEqual(foundProxyServer.Spec, proxyServer.Spec) {
+				log.Info("Updating ProxyServer spec", "ProxyServer.Name", proxyServer.Name)
+				foundProxyServer.Spec = proxyServer.Spec
+				if err := r.Update(ctx, foundProxyServer); err != nil {
+					log.Error(err, "Failed to update ProxyServer")
+					return ctrl.Result{}, err
+				}
+			}
+		}
+
+		// Create NetworkPolicy in HCP namespace if ControlPlaneNamespace is specified
+		if infra.Spec.InfraComponents.Proxy.ControlPlaneNamespace != "" {
+			networkPolicy := r.networkPolicyForInfra(infra)
+			// Note: Cannot set owner reference for cross-namespace resources
+			// Kubernetes disallows cross-namespace owner references
+
+			foundNetworkPolicy := &networkingv1.NetworkPolicy{}
+			err = r.Get(ctx, types.NamespacedName{
+				Name:      networkPolicy.Name,
+				Namespace: networkPolicy.Namespace,
+			}, foundNetworkPolicy)
+			if err != nil && errors.IsNotFound(err) {
+				log.Info("Creating NetworkPolicy in HCP namespace",
+					"namespace", networkPolicy.Namespace,
+					"name", networkPolicy.Name)
+				err = r.Create(ctx, networkPolicy)
+				if err != nil {
+					log.Error(err, "Failed to create NetworkPolicy")
+					return ctrl.Result{}, err
+				}
+			} else if err != nil {
+				log.Error(err, "Failed to get NetworkPolicy")
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -332,7 +380,7 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 		{
 			Name:            "kube-apiserver",
 			Hostname:        "api." + hostedClusterDomain,
-			Port:            443,
+			Port:            6443,
 			TargetService:   "kube-apiserver",
 			TargetPort:      6443,
 			TargetNamespace: controlPlaneNamespace,
@@ -342,7 +390,7 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 		{
 			Name:            "kube-apiserver-internal",
 			Hostname:        "api-int." + hostedClusterDomain,
-			Port:            443,
+			Port:            6443,
 			TargetService:   "kube-apiserver",
 			TargetPort:      6443,
 			TargetNamespace: controlPlaneNamespace,
@@ -365,6 +413,22 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 			Port:            443,
 			TargetService:   "ignition-server-proxy",
 			TargetPort:      443,
+			TargetNamespace: controlPlaneNamespace,
+			Protocol:        "TCP",
+			TimeoutSeconds:  30,
+		},
+		{
+			Name:     "kube-apiserver-kubernetes-hostname",
+			Hostname: "kubernetes." + hostedClusterDomain,
+			AlternateHostnames: []string{
+				"kubernetes",
+				"kubernetes.default",
+				"kubernetes.default.svc",
+				"kubernetes.default.svc.cluster.local",
+			},
+			Port:            443,
+			TargetService:   "kube-apiserver",
+			TargetPort:      6443,
 			TargetNamespace: controlPlaneNamespace,
 			Protocol:        "TCP",
 			TimeoutSeconds:  30,
@@ -402,6 +466,39 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 	}
 }
 
+// networkPolicyForInfra returns a NetworkPolicy for the HCP namespace to allow infrastructure traffic
+func (r *InfraReconciler) networkPolicyForInfra(infra *hostedclusterv1alpha1.Infra) *networkingv1.NetworkPolicy {
+	proxySpec := infra.Spec.InfraComponents.Proxy
+
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "allow-infrastructure",
+			Namespace: proxySpec.ControlPlaneNamespace,
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				// Empty selector matches all pods in the namespace
+			},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					From: []networkingv1.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"hostedcluster.densityops.com/network-policy-group": "infrastructure",
+								},
+							},
+						},
+					},
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+			},
+		},
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -409,6 +506,7 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&hostedclusterv1alpha1.DHCPServer{}).
 		Owns(&hostedclusterv1alpha1.DNSServer{}).
 		Owns(&hostedclusterv1alpha1.ProxyServer{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named("infra").
 		Complete(r)
 }

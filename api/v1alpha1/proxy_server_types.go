@@ -89,11 +89,17 @@ type ProxyBackend struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Hostname is the SNI hostname that clients will use to connect
+	// Hostname is the primary SNI hostname that clients will use to connect
 	// Example: "api.my-cluster.example.com"
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Hostname string `json:"hostname"`
+
+	// AlternateHostnames is a list of additional SNI hostnames that should route to this backend
+	// This is useful for services that may be accessed via multiple hostnames (e.g., kubernetes service
+	// can be accessed as "kubernetes", "kubernetes.default", "kubernetes.default.svc", etc.)
+	// +optional
+	AlternateHostnames []string `json:"alternateHostnames,omitempty"`
 
 	// Port is the external port clients connect to
 	// For HTTPS services, typically 443. For other services, use appropriate ports.

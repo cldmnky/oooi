@@ -1,0 +1,56 @@
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: ProxyServer
+metadata:
+  labels:
+    app.kubernetes.io/name: oooi
+    app.kubernetes.io/managed-by: kustomize
+  name: species-8472-proxy
+  namespace: clusters-species-8472
+spec:
+  # Network configuration for the proxy server
+  # Update serverIP to match your network requirements
+  networkConfig:
+    serverIP: "192.168.100.10"  # TODO: Update with actual IP for species-8472
+    networkAttachmentName: "tenant-network"  # TODO: Update with actual NAD name
+    networkAttachmentNamespace: "default"  # TODO: Update if NAD is in different namespace
+  
+  # Backend services in clusters-species-8472 namespace
+  backends:
+    # Ignition server proxy - for machine config delivery
+    - name: ignition-server
+      hostname: "ignition-server-clusters-species-8472.apps.borg.blahonga.me"
+      port: 443
+      targetService: "ignition-server-proxy"
+      targetPort: 443
+      targetNamespace: "clusters-species-8472"
+      protocol: "TCP"
+      timeoutSeconds: 30
+    
+    # Konnectivity server - for node to control plane connectivity
+    - name: konnectivity-server
+      hostname: "konnectivity-server-clusters-species-8472.apps.borg.blahonga.me"
+      port: 443
+      targetService: "konnectivity-server"
+      targetPort: 8091
+      targetNamespace: "clusters-species-8472"
+      protocol: "TCP"
+      timeoutSeconds: 30
+    
+    # OAuth OpenShift - for authentication
+    - name: oauth-openshift
+      hostname: "oauth.species-8472.clusters.blahonga.me"
+      port: 443
+      targetService: "oauth-openshift"
+      targetPort: 6443
+      targetNamespace: "clusters-species-8472"
+      protocol: "TCP"
+      timeoutSeconds: 30
+  
+  # Container images (using defaults)
+  proxyImage: "envoyproxy/envoy:v1.36.4"
+  managerImage: "quay.io/cldmnky/oooi:latest"
+  
+  # Proxy configuration
+  port: 443  # Main listening port on secondary network
+  xdsPort: 18000  # Internal xDS communication port
+  logLevel: "info"  # Options: trace, debug, info, warning, error, critical

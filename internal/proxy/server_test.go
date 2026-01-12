@@ -23,8 +23,11 @@ import (
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	tcp_proxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -434,6 +437,156 @@ func TestXDSServer_buildEnvoyResources_SNIRouting(t *testing.T) {
 
 	assert.True(t, hostnames["api.test.example.com"], "should have api hostname")
 	assert.True(t, hostnames["oauth.test.example.com"], "should have oauth hostname")
+}
+
+func TestXDSServer_buildEnvoyResources_FallbackChainForIP_Konnectivity(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, hostedclusterv1alpha1.AddToScheme(scheme))
+
+	proxy := &hostedclusterv1alpha1.ProxyServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: "default",
+		},
+		Spec: hostedclusterv1alpha1.ProxyServerSpec{
+			Backends: []hostedclusterv1alpha1.ProxyBackend{
+				{
+					Name:            "konnectivity-server",
+					Hostname:        "konnectivity.test.example.com",
+					Port:            443,
+					TargetService:   "konnectivity-server",
+					TargetPort:      8091,
+					TargetNamespace: "default",
+					Protocol:        "TCP",
+					TimeoutSeconds:  30,
+				},
+				{
+					Name:            "oauth-server",
+					Hostname:        "oauth.test.example.com",
+					Port:            443,
+					TargetService:   "oauth-openshift",
+					TargetPort:      6443,
+					TargetNamespace: "default",
+					Protocol:        "TCP",
+					TimeoutSeconds:  30,
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	xs := &XDSServer{
+		client:  k8sClient,
+		proxies: make(map[string]*hostedclusterv1alpha1.ProxyServer),
+	}
+
+	listeners, clusters, err := xs.buildEnvoyResources(proxy)
+	require.NoError(t, err)
+	require.Len(t, listeners, 1, "should have one listener on 443")
+	require.Len(t, clusters, 2, "should have two clusters")
+
+	// Verify listener has an extra filter chain without SNI match (fallback)
+	listenerProto := listeners[0].(*listener.Listener)
+	// 2 backends + 1 fallback = 3 filter chains
+	require.Len(t, listenerProto.FilterChains, 3, "should have fallback filter chain")
+
+	var fallbackFC *listener.FilterChain
+	for _, fc := range listenerProto.FilterChains {
+		if fc.FilterChainMatch == nil || len(fc.FilterChainMatch.ServerNames) == 0 {
+			fallbackFC = fc
+			break
+		}
+	}
+	require.NotNil(t, fallbackFC, "should include a fallback chain without SNI match")
+
+	// Verify fallback forwards to konnectivity-server cluster
+	require.NotEmpty(t, fallbackFC.Filters)
+	typed := fallbackFC.Filters[0].GetTypedConfig()
+	require.NotNil(t, typed)
+
+	var tcp tcp_proxy.TcpProxy
+	err = anypb.UnmarshalTo(typed, &tcp, proto.UnmarshalOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "test-proxy-konnectivity-server", tcp.GetCluster())
+}
+
+func TestXDSServer_buildEnvoyResources_AlternateHostnames(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, hostedclusterv1alpha1.AddToScheme(scheme))
+
+	proxy := &hostedclusterv1alpha1.ProxyServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: "default",
+		},
+		Spec: hostedclusterv1alpha1.ProxyServerSpec{
+			Backends: []hostedclusterv1alpha1.ProxyBackend{
+				{
+					Name:     "konnectivity",
+					Hostname: "konnectivity.test.example.com",
+					AlternateHostnames: []string{
+						"kubernetes",
+						"kubernetes.default",
+						"kubernetes.default.svc",
+						"kubernetes.default.svc.cluster.local",
+					},
+					Port:            443,
+					TargetService:   "konnectivity-server",
+					TargetPort:      8091,
+					TargetNamespace: "default",
+					Protocol:        "TCP",
+					TimeoutSeconds:  30,
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	xs := &XDSServer{
+		client:  k8sClient,
+		proxies: make(map[string]*hostedclusterv1alpha1.ProxyServer),
+	}
+
+	listeners, clusters, err := xs.buildEnvoyResources(proxy)
+	require.NoError(t, err)
+	require.Len(t, listeners, 1, "should have one listener")
+	require.Len(t, clusters, 1, "should have one cluster")
+
+	// Verify listener has a filter chain with SNI match including all hostnames
+	listenerProto := listeners[0].(*listener.Listener)
+	require.NotEmpty(t, listenerProto.FilterChains, "should have at least one filter chain")
+
+	var sniChain *listener.FilterChain
+	for _, fc := range listenerProto.FilterChains {
+		if fc.FilterChainMatch != nil && len(fc.FilterChainMatch.ServerNames) > 0 {
+			sniChain = fc
+			break
+		}
+	}
+	require.NotNil(t, sniChain, "should include SNI filter chain")
+
+	// Verify all hostnames are included in SNI match
+	serverNames := sniChain.FilterChainMatch.ServerNames
+	require.Len(t, serverNames, 5, "should have primary hostname + 4 alternate hostnames")
+
+	expectedHostnames := []string{
+		"konnectivity.test.example.com",
+		"kubernetes",
+		"kubernetes.default",
+		"kubernetes.default.svc",
+		"kubernetes.default.svc.cluster.local",
+	}
+
+	for _, expected := range expectedHostnames {
+		assert.Contains(t, serverNames, expected, "should contain hostname: %s", expected)
+	}
+
+	// Verify cluster is correctly configured
+	clusterProto := clusters[0].(*cluster.Cluster)
+	assert.Equal(t, "test-proxy-konnectivity", clusterProto.Name)
+	socketAddr := clusterProto.LoadAssignment.Endpoints[0].LbEndpoints[0].GetEndpoint().Address.GetSocketAddress()
+	assert.Equal(t, "konnectivity-server.default.svc.cluster.local", socketAddr.Address)
+	assert.Equal(t, uint32(8091), socketAddr.GetPortValue())
 }
 
 func TestXDSServer_buildEnvoyResources_ClusterConfiguration(t *testing.T) {

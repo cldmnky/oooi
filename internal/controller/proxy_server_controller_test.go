@@ -236,9 +236,14 @@ var _ = Describe("ProxyServer Controller", func() {
 			By("verifying Service configuration")
 			Expect(service.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
 			Expect(service.Spec.Selector).To(HaveKeyWithValue("app", "proxy-server"))
-			Expect(service.Spec.Ports).To(HaveLen(2)) // proxy port + admin port
-			Expect(service.Spec.Ports[0].Port).To(Equal(int32(443)))
-			Expect(service.Spec.Ports[0].TargetPort.IntVal).To(Equal(int32(443)))
+			Expect(service.Spec.Ports).To(HaveLen(2)) // backend port (6443) + admin port
+			// Service should include all backend ports
+			var portNumbers []int32
+			for _, p := range service.Spec.Ports {
+				portNumbers = append(portNumbers, p.Port)
+			}
+			Expect(portNumbers).To(ContainElement(int32(6443))) // Backend port
+			Expect(portNumbers).To(ContainElement(int32(9901))) // Admin port
 
 			By("checking ProxyServer status was updated")
 			updatedProxyServer := &hostedclusterv1alpha1.ProxyServer{}

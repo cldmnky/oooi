@@ -599,6 +599,37 @@ func (r *ProxyServerReconciler) newProxyService(proxyServer *hostedclusterv1alph
 		port = 443
 	}
 
+	// Collect all unique backend ports that Envoy will listen on
+	backendPorts := make(map[int32]bool)
+	for _, backend := range proxyServer.Spec.Backends {
+		backendPorts[backend.Port] = true
+	}
+
+	// Build service ports list: include all backend ports + admin port
+	ports := make([]corev1.ServicePort, 0, len(backendPorts)+1)
+
+	// Add all backend ports
+	for backendPort := range backendPorts {
+		portName := "proxy"
+		if backendPort != port {
+			portName = fmt.Sprintf("proxy-%d", backendPort)
+		}
+		ports = append(ports, corev1.ServicePort{
+			Name:       portName,
+			Port:       backendPort,
+			TargetPort: intstr.FromInt(int(backendPort)),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+
+	// Add admin port
+	ports = append(ports, corev1.ServicePort{
+		Name:       "admin",
+		Port:       9901,
+		TargetPort: intstr.FromInt(9901),
+		Protocol:   corev1.ProtocolTCP,
+	})
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxyServer.Name,
@@ -610,20 +641,7 @@ func (r *ProxyServerReconciler) newProxyService(proxyServer *hostedclusterv1alph
 			Selector: map[string]string{
 				"app": "proxy-server",
 			},
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "proxy",
-					Port:       port,
-					TargetPort: intstr.FromInt(int(port)),
-					Protocol:   corev1.ProtocolTCP,
-				},
-				{
-					Name:       "admin",
-					Port:       9901,
-					TargetPort: intstr.FromInt(9901),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
+			Ports: ports,
 		},
 	}
 }

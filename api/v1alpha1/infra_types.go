@@ -88,7 +88,7 @@ type DHCPConfig struct {
 	// Enabled determines whether the DHCP server should be deployed.
 	// +optional
 	// +kubebuilder:default=true
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// ServerIP is the static IP address assigned to the DHCP server pod
 	// on the secondary network. Must be within the NetworkConfig CIDR.
@@ -118,7 +118,7 @@ type DNSConfig struct {
 	// Enabled determines whether the DNS server should be deployed.
 	// +optional
 	// +kubebuilder:default=true
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// ServerIP is the static IP address assigned to the CoreDNS pod
 	// on the secondary network. Must be within the NetworkConfig CIDR.
@@ -145,7 +145,7 @@ type ProxyConfig struct {
 	// Enabled determines whether the Envoy proxy should be deployed.
 	// +optional
 	// +kubebuilder:default=true
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// ServerIP is the static IP address assigned to the Envoy proxy pod
 	// on the secondary network. Must be within the NetworkConfig CIDR.

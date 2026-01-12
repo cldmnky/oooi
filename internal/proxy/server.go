@@ -23,10 +23,12 @@ import (
 	"sync"
 	"time"
 
+	accesslog "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	file_access_log "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
 	tls_inspector "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/listener/tls_inspector/v3"
 	tcp_proxy "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	discoverygrpc "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
@@ -150,6 +152,20 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 		// Build filter chains for SNI routing
 		var filterChains []*listener.FilterChain
 
+		// Track potential fallback cluster for IP-based TLS (no SNI)
+		// Fallback should route to konnectivity-server to establish tunnels
+		var fallbackClusterName string
+
+		// Port 6443 is used exclusively for kube-apiserver, so use plain TCP proxying
+		// without SNI/TLS inspection. This allows HAProxy health checks (plain HTTP)
+		// to reach the backend and get rejected gracefully by kube-apiserver rather
+		// than failing at the proxy level.
+		usePlainTCP := port == 6443
+
+		// For plain TCP ports, we'll create a single catch-all filter chain
+		// after processing all backends, so track the primary cluster name
+		var plainTCPCluster string
+
 		for _, backend := range backends {
 			// Create cluster for this backend
 			clusterName := fmt.Sprintf("%s-%s", proxy.Name, backend.Name)
@@ -198,29 +214,136 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 				return nil, nil, fmt.Errorf("failed to marshal tcp_proxy: %w", err)
 			}
 
-			// Create filter chain with SNI match
-			filterChain := &listener.FilterChain{
-				FilterChainMatch: &listener.FilterChainMatch{
-					ServerNames: []string{backend.Hostname},
+			if usePlainTCP {
+				// For plain TCP ports, only track the primary cluster (first backend)
+				// We'll create a single catch-all filter chain after processing all backends
+				if plainTCPCluster == "" {
+					plainTCPCluster = clusterName
+				}
+			} else {
+				// For other ports (443), use SNI-based routing
+				// Create filter chain with SNI match
+				// Include both primary hostname and any alternate hostnames
+				serverNames := []string{backend.Hostname}
+				serverNames = append(serverNames, backend.AlternateHostnames...)
+
+				filterChain := &listener.FilterChain{
+					FilterChainMatch: &listener.FilterChainMatch{
+						ServerNames:       serverNames,
+						TransportProtocol: "tls", // Require TLS with SNI
+					},
+					Filters: []*listener.Filter{{
+						Name: wellknown.TCPProxy,
+						ConfigType: &listener.Filter_TypedConfig{
+							TypedConfig: tcpProxyAny,
+						},
+					}},
+				}
+				filterChains = append(filterChains, filterChain)
+
+				// Determine fallback cluster for IP-based TLS connections (e.g., 172.5.0.1:443)
+				// Fallback to konnectivity-server on port 443 so agents can connect
+				if port == 443 && backend.TargetService == "konnectivity-server" {
+					// Choose konnectivity-server cluster as fallback
+					fallbackClusterName = clusterName
+				}
+			}
+		}
+
+		// For plain TCP ports (e.g., 6443), create a single catch-all filter chain
+		// that routes to the primary cluster. This avoids duplicate matcher errors.
+		if plainTCPCluster != "" {
+			plainTCP := &tcp_proxy.TcpProxy{
+				StatPrefix: "plain-tcp",
+				ClusterSpecifier: &tcp_proxy.TcpProxy_Cluster{
+					Cluster: plainTCPCluster,
 				},
+			}
+			plainTCPAny, err := anypb.New(plainTCP)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to marshal plain tcp_proxy: %w", err)
+			}
+
+			plainTCPChain := &listener.FilterChain{
+				FilterChainMatch: nil, // nil match = catch-all for plain TCP
 				Filters: []*listener.Filter{{
 					Name: wellknown.TCPProxy,
 					ConfigType: &listener.Filter_TypedConfig{
-						TypedConfig: tcpProxyAny,
+						TypedConfig: plainTCPAny,
 					},
 				}},
 			}
-			filterChains = append(filterChains, filterChain)
+			filterChains = append(filterChains, plainTCPChain)
 		}
 
-		// Create TLS inspector listener filter for SNI
-		tlsInspector := &tls_inspector.TlsInspector{}
-		tlsInspectorAny, err := anypb.New(tlsInspector)
+		// Add a default filter chain without SNI match for IP-based TLS on 443
+		// This catches clients that connect directly to the ClusterIP by IP (no hostname/SNI)
+		// Must be added LAST so it acts as the default/fallback after SNI-based chains
+		if fallbackClusterName != "" {
+			fallbackTCP := &tcp_proxy.TcpProxy{
+				StatPrefix: "fallback",
+				ClusterSpecifier: &tcp_proxy.TcpProxy_Cluster{
+					Cluster: fallbackClusterName,
+				},
+			}
+			fallbackAny, err := anypb.New(fallbackTCP)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to marshal fallback tcp_proxy: %w", err)
+			}
+
+			// Create fallback chain for TLS connections without SNI
+			// Use nil FilterChainMatch to create a true catch-all filter chain
+			// This will match any connection that doesn't match the SNI-based chains
+			fallbackChain := &listener.FilterChain{
+				FilterChainMatch: nil, // nil match = catch-all
+				Filters: []*listener.Filter{{
+					Name: wellknown.TCPProxy,
+					ConfigType: &listener.Filter_TypedConfig{
+						TypedConfig: fallbackAny,
+					},
+				}},
+			}
+			filterChains = append(filterChains, fallbackChain)
+		}
+
+		// Create access log configuration with detailed connection metadata
+		accessLogConfig := &file_access_log.FileAccessLog{
+			Path: "/dev/stdout",
+			AccessLogFormat: &file_access_log.FileAccessLog_LogFormat{
+				LogFormat: &core.SubstitutionFormatString{
+					Format: &core.SubstitutionFormatString_TextFormatSource{
+						TextFormatSource: &core.DataSource{
+							Specifier: &core.DataSource_InlineString{
+								InlineString: "[%START_TIME%] %DOWNSTREAM_REMOTE_ADDRESS% → %UPSTREAM_CLUSTER% | SNI: %REQUESTED_SERVER_NAME% | TLS: %DOWNSTREAM_TLS_VERSION% %DOWNSTREAM_TLS_CIPHER% | Protocol: %PROTOCOL% | Flags: %RESPONSE_FLAGS% | Bytes: %BYTES_SENT%/%BYTES_RECEIVED% | ConnID: %CONNECTION_ID%\n",
+							},
+						},
+					},
+				},
+			},
+		}
+		accessLogAny, err := anypb.New(accessLogConfig)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to marshal tls_inspector: %w", err)
+			return nil, nil, fmt.Errorf("failed to marshal access_log: %w", err)
 		}
 
-		// Create listener
+		// Create listener - use TLS inspector only for SNI-based ports (443)
+		// Port 6443 uses plain TCP passthrough
+		var listenerFilters []*listener.ListenerFilter
+		if !usePlainTCP {
+			// Create TLS inspector listener filter for SNI-based routing on port 443
+			tlsInspector := &tls_inspector.TlsInspector{}
+			tlsInspectorAny, err := anypb.New(tlsInspector)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to marshal tls_inspector: %w", err)
+			}
+			listenerFilters = []*listener.ListenerFilter{{
+				Name: wellknown.TlsInspector,
+				ConfigType: &listener.ListenerFilter_TypedConfig{
+					TypedConfig: tlsInspectorAny,
+				},
+			}}
+		}
+
 		listenerResource := &listener.Listener{
 			Name: fmt.Sprintf("%s-listener-%d", proxy.Name, port),
 			Address: &core.Address{
@@ -234,11 +357,12 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 					},
 				},
 			},
-			FilterChains: filterChains,
-			ListenerFilters: []*listener.ListenerFilter{{
-				Name: wellknown.TlsInspector,
-				ConfigType: &listener.ListenerFilter_TypedConfig{
-					TypedConfig: tlsInspectorAny,
+			FilterChains:    filterChains,
+			ListenerFilters: listenerFilters, // TLS inspector only for SNI ports
+			AccessLog: []*accesslog.AccessLog{{
+				Name: wellknown.FileAccessLog,
+				ConfigType: &accesslog.AccessLog_TypedConfig{
+					TypedConfig: accessLogAny,
 				},
 			}},
 		}
