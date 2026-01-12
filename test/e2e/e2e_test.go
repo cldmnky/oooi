@@ -65,7 +65,10 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deleting existing controller deployment (if any)")
-		cmd = exec.Command("kubectl", "delete", "deployment", "oooi-controller-manager", "-n", namespace, "--ignore-not-found")
+		cmd = exec.Command(
+			"kubectl", "delete", "deployment", "oooi-controller-manager",
+			"-n", namespace, "--ignore-not-found",
+		)
 		_, _ = utils.Run(cmd)
 
 		By("cleaning up any existing deployment")
