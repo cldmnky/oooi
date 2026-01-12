@@ -27,4 +27,4 @@ spec:
     - code: 6
       value: "8.8.8.8,8.8.4.4"  # DNS servers
 
-  image: "ghcr.io/cldmnky/hyperdhcp:latest"
+  image: "quay.io/cldmnky/oooi:latest"
