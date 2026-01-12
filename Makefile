@@ -237,17 +237,23 @@ container-build: manifests generate fmt vet ko ## Build container image with ko 
 
 .PHONY: container-build-e2e
 container-build-e2e: manifests generate fmt vet ko ## Build container image locally for e2e tests.
-	@echo "Building image with ko..."
-	@KO_IMAGE=$$(KO_DOCKER_REPO=ko.local KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 $(KO) build --local --preserve-import-paths=false --bare=true . 2>&1 | tail -1); \
-	echo "Built image: $$KO_IMAGE"; \
-	echo "Tagging image as $(IMG)..."; \
-	if command -v podman >/dev/null 2>&1; then \
-		podman tag $$KO_IMAGE $(IMG); \
-	elif command -v docker >/dev/null 2>&1; then \
-		docker tag $$KO_IMAGE $(IMG); \
+	@if [ -n "$(KIND_CLUSTER)" ]; then \
+		echo "Building and loading image into Kind cluster $(KIND_CLUSTER)..."; \
+		KO_DOCKER_REPO=$(IMAGE_TAG_BASE) KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 KIND_CLUSTER_NAME=$(KIND_CLUSTER) $(KO) build --preserve-import-paths=false --bare=true .; \
+		echo "Image built and loaded into Kind cluster"; \
 	else \
-		echo "Error: Neither podman nor docker found"; \
-		exit 1; \
+		echo "Building image with ko..."; \
+		KO_IMAGE=$$(KO_DOCKER_REPO=ko.local KO_DEFAULTBASEIMAGE=registry.access.redhat.com/ubi9/ubi:9.4 $(KO) build --local --preserve-import-paths=false --bare=true . 2>&1 | tail -1); \
+		echo "Built image: $$KO_IMAGE"; \
+		echo "Tagging image as $(IMG)..."; \
+		if command -v podman >/dev/null 2>&1; then \
+			podman tag $$KO_IMAGE $(IMG); \
+		elif command -v docker >/dev/null 2>&1; then \
+			docker tag $$KO_IMAGE $(IMG); \
+		else \
+			echo "Error: Neither podman nor docker found"; \
+			exit 1; \
+		fi; \
 	fi
 
 .PHONY: container-push
