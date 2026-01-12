@@ -71,10 +71,6 @@ var _ = Describe("Manager", Ordered, func() {
 		)
 		_, _ = utils.Run(cmd)
 
-		By("cleaning up any existing deployment")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd) // Ignore errors if nothing to undeploy
-
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
