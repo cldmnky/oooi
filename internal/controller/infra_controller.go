@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -170,13 +169,11 @@ func (r *InfraReconciler) dhcpServerForInfra(infra *hostedclusterv1alpha1.Infra)
 		image = "quay.io/cldmnky/oooi:latest"
 	}
 
-	// Parse NetworkAttachmentDefinition name and namespace
-	// Format: "namespace/name" or just "name" (uses Infra's namespace)
+	// Get NAD namespace from NetworkConfig or default to Infra's namespace
 	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
 	nadNamespace := infra.Namespace
-	if parts := strings.Split(nadName, "/"); len(parts) == 2 {
-		nadNamespace = parts[0]
-		nadName = parts[1]
+	if infra.Spec.NetworkConfig.NetworkAttachmentNamespace != "" {
+		nadNamespace = infra.Spec.NetworkConfig.NetworkAttachmentNamespace
 	}
 
 	return &hostedclusterv1alpha1.DHCPServer{
@@ -213,12 +210,11 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 		image = "quay.io/cldmnky/oooi:latest"
 	}
 
-	// Parse NetworkAttachmentDefinition name and namespace
+	// Get NAD namespace from NetworkConfig or default to Infra's namespace
 	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
 	nadNamespace := infra.Namespace
-	if parts := strings.Split(nadName, "/"); len(parts) == 2 {
-		nadNamespace = parts[0]
-		nadName = parts[1]
+	if infra.Spec.NetworkConfig.NetworkAttachmentNamespace != "" {
+		nadNamespace = infra.Spec.NetworkConfig.NetworkAttachmentNamespace
 	}
 
 	// Build hosted cluster domain from ClusterName and BaseDomain
@@ -290,11 +286,11 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 	proxySpec := infra.Spec.InfraComponents.Proxy
 
 	// Parse NetworkAttachmentDefinition name and namespace
+	// Get NAD namespace from NetworkConfig or default to Infra's namespace
 	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
 	nadNamespace := infra.Namespace
-	if parts := strings.Split(nadName, "/"); len(parts) == 2 {
-		nadNamespace = parts[0]
-		nadName = parts[1]
+	if infra.Spec.NetworkConfig.NetworkAttachmentNamespace != "" {
+		nadNamespace = infra.Spec.NetworkConfig.NetworkAttachmentNamespace
 	}
 
 	// Build hosted cluster domain from ClusterName and BaseDomain

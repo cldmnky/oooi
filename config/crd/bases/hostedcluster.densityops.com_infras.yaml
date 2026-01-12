@@ -183,6 +183,12 @@ spec:
                       that represents the secondary VLAN.
                     minLength: 1
                     type: string
+                  networkAttachmentNamespace:
+                    description: |-
+                      NetworkAttachmentNamespace is the namespace where the NetworkAttachmentDefinition resides.
+                      If not specified, the operator will look for the NAD first in the current namespace,
+                      then in the default namespace.
+                    type: string
                 required:
                 - cidr
                 - gateway

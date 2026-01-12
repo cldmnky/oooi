@@ -26,6 +26,18 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: cldmnky+oooi
+          password: ${{ secrets.QUAY_TOKEN }}
+
       - name: Running Test e2e
         run: |
           go mod tidy

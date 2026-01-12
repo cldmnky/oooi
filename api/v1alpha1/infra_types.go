@@ -56,6 +56,12 @@ type NetworkConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	NetworkAttachmentDefinition string `json:"networkAttachmentDefinition"`
 
+	// NetworkAttachmentNamespace is the namespace where the NetworkAttachmentDefinition resides.
+	// If not specified, the operator will look for the NAD first in the current namespace,
+	// then in the default namespace.
+	// +optional
+	NetworkAttachmentNamespace string `json:"networkAttachmentNamespace,omitempty"`
+
 	// DNSServers is an optional list of upstream DNS servers for external resolution.
 	// If not specified, the infrastructure DNS will use the pod's default resolvers.
 	// +optional

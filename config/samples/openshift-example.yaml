@@ -124,6 +124,10 @@ spec:
     cidr: "192.168.100.0/24"
     gateway: "192.168.100.1"
     networkAttachmentDefinition: "tenant-vlan-100"
+    # Optional: Specify the namespace where the NetworkAttachmentDefinition resides
+    # If not specified, defaults to the Infra CR's namespace
+    # This allows selecting NADs from different namespaces (e.g., shared "default" namespace)
+    networkAttachmentNamespace: "hosted-clusters"
     dnsServers:
       - "8.8.8.8"
       - "8.8.4.4"

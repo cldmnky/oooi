@@ -18,6 +18,7 @@ package dns
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -33,12 +34,27 @@ func TestDNS(t *testing.T) {
 	RunSpecs(t, "DNS Server Suite")
 }
 
+// findAvailablePort finds an available port by listening on port 0
+// Port 0 tells the OS to pick any available port
+func findAvailablePort() int {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		_ = listener.Close()
+	}()
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
 var _ = Describe("DNS Server", Serial, func() {
 	var (
 		tmpDir       string
 		corefilePath string
 		ctx          context.Context
 		cancel       context.CancelFunc
+		dnsPort      int
+		readyPort    int
 	)
 
 	BeforeEach(func() {
@@ -48,6 +64,10 @@ var _ = Describe("DNS Server", Serial, func() {
 
 		corefilePath = filepath.Join(tmpDir, "Corefile")
 		ctx, cancel = context.WithCancel(context.Background())
+
+		// Find available ports dynamically
+		dnsPort = findAvailablePort()
+		readyPort = findAvailablePort()
 	})
 
 	AfterEach(func() {
@@ -73,10 +93,10 @@ var _ = Describe("DNS Server", Serial, func() {
 
 		It("should start successfully with valid Corefile", func() {
 			By("creating a valid Corefile")
-			corefile := `.:5353 {
+			corefile := `.:` + fmt.Sprintf("%d", dnsPort) + ` {
     whoami
     bind 127.0.0.1
-    ready :8181
+    ready :` + fmt.Sprintf("%d", readyPort) + `
 }`
 			err := os.WriteFile(corefilePath, []byte(corefile), 0644)
 			Expect(err).NotTo(HaveOccurred())
@@ -109,11 +129,11 @@ var _ = Describe("DNS Server", Serial, func() {
 
 		It("should reload when Corefile changes", func() {
 			By("creating initial Corefile")
-			corefile := `.:5354 {
+			corefile := `.:` + fmt.Sprintf("%d", dnsPort) + ` {
     whoami
     bind 127.0.0.1
     reload 2s
-    ready :8182
+    ready :` + fmt.Sprintf("%d", readyPort) + `
 }`
 			err := os.WriteFile(corefilePath, []byte(corefile), 0644)
 			Expect(err).NotTo(HaveOccurred())
@@ -131,11 +151,11 @@ var _ = Describe("DNS Server", Serial, func() {
 			time.Sleep(500 * time.Millisecond)
 
 			By("modifying the Corefile")
-			updatedCorefile := `.:5354 {
+			updatedCorefile := `.:` + fmt.Sprintf("%d", dnsPort) + ` {
     whoami
     bind 127.0.0.1
     reload 2s
-    ready :8182
+    ready :` + fmt.Sprintf("%d", readyPort) + `
     log
 }`
 			err = os.WriteFile(corefilePath, []byte(updatedCorefile), 0644)
@@ -160,7 +180,7 @@ var _ = Describe("DNS Server", Serial, func() {
 	Context("When stopping a server", func() {
 		It("should cleanup resources gracefully", func() {
 			By("creating a valid Corefile")
-			corefile := `.:5355 {
+			corefile := `.:` + fmt.Sprintf("%d", dnsPort) + ` {
     whoami
     bind 127.0.0.1
 }`
