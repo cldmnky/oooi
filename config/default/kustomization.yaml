@@ -41,11 +41,6 @@ patches:
   target:
     kind: Deployment
 
-# [E2E] Set imagePullPolicy to Never for e2e tests with locally loaded images
-- path: manager_image_pull_policy_patch.yaml
-  target:
-    kind: Deployment
-
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
 # This patch will protect the metrics with certManager self-signed certs.
