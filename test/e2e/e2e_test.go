@@ -60,6 +60,14 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with privileged policy")
 
 		By("installing CRDs")
+
+		By("ensuring namespace %s is clean", namespace)
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "wait", "ns", namespace, "--for=delete", "--timeout=90s")
+		_, _ = utils.Run(cmd)
+
+		By("installing CRDs")
 		cmd = exec.Command("make", "install")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
