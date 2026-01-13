@@ -66,9 +66,17 @@ spec:
                   description: ProxyBackend defines a single proxied service with
                     SNI-based routing
                   properties:
+                    alternateHostnames:
+                      description: |-
+                        AlternateHostnames is a list of additional SNI hostnames that should route to this backend
+                        This is useful for services that may be accessed via multiple hostnames (e.g., kubernetes service
+                        can be accessed as "kubernetes", "kubernetes.default", "kubernetes.default.svc", etc.)
+                      items:
+                        type: string
+                      type: array
                     hostname:
                       description: |-
-                        Hostname is the SNI hostname that clients will use to connect
+                        Hostname is the primary SNI hostname that clients will use to connect
                         Example: "api.my-cluster.example.com"
                       minLength: 1
                       type: string

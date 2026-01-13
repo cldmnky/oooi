@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -185,6 +186,44 @@ var _ = Describe("DNSServer Controller", func() {
 			Expect(configMap.OwnerReferences).To(HaveLen(1))
 			Expect(configMap.OwnerReferences[0].Name).To(Equal(resourceName))
 			Expect(configMap.OwnerReferences[0].Kind).To(Equal("DNSServer"))
+		})
+
+		It("should expose health and ready endpoints without extra server blocks", func() {
+			By("reconciling the DNSServer resource")
+			controllerReconciler := &DNSServerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("fetching the ConfigMap")
+			configMap := &corev1.ConfigMap{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-dns-config",
+				Namespace: resourceNamespace,
+			}, configMap)
+			Expect(err).NotTo(HaveOccurred())
+
+			corefile := configMap.Data["Corefile"]
+
+			By("verifying separate DNS server blocks for each view")
+			dnsPort := 53
+			Expect(strings.Count(corefile, fmt.Sprintf(".:%d {", dnsPort))).To(Equal(2))
+
+			By("verifying health and ready are in first server block only")
+			Expect(corefile).To(ContainSubstring("health :8080"))
+			Expect(corefile).To(ContainSubstring("ready :8181"))
+
+			By("ensuring no standalone health/ready server blocks exist")
+			Expect(corefile).NotTo(ContainSubstring(".:8080 {"))
+			Expect(corefile).NotTo(ContainSubstring(".:8181 {"))
+
+			By("verifying forward health_check is removed")
+			Expect(corefile).NotTo(ContainSubstring("health_check"))
 		})
 
 		It("should create a Service for the DNS server", func() {

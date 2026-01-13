@@ -94,7 +94,18 @@ func BuildEnvoyBootstrapConfig(proxy *hostedclusterv1alpha1.ProxyServer, xdsPort
       }
     }
   },
-
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "static_layer",
+        "static_layer": {
+          "overload": {
+            "global_downstream_max_connections": 50000
+          }
+        }
+      }
+    ]
+  }
 }`, proxy.Name, proxy.Name, xdsPort)
 }
 

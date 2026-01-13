@@ -235,7 +235,9 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 	}
 
 	// Build Corefile using view plugin for source-based routing
-	// Each view gets its own server block with view directive at the top
+	// The view plugin requires SEPARATE server blocks for each view condition
+	// Each server block with a view directive only processes requests matching that view
+	// Plugins (hosts, forward, etc.) are at the server block level, NOT nested in view
 	// View plugin routes queries based on source IP address:
 	// - Multus view: Queries from secondary network CIDR see HCP pointing to external proxy
 	// - Default view: Queries from pod network see HCP pointing to internal proxy (if configured)
@@ -249,20 +251,22 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     view multus {
         expr incidr(client_ip(), '%s')
     }
-    
+
     hosts {
 %s        fallthrough
     }
-    
+
     forward . %s {
         policy sequential
-        health_check 5s
     }
-    
+
     cache %s
     log
     errors
     reload %s
+
+    health :8080
+    ready :8181
 }
 
 # Default view - traffic from pod network
@@ -271,29 +275,19 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     view default {
         expr true
     }
-    
+
     hosts {
 %s        fallthrough
     }
-    
+
     forward . %s {
         policy sequential
-        health_check 5s
     }
-    
+
     cache %s
     log
     errors
     reload %s
-}
-
-# Shared health/metrics endpoints
-.:8181 {
-    ready
-}
-
-.:8080 {
-    health
 }
 `, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, defaultHostsEntries.String(), upstream, cacheTTL, reloadInterval)
 	} else {
@@ -304,20 +298,22 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     view multus {
         expr incidr(client_ip(), '%s')
     }
-    
+
     hosts {
 %s        fallthrough
     }
-    
+
     forward . %s {
         policy sequential
-        health_check 5s
     }
-    
+
     cache %s
     log
     errors
     reload %s
+
+    health :8080
+    ready :8181
 }
 
 # Default view - traffic from pod network
@@ -326,21 +322,12 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     view default {
         expr true
     }
-    
+
     forward . %s
     cache %s
     log
     errors
     reload %s
-}
-
-# Shared health/metrics endpoints
-.:8181 {
-    ready
-}
-
-.:8080 {
-    health
 }
 `, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, upstream, cacheTTL, reloadInterval)
 	}
@@ -509,8 +496,10 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 										Port: intstr.FromInt(8080),
 									},
 								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       10,
+								InitialDelaySeconds: 15,
+								PeriodSeconds:       30,
+								TimeoutSeconds:      5,
+								FailureThreshold:    3,
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
@@ -519,8 +508,10 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 										Port: intstr.FromInt(8181),
 									},
 								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       5,
+								InitialDelaySeconds: 10,
+								PeriodSeconds:       10,
+								TimeoutSeconds:      3,
+								FailureThreshold:    3,
 							},
 						},
 					},
