@@ -34,6 +34,10 @@ type InfraSpec struct {
 	// (DHCP, DNS, Proxy) that bridge the isolated VLAN to the control plane.
 	// +optional
 	InfraComponents InfraComponents `json:"infraComponents,omitempty"`
+
+	// AppsIngress defines optional configuration for hosted cluster *.apps ingress handling.
+	// +optional
+	AppsIngress AppsIngressConfig `json:"appsIngress,omitempty"`
 }
 
 // NetworkConfig defines the secondary network parameters for the isolated VLAN.
@@ -181,6 +185,96 @@ type ProxyConfig struct {
 	ManagerImage string `json:"managerImage,omitempty"`
 }
 
+// AppsIngressConfig defines optional configuration for hosted cluster *.apps domain ingress handling.
+type AppsIngressConfig struct {
+	// Enabled determines whether apps ingress automation should be deployed.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// BaseDomain is the base domain for the hosted cluster's apps ingress.
+	// Example: "apps.example.com" where *.apps.<cluster>.apps.example.com will be routable.
+	// +optional
+	BaseDomain string `json:"baseDomain,omitempty"`
+
+	// HostedClusterRef references the HostedCluster for which apps ingress is being configured.
+	// +optional
+	HostedClusterRef HostedClusterReference `json:"hostedClusterRef,omitempty"`
+
+	// MetalLB contains configuration for the user-managed MetalLB installation.
+	// +optional
+	MetalLB AppsIngressMetalLB `json:"metallb,omitempty"`
+
+	// Service defines the LoadBalancer service to be created in the hosted cluster.
+	// +optional
+	Service AppsIngressService `json:"service,omitempty"`
+
+	// Ports defines the HTTP/HTTPS ports for the ingress.
+	// +optional
+	Ports AppsIngressPorts `json:"ports,omitempty"`
+}
+
+// HostedClusterReference is a reference to a HostedCluster resource.
+type HostedClusterReference struct {
+	// Name is the name of the HostedCluster.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Namespace is the namespace of the HostedCluster.
+	// +optional
+	// +kubebuilder:default="clusters"
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// AppsIngressMetalLB defines the MetalLB address pool scope for external IPs.
+type AppsIngressMetalLB struct {
+	// AddressPoolName is the MetalLB address pool name to use for the LoadBalancer service.
+	// Example: "lab-network"
+	// +optional
+	AddressPoolName string `json:"addressPoolName,omitempty"`
+
+	// IPAddressPoolRange defines the valid range of IPs expected to be allocated by MetalLB.
+	// Format: "start-end" or "start/prefix" notation.
+	// This is for documentation/validation purposes only; not enforced by the operator.
+	// Example: "10.202.64.221-10.202.64.240"
+	// +optional
+	IPAddressPoolRange string `json:"ipAddressPoolRange,omitempty"`
+
+	// L2AdvertisementName is the MetalLB L2Advertisement resource name.
+	// +optional
+	L2AdvertisementName string `json:"l2AdvertisementName,omitempty"`
+}
+
+// AppsIngressService defines the LoadBalancer service in the hosted cluster.
+type AppsIngressService struct {
+	// Name is the name of the LoadBalancer service in the hosted cluster.
+	// +optional
+	// +kubebuilder:default="oooi-ingress"
+	Name string `json:"name,omitempty"`
+
+	// Namespace is the namespace where the service will be created.
+	// Default: "clusters-<hostedcluster-name>"
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// AppsIngressPorts defines the HTTP and HTTPS ports for the ingress.
+type AppsIngressPorts struct {
+	// HTTP port number.
+	// +optional
+	// +kubebuilder:default=80
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	HTTP int32 `json:"http,omitempty"`
+
+	// HTTPS port number.
+	// +optional
+	// +kubebuilder:default=443
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	HTTPS int32 `json:"https,omitempty"`
+}
+
 // InfraStatus defines the observed state of Infra.
 type InfraStatus struct {
 	// Conditions represents the latest available observations of the Infra's state.
@@ -194,6 +288,10 @@ type InfraStatus struct {
 	// ComponentStatus tracks the status of individual infrastructure components.
 	// +optional
 	ComponentStatus ComponentStatus `json:"componentStatus,omitempty"`
+
+	// AppsIngressStatus tracks the status of apps ingress configuration.
+	// +optional
+	AppsIngressStatus AppsIngressStatus `json:"appsIngressStatus,omitempty"`
 
 	// ObservedGeneration reflects the generation of the most recently observed Infra.
 	// +optional
@@ -213,6 +311,30 @@ type ComponentStatus struct {
 	// ProxyReady indicates whether the Envoy proxy is ready.
 	// +optional
 	ProxyReady bool `json:"proxyReady,omitempty"`
+}
+
+// AppsIngressStatus tracks the status of apps ingress configuration.
+type AppsIngressStatus struct {
+	// Phase represents the current phase of apps ingress provisioning.
+	// Possible values: Pending, Ready, Degraded
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// ExternalIP is the external IP assigned by MetalLB to the hosted cluster's LoadBalancer service.
+	// +optional
+	ExternalIP string `json:"externalIP,omitempty"`
+
+	// LastSyncTime is the timestamp of the last successful reconciliation.
+	// +optional
+	LastSyncTime metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// Reason provides a short reason for the current phase.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message provides a human-readable message explaining the current status.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +kubebuilder:object:root=true

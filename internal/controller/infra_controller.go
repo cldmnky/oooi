@@ -20,11 +20,16 @@ import (
 	"context"
 	"reflect"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -36,6 +41,10 @@ import (
 type InfraReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// HostedClusterClientFactory creates a client for the hosted cluster.
+	// Used for installing MetalLB and managing ingress service in the hosted cluster.
+	HostedClusterClientFactory func(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (client.Client, error)
 }
 
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras,verbs=get;list;watch;create;update;patch;delete
@@ -45,6 +54,8 @@ type InfraReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=hypershift.openshift.io,resources=hostedclusters,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -73,6 +84,10 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	if err := r.reconcileProxyComponent(ctx, infra); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileAppsIngress(ctx, infra); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -218,6 +233,250 @@ func (r *InfraReconciler) reconcileNetworkPolicy(ctx context.Context, infra *hos
 	}
 
 	return nil
+}
+
+// reconcileAppsIngress handles apps ingress configuration for hosted clusters.
+func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+	// If apps ingress is not enabled, skip
+	if !infra.Spec.AppsIngress.Enabled {
+		return nil
+	}
+
+	hostedClient, err := r.getHostedClusterClient(ctx, infra)
+	if err != nil {
+		infra.Status.AppsIngressStatus.Phase = "Degraded"
+		infra.Status.AppsIngressStatus.Reason = "HostedClusterAccessFailed"
+		infra.Status.AppsIngressStatus.Message = err.Error()
+		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		return nil
+	}
+
+	if err := r.ensureMetalLBInstalled(ctx, hostedClient, infra); err != nil {
+		infra.Status.AppsIngressStatus.Phase = "Degraded"
+		infra.Status.AppsIngressStatus.Reason = "MetalLBInstallFailed"
+		infra.Status.AppsIngressStatus.Message = err.Error()
+		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		return nil
+	}
+
+	if err := r.ensureAppsIngressService(ctx, hostedClient, infra); err != nil {
+		infra.Status.AppsIngressStatus.Phase = "Degraded"
+		infra.Status.AppsIngressStatus.Reason = "IngressServiceFailed"
+		infra.Status.AppsIngressStatus.Message = err.Error()
+		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		return nil
+	}
+
+	infra.Status.AppsIngressStatus.Phase = "Pending"
+	infra.Status.AppsIngressStatus.Reason = "WaitingForExternalIP"
+	infra.Status.AppsIngressStatus.Message = "MetalLB and ingress service configured; waiting for external IP"
+	infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+
+	return nil
+}
+
+func (r *InfraReconciler) getHostedClusterClient(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (client.Client, error) {
+	if r.HostedClusterClientFactory != nil {
+		return r.HostedClusterClientFactory(ctx, infra)
+	}
+
+	hostedClusterName := infra.Spec.AppsIngress.HostedClusterRef.Name
+	hostedClusterNamespace := infra.Spec.AppsIngress.HostedClusterRef.Namespace
+	if hostedClusterNamespace == "" {
+		hostedClusterNamespace = "clusters"
+	}
+	if hostedClusterName == "" {
+		return nil, errors.NewBadRequest("appsIngress.hostedClusterRef.name is required")
+	}
+
+	hostedCluster := &unstructured.Unstructured{}
+	hostedCluster.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "hypershift.openshift.io",
+		Version: "v1beta1",
+		Kind:    "HostedCluster",
+	})
+	if err := r.Get(ctx, types.NamespacedName{Name: hostedClusterName, Namespace: hostedClusterNamespace}, hostedCluster); err != nil {
+		return nil, err
+	}
+
+	kubeconfigName, found, err := unstructured.NestedString(hostedCluster.Object, "status", "kubeconfig", "name")
+	if err != nil {
+		return nil, err
+	}
+	if !found || kubeconfigName == "" {
+		return nil, errors.NewBadRequest("hostedcluster does not report a kubeconfig")
+	}
+
+	kubeconfigSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: kubeconfigName, Namespace: hostedClusterNamespace}, kubeconfigSecret); err != nil {
+		return nil, err
+	}
+
+	kubeconfigBytes, ok := kubeconfigSecret.Data["kubeconfig"]
+	if !ok || len(kubeconfigBytes) == 0 {
+		return nil, errors.NewBadRequest("kubeconfig secret has no kubeconfig data")
+	}
+
+	config, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	hostedScheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(hostedScheme); err != nil {
+		return nil, err
+	}
+
+	return client.New(config, client.Options{Scheme: hostedScheme})
+}
+
+func (r *InfraReconciler) ensureMetalLBInstalled(ctx context.Context, hostedClient client.Client, infra *hostedclusterv1alpha1.Infra) error {
+	addressPoolName := infra.Spec.AppsIngress.MetalLB.AddressPoolName
+	if addressPoolName == "" {
+		return errors.NewBadRequest("appsIngress.metallb.addressPoolName is required")
+	}
+
+	addressRange := infra.Spec.AppsIngress.MetalLB.IPAddressPoolRange
+	if addressRange == "" {
+		return errors.NewBadRequest("appsIngress.metallb.ipAddressPoolRange is required")
+	}
+
+	operatorNamespace := "openshift-operators"
+
+	subscription := &unstructured.Unstructured{}
+	subscription.SetGroupVersionKind(schema.GroupVersionKind{Group: "operators.coreos.com", Version: "v1alpha1", Kind: "Subscription"})
+	subscription.SetName("metallb-operator")
+	subscription.SetNamespace(operatorNamespace)
+	subscription.Object["spec"] = map[string]interface{}{
+		"channel":             "stable",
+		"name":                "metallb-operator",
+		"source":              "redhat-operators",
+		"sourceNamespace":     "openshift-marketplace",
+		"installPlanApproval": "Automatic",
+	}
+	if err := r.applyUnstructured(ctx, hostedClient, subscription); err != nil {
+		return err
+	}
+
+	metallb := &unstructured.Unstructured{}
+	metallb.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "MetalLB"})
+	metallb.SetName("metallb")
+	metallb.SetNamespace(operatorNamespace)
+	if err := r.applyUnstructured(ctx, hostedClient, metallb); err != nil {
+		return err
+	}
+
+	ipPool := &unstructured.Unstructured{}
+	ipPool.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "IPAddressPool"})
+	ipPool.SetName(addressPoolName)
+	ipPool.SetNamespace(operatorNamespace)
+	ipPool.Object["spec"] = map[string]interface{}{
+		"autoAssign": true,
+		"addresses":  []interface{}{addressRange},
+	}
+	if err := r.applyUnstructured(ctx, hostedClient, ipPool); err != nil {
+		return err
+	}
+
+	advertisementName := infra.Spec.AppsIngress.MetalLB.L2AdvertisementName
+	if advertisementName == "" {
+		advertisementName = "advertise-" + addressPoolName
+	}
+	l2Adv := &unstructured.Unstructured{}
+	l2Adv.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "L2Advertisement"})
+	l2Adv.SetName(advertisementName)
+	l2Adv.SetNamespace(operatorNamespace)
+	l2Adv.Object["spec"] = map[string]interface{}{
+		"ipAddressPools": []interface{}{addressPoolName},
+	}
+	if err := r.applyUnstructured(ctx, hostedClient, l2Adv); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *InfraReconciler) ensureAppsIngressService(ctx context.Context, hostedClient client.Client, infra *hostedclusterv1alpha1.Infra) error {
+	serviceName := infra.Spec.AppsIngress.Service.Name
+	if serviceName == "" {
+		serviceName = "oooi-ingress"
+	}
+	serviceNamespace := infra.Spec.AppsIngress.Service.Namespace
+	if serviceNamespace == "" {
+		serviceNamespace = "openshift-ingress"
+	}
+
+	httpPort := infra.Spec.AppsIngress.Ports.HTTP
+	if httpPort == 0 {
+		httpPort = 80
+	}
+	httpsPort := infra.Spec.AppsIngress.Ports.HTTPS
+	if httpsPort == 0 {
+		httpsPort = 443
+	}
+
+	service := &corev1.Service{}
+	if err := hostedClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNamespace}, service); err == nil {
+		service.Spec.Type = corev1.ServiceTypeLoadBalancer
+		service.Spec.Selector = map[string]string{
+			"ingresscontroller.operator.openshift.io/deployment-ingresscontroller": "default",
+		}
+		service.Spec.Ports = []corev1.ServicePort{
+			{Name: "http", Protocol: corev1.ProtocolTCP, Port: httpPort, TargetPort: intstrFromInt32(httpPort)},
+			{Name: "https", Protocol: corev1.ProtocolTCP, Port: httpsPort, TargetPort: intstrFromInt32(httpsPort)},
+		}
+		if service.Annotations == nil {
+			service.Annotations = map[string]string{}
+		}
+		if infra.Spec.AppsIngress.MetalLB.AddressPoolName != "" {
+			service.Annotations["metallb.universe.tf/address-pool"] = infra.Spec.AppsIngress.MetalLB.AddressPoolName
+		}
+		return hostedClient.Update(ctx, service)
+	}
+
+	service = &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: serviceNamespace,
+			Annotations: map[string]string{
+				"metallb.universe.tf/address-pool": infra.Spec.AppsIngress.MetalLB.AddressPoolName,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeLoadBalancer,
+			Ports: []corev1.ServicePort{
+				{Name: "http", Protocol: corev1.ProtocolTCP, Port: httpPort, TargetPort: intstrFromInt32(httpPort)},
+				{Name: "https", Protocol: corev1.ProtocolTCP, Port: httpsPort, TargetPort: intstrFromInt32(httpsPort)},
+			},
+			Selector: map[string]string{
+				"ingresscontroller.operator.openshift.io/deployment-ingresscontroller": "default",
+			},
+		},
+	}
+
+	if infra.Spec.AppsIngress.MetalLB.AddressPoolName == "" {
+		service.Annotations = nil
+	}
+
+	return hostedClient.Create(ctx, service)
+}
+
+func (r *InfraReconciler) applyUnstructured(ctx context.Context, c client.Client, desired *unstructured.Unstructured) error {
+	current := &unstructured.Unstructured{}
+	current.SetGroupVersionKind(desired.GroupVersionKind())
+	if err := c.Get(ctx, types.NamespacedName{Name: desired.GetName(), Namespace: desired.GetNamespace()}, current); err != nil {
+		if errors.IsNotFound(err) {
+			return c.Create(ctx, desired)
+		}
+		return err
+	}
+
+	desired.SetResourceVersion(current.GetResourceVersion())
+	return c.Update(ctx, desired)
+}
+
+func intstrFromInt32(value int32) intstr.IntOrString {
+	return intstr.FromInt32(value)
 }
 
 // updateInfraStatus updates the status of the Infra resource

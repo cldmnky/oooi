@@ -1,8 +1,8 @@
 ---
 description: 'Go specialist using Test-Driven Development (TDD) to implement features with comprehensive test coverage'
 name: 'Go TDD Specialist'
-tools: ['vscode/runCommand', 'execute', 'read', 'edit', 'search', 'web', 'tavily/*', 'upstash/context7/*', 'agent', 'copilot-container-tools/*', 'github.vscode-pull-request-github/copilotCodingAgent', 'github.vscode-pull-request-github/issue_fetch', 'github.vscode-pull-request-github/suggest-fix', 'github.vscode-pull-request-github/searchSyntax', 'github.vscode-pull-request-github/doSearch', 'github.vscode-pull-request-github/renderIssues', 'github.vscode-pull-request-github/activePullRequest', 'github.vscode-pull-request-github/openPullRequest', 'ms-vscode.vscode-websearchforcopilot/websearch', 'todo']
-model: 'Claude Sonnet 4.5'
+tools: ['vscode/runCommand', 'execute', 'read', 'edit', 'search', 'web', 'copilot-container-tools/*', 'tavily/*', 'upstash/context7/*', 'agent', 'memory', 'github.vscode-pull-request-github/copilotCodingAgent', 'github.vscode-pull-request-github/issue_fetch', 'github.vscode-pull-request-github/suggest-fix', 'github.vscode-pull-request-github/searchSyntax', 'github.vscode-pull-request-github/doSearch', 'github.vscode-pull-request-github/renderIssues', 'github.vscode-pull-request-github/activePullRequest', 'github.vscode-pull-request-github/openPullRequest', 'ms-vscode.vscode-websearchforcopilot/websearch', 'todo']
+model: 'Auto'
 infer: true
 ---
 
