@@ -37,6 +37,11 @@ import (
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
 
+const (
+	// PhaseDegraded indicates a component is in a degraded state
+	PhaseDegraded = "Degraded"
+)
+
 // InfraReconciler reconciles a Infra object
 type InfraReconciler struct {
 	client.Client
@@ -87,9 +92,7 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileAppsIngress(ctx, infra); err != nil {
-		return ctrl.Result{}, err
-	}
+	r.reconcileAppsIngress(ctx, infra)
 
 	// Update status
 	return r.updateInfraStatus(ctx, infra)
@@ -236,43 +239,41 @@ func (r *InfraReconciler) reconcileNetworkPolicy(ctx context.Context, infra *hos
 }
 
 // reconcileAppsIngress handles apps ingress configuration for hosted clusters.
-func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra) {
 	// If apps ingress is not enabled, skip
 	if !infra.Spec.AppsIngress.Enabled {
-		return nil
+		return
 	}
 
 	hostedClient, err := r.getHostedClusterClient(ctx, infra)
 	if err != nil {
-		infra.Status.AppsIngressStatus.Phase = "Degraded"
+		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "HostedClusterAccessFailed"
 		infra.Status.AppsIngressStatus.Message = err.Error()
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
-		return nil
+		return
 	}
 
 	if err := r.ensureMetalLBInstalled(ctx, hostedClient, infra); err != nil {
-		infra.Status.AppsIngressStatus.Phase = "Degraded"
+		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "MetalLBInstallFailed"
 		infra.Status.AppsIngressStatus.Message = err.Error()
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
-		return nil
+		return
 	}
 
 	if err := r.ensureAppsIngressService(ctx, hostedClient, infra); err != nil {
-		infra.Status.AppsIngressStatus.Phase = "Degraded"
+		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "IngressServiceFailed"
 		infra.Status.AppsIngressStatus.Message = err.Error()
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
-		return nil
+		return
 	}
 
 	infra.Status.AppsIngressStatus.Phase = "Pending"
 	infra.Status.AppsIngressStatus.Reason = "WaitingForExternalIP"
 	infra.Status.AppsIngressStatus.Message = "MetalLB and ingress service configured; waiting for external IP"
 	infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
-
-	return nil
 }
 
 func (r *InfraReconciler) getHostedClusterClient(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (client.Client, error) {
