@@ -185,3 +185,48 @@ func TestProxyConfig_Fields(t *testing.T) {
 		t.Error("ServerIP should be set")
 	}
 }
+
+func TestAppsIngressConfig_Fields(t *testing.T) {
+	config := AppsIngressConfig{
+		Enabled:    true,
+		BaseDomain: "apps.example.com",
+		HostedClusterRef: HostedClusterReference{
+			Name:      "mycluster",
+			Namespace: "clusters",
+		},
+		MetalLB: AppsIngressMetalLB{
+			AddressPoolName:    "lab-network",
+			IPAddressPoolRange: "10.202.64.221-10.202.64.240",
+		},
+		Service: AppsIngressService{
+			Name:      "oooi-ingress",
+			Namespace: "clusters-mycluster",
+		},
+		Ports: AppsIngressPorts{
+			HTTP:  80,
+			HTTPS: 443,
+		},
+	}
+
+	if !config.Enabled {
+		t.Error("AppsIngress should be enabled")
+	}
+	if config.BaseDomain == "" {
+		t.Error("BaseDomain should be set")
+	}
+	if config.HostedClusterRef.Name == "" {
+		t.Error("HostedClusterRef.Name should be set")
+	}
+	if config.MetalLB.AddressPoolName == "" {
+		t.Error("MetalLB.AddressPoolName should be set")
+	}
+	if config.Service.Name == "" {
+		t.Error("Service.Name should be set")
+	}
+	if config.Ports.HTTP != 80 {
+		t.Error("Ports.HTTP should be 80")
+	}
+	if config.Ports.HTTPS != 443 {
+		t.Error("Ports.HTTPS should be 443")
+	}
+}

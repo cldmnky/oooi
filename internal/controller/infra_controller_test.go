@@ -25,7 +25,12 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
@@ -580,6 +585,162 @@ var _ = Describe("Infra Controller", func() {
 
 			By("cleaning up")
 			Expect(k8sClient.Delete(ctx, infra)).To(Succeed())
+		})
+
+		It("should handle apps ingress configuration when enabled", func() {
+			By("creating an Infra resource with appsIngress enabled")
+			infraWithApps := &hostedclusterv1alpha1.Infra{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName + "-with-apps",
+					Namespace: "default",
+				},
+				Spec: hostedclusterv1alpha1.InfraSpec{
+					NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+						CIDR:                        "192.168.100.0/24",
+						Gateway:                     "192.168.100.1",
+						NetworkAttachmentDefinition: "tenant-vlan-100",
+					},
+					InfraComponents: hostedclusterv1alpha1.InfraComponents{
+						DNS: hostedclusterv1alpha1.DNSConfig{
+							Enabled:     true,
+							ServerIP:    "192.168.100.3",
+							BaseDomain:  "example.com",
+							ClusterName: "test-cluster",
+						},
+					},
+					AppsIngress: hostedclusterv1alpha1.AppsIngressConfig{
+						Enabled:    true,
+						BaseDomain: "apps.example.com",
+						HostedClusterRef: hostedclusterv1alpha1.HostedClusterReference{
+							Name:      "missing-cluster",
+							Namespace: "clusters",
+						},
+						MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
+							AddressPoolName:    "lab-network",
+							IPAddressPoolRange: "10.202.64.221-10.202.64.240",
+						},
+						Service: hostedclusterv1alpha1.AppsIngressService{
+							Name:      "oooi-ingress",
+							Namespace: "clusters-missing-cluster",
+						},
+						Ports: hostedclusterv1alpha1.AppsIngressPorts{
+							HTTP:  80,
+							HTTPS: 443,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, infraWithApps)).To(Succeed())
+
+			By("reconciling the Infra resource with appsIngress enabled")
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      infraWithApps.Name,
+					Namespace: infraWithApps.Namespace,
+				},
+			})
+			_ = err
+
+			// Should reconcile without error
+			By("verifying Infra resource still exists after reconciliation")
+			updated := &hostedclusterv1alpha1.Infra{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      infraWithApps.Name,
+				Namespace: infraWithApps.Namespace,
+			}, updated)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the Infra spec has the appsIngress config
+			Expect(updated.Spec.AppsIngress.Enabled).To(BeTrue())
+			Expect(updated.Spec.AppsIngress.BaseDomain).To(Equal("apps.example.com"))
+		})
+
+		It("should install MetalLB and create ingress service in the hosted cluster", func() {
+			By("building a fake hosted cluster client")
+			scheme := runtime.NewScheme()
+			Expect(hostedclusterv1alpha1.AddToScheme(scheme)).To(Succeed())
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+			By("creating an Infra with appsIngress MetalLB configuration")
+			infra := &hostedclusterv1alpha1.Infra{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "apps-ingress",
+					Namespace: "default",
+				},
+				Spec: hostedclusterv1alpha1.InfraSpec{
+					NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+						CIDR:                        "192.168.100.0/24",
+						Gateway:                     "192.168.100.1",
+						NetworkAttachmentDefinition: "tenant-vlan-100",
+					},
+					AppsIngress: hostedclusterv1alpha1.AppsIngressConfig{
+						Enabled:    true,
+						BaseDomain: "apps.example.com",
+						HostedClusterRef: hostedclusterv1alpha1.HostedClusterReference{
+							Name:      "mycluster",
+							Namespace: "clusters",
+						},
+						MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
+							AddressPoolName:     "lab-network",
+							IPAddressPoolRange:  "10.202.64.221-10.202.64.240",
+							L2AdvertisementName: "advertise-lab-network",
+						},
+						Service: hostedclusterv1alpha1.AppsIngressService{
+							Name:      "oooi-ingress",
+							Namespace: "openshift-ingress",
+						},
+						Ports: hostedclusterv1alpha1.AppsIngressPorts{
+							HTTP:  80,
+							HTTPS: 443,
+						},
+					},
+				},
+			}
+
+			By("reconciling apps ingress against the hosted cluster client")
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				HostedClusterClientFactory: func(ctx context.Context, _ *hostedclusterv1alpha1.Infra) (client.Client, error) {
+					return hostedClient, nil
+				},
+			}
+			controllerReconciler.reconcileAppsIngress(ctx, infra)
+
+			By("verifying the MetalLB Subscription is created")
+			subscription := &unstructured.Unstructured{}
+			subscription.SetGroupVersionKind(schema.GroupVersionKind{Group: "operators.coreos.com", Version: "v1alpha1", Kind: "Subscription"})
+			err := hostedClient.Get(ctx, types.NamespacedName{Name: "metallb-operator", Namespace: "openshift-operators"}, subscription)
+			Expect(err).NotTo(HaveOccurred())
+			name, _, _ := unstructured.NestedString(subscription.Object, "spec", "name")
+			Expect(name).To(Equal("metallb-operator"))
+
+			By("verifying IPAddressPool is created with expected range")
+			ipPool := &unstructured.Unstructured{}
+			ipPool.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "IPAddressPool"})
+			err = hostedClient.Get(ctx, types.NamespacedName{Name: "lab-network", Namespace: "openshift-operators"}, ipPool)
+			Expect(err).NotTo(HaveOccurred())
+			addresses, _, _ := unstructured.NestedSlice(ipPool.Object, "spec", "addresses")
+			Expect(addresses).To(ContainElement("10.202.64.221-10.202.64.240"))
+
+			By("verifying L2Advertisement is created")
+			l2Adv := &unstructured.Unstructured{}
+			l2Adv.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "L2Advertisement"})
+			err = hostedClient.Get(ctx, types.NamespacedName{Name: "advertise-lab-network", Namespace: "openshift-operators"}, l2Adv)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the ingress LoadBalancer service is created")
+			service := &corev1.Service{}
+			err = hostedClient.Get(ctx, types.NamespacedName{Name: "oooi-ingress", Namespace: "openshift-ingress"}, service)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(service.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+			Expect(service.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "lab-network"))
 		})
 	})
 })
