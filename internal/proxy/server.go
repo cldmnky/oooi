@@ -161,7 +161,8 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 		// without SNI/TLS inspection. This allows HAProxy health checks (plain HTTP)
 		// to reach the backend and get rejected gracefully by kube-apiserver rather
 		// than failing at the proxy level.
-		usePlainTCP := port == 6443
+		// Use plain TCP for kube-apiserver (6443) and apps HTTP (80) - no SNI/TLS inspector
+		usePlainTCP := port == 6443 || port == 80
 
 		// For plain TCP ports, we'll create a single catch-all filter chain
 		// after processing all backends, so track the primary cluster name
