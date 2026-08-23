@@ -711,7 +711,8 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			controllerReconciler.reconcileAppsIngress(ctx, infra)
+			_, err = controllerReconciler.reconcileAppsIngress(ctx, infra)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the MetalLB Subscription is created")
 			subscription := &unstructured.Unstructured{}
