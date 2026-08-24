@@ -110,6 +110,94 @@ rm -rf "$tmp"
 
 Use a read-only hosted-cluster ServiceAccount kubeconfig instead of the published admin kubeconfig in a shared environment. Verify convergence with `dig +short console-openshift-console.apps.species-8472.clusters.blahonga.me @1.1.1.1`; it should return the current `appsIngressStatus.externalIP`.
 
+## How oooi works
+
+`Infra` is the user-facing API. It describes one isolated worker network and one hosted cluster. oooi reconciles it into `DHCPServer`, `DNSServer`, and `ProxyServer` resources in the management cluster. Each child creates a Deployment with a default pod-network interface and a static Multus interface on the VLAN. The child resources, their workloads, Services, ConfigMaps, ServiceAccounts, SCC RoleBindings, and the HCP namespace NetworkPolicy are owned by `Infra`; deleting `Infra` removes them.
+
+```
+Isolated VLAN                                      Management cluster pod network
+
+worker VM -- DHCP --> DHCPServer (.2)              Hosted control plane Services
+worker VM -- DNS  --> DNSServer  (.3) ---- DNS ---> kube-apiserver, OAuth,
+worker VM -- TLS  --> Envoy       (.4) ---- L4 ---> ignition, konnectivity
+worker VM -- apps --> MetalLB VIP (.180) - Envoy -> hosted ingress router
+                              ^
+                              | advertised by MetalLB speakers on hosted workers
+```
+
+### DHCP, DNS, and proxy
+
+- **DHCP** serves the configured range and gives guests the VLAN gateway and the `DNSServer` IP. It discovers KubeVirt VM interfaces so existing leases remain stable across reconciliation.
+- **DNS** runs CoreDNS with two views. A query from `networkConfig.cidr` receives VLAN answers; all other queries receive pod-network answers. HCP endpoint names (`api`, `api-int`, `oauth`, `ignition`, and `konnectivity`) resolve to `proxy.serverIP` from the VLAN and to `proxy.internalProxyService` from the management-cluster pod network. Names outside these static zones are forwarded to `networkConfig.dnsServers`.
+- **Proxy** is an Envoy L4 gateway connected to both networks. It uses TLS SNI without terminating TLS to select the hosted control-plane Service. The API listens on `6443`; the remaining HCP endpoints listen on `443`. The proxy requires privileged ports, so with `--enable-openshift=true` oooi creates a scoped `privileged` SCC RoleBinding for its ServiceAccount.
+
+`internalProxyService` is optional. Set it to the proxy's ClusterIP Service DNS name when management-cluster pods need to use the hosted-cluster endpoint names. If it is omitted, the default DNS view does not publish those static HCP answers.
+
+### Apps ingress and MetalLB
+
+Set `spec.appsIngress.enabled: true` to expose the default hosted-cluster `IngressController` on the VLAN. The feature is intentionally separate from the HCP proxy endpoints: the app wildcard terminates at the hosted ingress router, while Envoy makes it reachable from both DNS views.
+
+oooi performs this sequence using the HostedCluster admin kubeconfig reported in `.status.kubeconfig.name`:
+
+1. Waits for at least one Ready hosted worker. This prevents OLM's MetalLB bundle-unpack Job from timing out before a worker can schedule it.
+2. Ensures the Red Hat MetalLB Operator Subscription in hosted-cluster namespace `openshift-operators` (`redhat-operators`, `stable`, automatic approval).
+3. Waits for the MetalLB CRDs, then ensures `MetalLB/metallb`, an `IPAddressPool`, and an `L2Advertisement` in `openshift-operators`.
+4. Creates or updates a `LoadBalancer` Service, `oooi-ingress` by default, in the hosted cluster's `openshift-ingress` namespace. Its selector is fixed to the default ingress controller:
+   `ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default`.
+5. Reads the allocated LoadBalancer IP or hostname from the Service status. The value is exposed as `.status.appsIngressStatus.externalIP` or `.externalHostname`.
+6. Adds the `*.apps.<cluster>.<domain>` DNS answer and Envoy wildcard backends only after an external endpoint exists.
+
+MetalLB L2 mode advertises the allocated VIP from a hosted worker. The `ipAddressPoolRange` must therefore be an unused, routable range on the same L2 network as the hosted worker interfaces. Do not include the gateway, DHCP/DNS/proxy static addresses, VM allocations, or another load balancer's addresses. `l2AdvertisementName` defaults to `advertise-<addressPoolName>`.
+
+For the validated `species-8472` example, MetalLB owns `10.202.64.180-10.202.64.190`, assigns `10.202.64.180` to `openshift-ingress/oooi-ingress`, and advertises it on VLAN203. The VLAN DNS view resolves `*.apps.species-8472.clusters.blahonga.me` to that VIP. The pod-network DNS view resolves it to the proxy Service ClusterIP; Envoy forwards to the VIP so both views use the same ingress router.
+
+### Service labels and annotations
+
+`appsIngress.service.labels` and `.annotations` are copied to the hosted `LoadBalancer` Service and reconciled on every `Infra` update. They are intended for integrations such as ExternalDNS. Existing unrelated metadata is preserved.
+
+oooi owns `metallb.universe.tf/address-pool` and sets it from `appsIngress.metallb.addressPoolName`. Do not put that annotation in `appsIngress.service.annotations`; it is controlled by the MetalLB configuration and may be overwritten on reconciliation.
+
+The following metadata makes a Service visible to the supplied ExternalDNS sample:
+
+```yaml
+appsIngress:
+  service:
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: '*.apps.mycluster.example.com.'
+    labels:
+      external-dns.blahonga.me/publish: "yes"
+```
+
+The trailing dot marks the hostname as fully qualified. The sample ExternalDNS Deployment watches only `LoadBalancer` Services carrying `external-dns.blahonga.me/publish=yes`, uses the `service` source, and stores ownership in Route53 TXT records. Changing the label filter, hostname annotation, zone, or TXT owner ID requires making the corresponding change in both the `Infra` metadata and the ExternalDNS Deployment.
+
+### Status, validation, and recovery
+
+Use the `Infra` condition for overall readiness and `appsIngressStatus` for the ingress-specific state:
+
+```bash
+kubectl -n clusters get infra species-8472
+kubectl -n clusters get infra species-8472 \
+  -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" endpoint="}{.status.appsIngressStatus.externalIP}{"\n"}'
+kubectl -n clusters get dhcpserver,dnsserver,proxyserver
+```
+
+Common apps ingress states are `WaitingForHostedClusterNodes`, `WaitingForMetalLBCRDs`, `WaitingForExternalIP`, `Ready`, and `Degraded`. For a degraded state, read `.status.appsIngressStatus.message`, then inspect the hosted cluster through its kubeconfig:
+
+```bash
+kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-operators get subscription,csv,metallb,ipaddresspool,l2advertisement
+kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-ingress get service oooi-ingress -o wide
+```
+
+An allocated VIP alone is not sufficient. Confirm all three paths: VLAN DNS to the VIP, pod-network DNS to the proxy ClusterIP, and public DNS to the same VIP when external clients or ingress canary checks use public resolution. The commands in [Verify from the VLAN](#verify-from-the-vlan) verify the first path; query the DNSServer Service ClusterIP from a management pod to verify the second.
+
+### Ownership boundaries and limitations
+
+- oooi manages only the default hosted `IngressController`; a custom ingress-controller selector is not currently configurable.
+- oooi installs and configures MetalLB resources in the hosted cluster but does not configure upstream L2 switches, VLAN routing, firewall rules, or a public DNS provider.
+- oooi does not publish Route53 or other public DNS records. Use ExternalDNS or update the wildcard record yourself whenever `.status.appsIngressStatus.externalIP` changes.
+- The current apps-ingress path is IPv4 and L2-advertisement based. Validate dual-stack, BGP, and non-L2 network designs separately before relying on them.
+- Keep exactly one DHCP authority on the VLAN. Competing DHCP services cause non-deterministic worker bootstrapping.
+
 ## Architecture
 
 ### Core Problem
