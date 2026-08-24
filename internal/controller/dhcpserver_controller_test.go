@@ -121,6 +121,7 @@ var _ = Describe("DHCPServer Controller", func() {
 			By("verifying the Deployment has correct image")
 			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/cldmnky/oooi:latest"))
+			Expect(deployment.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 
 			By("verifying owner reference is set")
 			Expect(deployment.OwnerReferences).To(HaveLen(1))

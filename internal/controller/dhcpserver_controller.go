@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -65,6 +66,7 @@ func (r *DHCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		log.Error(err, "unable to fetch DHCPServer")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	originalStatus := *dhcpServer.Status.DeepCopy()
 
 	// Ensure DHCP deployment and all its resources
 	if err := r.ensureDHCPDeployment(ctx, dhcpServer); err != nil {
@@ -82,7 +84,11 @@ func (r *DHCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Reason:             "ReconciliationSucceeded",
 		Message:            "DHCP server resources created successfully",
 	}
+	condition = preserveConditionTransitionTime(dhcpServer.Status.Conditions, condition)
 	dhcpServer.Status.Conditions = []metav1.Condition{condition}
+	if reflect.DeepEqual(originalStatus, dhcpServer.Status) {
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.Status().Update(ctx, dhcpServer); err != nil {
 		log.Error(err, "Failed to update DHCPServer status")
@@ -196,6 +202,10 @@ func (r *DHCPServerReconciler) ensureDHCPDeployment(ctx context.Context, dhcpSer
 	}
 
 	if err := r.createOrUpdateWithRetries(ctx, deployment, func() error {
+		desiredDeployment := r.newDHCPDeployment(dhcpServer)
+		r.Scheme.Default(desiredDeployment)
+		deployment.Labels = desiredDeployment.Labels
+		deployment.Spec = desiredDeployment.Spec
 		return ctrl.SetControllerReference(dhcpServer, deployment, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure DHCP deployment")
@@ -394,6 +404,7 @@ func (r *DHCPServerReconciler) newDHCPDeployment(dhcpServer *hostedclusterv1alph
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},

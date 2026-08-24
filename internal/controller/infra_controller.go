@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,6 +42,8 @@ import (
 const (
 	// PhaseDegraded indicates a component is in a degraded state
 	PhaseDegraded = "Degraded"
+	// PhasePending indicates a component is waiting for a dependency
+	PhasePending = "Pending"
 
 	phaseReady           = "Ready"
 	appsHTTPBackendName  = "apps-http"
@@ -252,6 +255,8 @@ func (r *InfraReconciler) reconcileNetworkPolicy(ctx context.Context, infra *hos
 
 // reconcileAppsIngress handles apps ingress configuration for hosted clusters.
 func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra) ctrl.Result {
+	previousStatus := infra.Status.AppsIngressStatus
+
 	// If apps ingress is not enabled, clear status and skip
 	if !infra.Spec.AppsIngress.Enabled {
 		infra.Status.AppsIngressStatus = hostedclusterv1alpha1.AppsIngressStatus{}
@@ -263,7 +268,7 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "HostedClusterAccessFailed"
 		infra.Status.AppsIngressStatus.Message = err.Error()
-		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
 		return ctrl.Result{RequeueAfter: 30 * time.Second}
@@ -273,7 +278,12 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "MetalLBInstallFailed"
 		infra.Status.AppsIngressStatus.Message = err.Error()
-		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		if meta.IsNoMatchError(err) {
+			infra.Status.AppsIngressStatus.Phase = PhasePending
+			infra.Status.AppsIngressStatus.Reason = "WaitingForMetalLBCRDs"
+			infra.Status.AppsIngressStatus.Message = "MetalLB operator is not ready: " + err.Error()
+		}
+		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
 		return ctrl.Result{RequeueAfter: 30 * time.Second}
@@ -283,7 +293,7 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "IngressServiceFailed"
 		infra.Status.AppsIngressStatus.Message = err.Error()
-		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
 		return ctrl.Result{RequeueAfter: 30 * time.Second}
@@ -294,18 +304,18 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "ExternalIPDiscoveryFailed"
 		infra.Status.AppsIngressStatus.Message = err.Error()
-		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
 		return ctrl.Result{RequeueAfter: 15 * time.Second}
 	}
 	if externalIP == "" && externalHostname == "" {
-		infra.Status.AppsIngressStatus.Phase = "Pending"
+		infra.Status.AppsIngressStatus.Phase = PhasePending
 		infra.Status.AppsIngressStatus.Reason = "WaitingForExternalIP"
 		infra.Status.AppsIngressStatus.Message = "MetalLB and ingress service configured; waiting for external IP"
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
 		return ctrl.Result{RequeueAfter: 15 * time.Second}
 	}
 
@@ -318,8 +328,16 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		endpoint = externalHostname
 	}
 	infra.Status.AppsIngressStatus.Message = "Apps ingress ready with external endpoint " + endpoint
-	infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
+	setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
 	return ctrl.Result{}
+}
+
+func setAppsIngressLastSyncTime(status *hostedclusterv1alpha1.AppsIngressStatus, previous hostedclusterv1alpha1.AppsIngressStatus) {
+	current := *status
+	current.LastSyncTime = previous.LastSyncTime
+	if !reflect.DeepEqual(current, previous) {
+		status.LastSyncTime = metav1.Now()
+	}
 }
 
 // discoverAppsIngressExternalIP reads the LoadBalancer Service status from the hosted cluster.
@@ -558,6 +576,7 @@ func intstrFromInt32(value int32) intstr.IntOrString {
 // updateInfraStatus updates the status of the Infra resource
 func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
 	log := logf.FromContext(ctx)
+	originalStatus := *infra.Status.DeepCopy()
 
 	infra.Status.ObservedGeneration = infra.Generation
 	condition := metav1.Condition{
@@ -568,7 +587,19 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 		Reason:             "ReconciliationSucceeded",
 		Message:            "Infrastructure components provisioned successfully",
 	}
+	if infra.Spec.AppsIngress.Enabled && infra.Status.AppsIngressStatus.Phase != phaseReady {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = infra.Status.AppsIngressStatus.Reason
+		condition.Message = infra.Status.AppsIngressStatus.Message
+		if condition.Reason == "" {
+			condition.Reason = "AppsIngressPending"
+		}
+		if condition.Message == "" {
+			condition.Message = "Apps ingress is not ready"
+		}
+	}
 
+	condition = preserveConditionTransitionTime(infra.Status.Conditions, condition)
 	infra.Status.Conditions = []metav1.Condition{condition}
 	if infra.Spec.InfraComponents.DHCP.Enabled {
 		infra.Status.ComponentStatus.DHCPReady = true
@@ -578,6 +609,10 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 	}
 	if infra.Spec.InfraComponents.Proxy.Enabled {
 		infra.Status.ComponentStatus.ProxyReady = true
+	}
+
+	if reflect.DeepEqual(originalStatus, infra.Status) {
+		return nil
 	}
 
 	if err := r.Status().Update(ctx, infra); err != nil {

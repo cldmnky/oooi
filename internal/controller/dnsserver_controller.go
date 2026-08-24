@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -64,6 +65,7 @@ func (r *DNSServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Error(err, "unable to fetch DNSServer")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	originalStatus := *dnsServer.Status.DeepCopy()
 
 	// Ensure DNS deployment and all its resources
 	if err := r.ensureDNSDeployment(ctx, dnsServer); err != nil {
@@ -94,7 +96,11 @@ func (r *DNSServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		Reason:             "ReconciliationSucceeded",
 		Message:            "DNS server resources created successfully",
 	}
+	condition = preserveConditionTransitionTime(dnsServer.Status.Conditions, condition)
 	dnsServer.Status.Conditions = []metav1.Condition{condition}
+	if reflect.DeepEqual(originalStatus, dnsServer.Status) {
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.Status().Update(ctx, dnsServer); err != nil {
 		log.Error(err, "Failed to update DNSServer status")
@@ -164,6 +170,10 @@ func (r *DNSServerReconciler) ensureDNSDeployment(ctx context.Context, dnsServer
 	}
 
 	if err := r.createOrUpdateWithRetries(ctx, deployment, func() error {
+		desiredDeployment := r.newDNSDeployment(dnsServer)
+		r.Scheme.Default(desiredDeployment)
+		deployment.Labels = desiredDeployment.Labels
+		deployment.Spec = desiredDeployment.Spec
 		return ctrl.SetControllerReference(dnsServer, deployment, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure DNS deployment")
@@ -437,6 +447,7 @@ func (r *DNSServerReconciler) newDNSDeployment(dnsServer *hostedclusterv1alpha1.
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -600,12 +611,16 @@ func (r *DNSServerReconciler) createOrUpdateWithRetries(ctx context.Context, obj
 		return nil
 	}
 
-	// Object exists, update it
-	log.V(1).Info("Updating object", "name", key.Name)
+	// Object exists; apply the desired fields to the current object.
+	before := obj.DeepCopyObject()
 	if updateErr := updateFunc(); updateErr != nil {
 		log.Error(updateErr, "Update function failed", "name", key.Name)
 		return updateErr
 	}
+	if reflect.DeepEqual(before, obj) {
+		return nil
+	}
+	log.V(1).Info("Updating object", "name", key.Name)
 
 	if updateErr := r.Update(ctx, obj); updateErr != nil {
 		log.Error(updateErr, "Failed to update object", "name", key.Name)

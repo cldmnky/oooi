@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -155,6 +156,7 @@ func (r *ProxyServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Error(err, "unable to fetch ProxyServer")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	originalStatus := *proxyServer.Status.DeepCopy()
 
 	// Ensure proxy deployment and all its resources
 	if err := r.ensureProxyDeployment(ctx, proxyServer); err != nil {
@@ -186,7 +188,11 @@ func (r *ProxyServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		Reason:             "ReconciliationSucceeded",
 		Message:            fmt.Sprintf("Proxy deployment ready with %d backends", len(proxyServer.Spec.Backends)),
 	}
+	condition = preserveConditionTransitionTime(proxyServer.Status.Conditions, condition)
 	proxyServer.Status.Conditions = []metav1.Condition{condition}
+	if reflect.DeepEqual(originalStatus, proxyServer.Status) {
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.Status().Update(ctx, proxyServer); err != nil {
 		log.Error(err, "Failed to update ProxyServer status")
@@ -288,6 +294,10 @@ func (r *ProxyServerReconciler) ensureProxyDeployment(ctx context.Context, proxy
 	}
 
 	if err := r.createOrUpdateWithRetries(ctx, deployment, func() error {
+		desiredDeployment := r.newProxyDeployment(proxyServer)
+		r.Scheme.Default(desiredDeployment)
+		deployment.Labels = desiredDeployment.Labels
+		deployment.Spec = desiredDeployment.Spec
 		return ctrl.SetControllerReference(proxyServer, deployment, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure proxy deployment")
@@ -468,6 +478,7 @@ func (r *ProxyServerReconciler) newProxyDeployment(proxyServer *hostedclusterv1a
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -667,12 +678,16 @@ func (r *ProxyServerReconciler) createOrUpdateWithRetries(ctx context.Context, o
 		return nil
 	}
 
-	// Object exists, update it
-	log.V(1).Info("Updating object", "name", key.Name)
+	// Object exists; apply the desired fields to the current object.
+	before := obj.DeepCopyObject()
 	if updateErr := updateFunc(); updateErr != nil {
 		log.Error(updateErr, "Update function failed", "name", key.Name)
 		return updateErr
 	}
+	if reflect.DeepEqual(before, obj) {
+		return nil
+	}
+	log.V(1).Info("Updating object", "name", key.Name)
 
 	if updateErr := r.Update(ctx, obj); updateErr != nil {
 		log.Error(updateErr, "Failed to update object", "name", key.Name)

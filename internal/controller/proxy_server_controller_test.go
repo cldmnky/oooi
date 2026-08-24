@@ -379,14 +379,13 @@ var _ = Describe("ProxyServer Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying Deployment image was NOT automatically updated")
-			// Note: Current implementation creates resources if missing but doesn't
-			// update existing ones. This is typical for basic controllers.
+			By("verifying Deployment image was automatically updated")
 			updatedDeployment := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, deploymentName, updatedDeployment)
 			}, timeout, interval).Should(Succeed())
-			Expect(updatedDeployment.Spec.Template.Spec.Containers[0].Image).To(Equal(initialImage))
+			Expect(updatedDeployment.Spec.Template.Spec.Containers[0].Image).NotTo(Equal(initialImage))
+			Expect(updatedDeployment.Spec.Template.Spec.Containers[0].Image).To(Equal("envoyproxy/envoy:v1.36.5"))
 		})
 
 		It("should handle resource creation failures gracefully", func() {

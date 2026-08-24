@@ -2,13 +2,29 @@ package controller
 
 import (
 	"context"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+func preserveConditionTransitionTime(existing []metav1.Condition, desired metav1.Condition) metav1.Condition {
+	if len(existing) == 1 {
+		current := existing[0]
+		if current.Type == desired.Type &&
+			current.Status == desired.Status &&
+			current.ObservedGeneration == desired.ObservedGeneration &&
+			current.Reason == desired.Reason &&
+			current.Message == desired.Message {
+			desired.LastTransitionTime = current.LastTransitionTime
+		}
+	}
+	return desired
+}
 
 // createOrUpdateWithRetries attempts to create or update an object with exponential backoff retry logic
 func (r *DHCPServerReconciler) createOrUpdateWithRetries(ctx context.Context, obj client.Object, updateFunc func() error) error {
@@ -45,12 +61,16 @@ func (r *DHCPServerReconciler) createOrUpdateWithRetries(ctx context.Context, ob
 			return false, err
 		}
 
-		// Object exists, update it
-		logger.V(1).Info("Updating object", "kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", key.Name)
+		// Object exists; apply the desired fields to the current object.
+		before := obj.DeepCopyObject()
 		if updateErr := updateFunc(); updateErr != nil {
 			logger.Error(updateErr, "Update function failed", "kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", key.Name)
 			return false, updateErr
 		}
+		if reflect.DeepEqual(before, obj) {
+			return true, nil
+		}
+		logger.V(1).Info("Updating object", "kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", key.Name)
 
 		if updateErr := r.Update(ctx, obj); updateErr != nil {
 			if errors.IsConflict(updateErr) {
