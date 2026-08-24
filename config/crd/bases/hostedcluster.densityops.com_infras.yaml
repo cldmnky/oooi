@@ -120,6 +120,25 @@ spec:
                     description: Service defines the LoadBalancer service to be created
                       in the hosted cluster.
                     properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Annotations are merged into the LoadBalancer Service metadata.annotations
+                          on every reconciliation. Existing annotations not listed here are
+                          preserved (except the MetalLB pool annotation, which is managed by the
+                          operator). Use this to publish the wildcard hostname via ExternalDNS, e.g.
+                          "external-dns.alpha.kubernetes.io/hostname: *.apps.mycluster.example.com."
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Labels are merged into the LoadBalancer Service metadata.labels on every
+                          reconciliation. Existing labels not listed here are preserved. Use this to
+                          flag the Service for ExternalDNS running inside the hosted cluster, e.g.
+                          "external-dns.example.com/publish: yes".
+                        type: object
                       name:
                         default: oooi-ingress
                         description: Name is the name of the LoadBalancer service

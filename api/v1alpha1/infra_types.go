@@ -256,6 +256,21 @@ type AppsIngressService struct {
 	// Default: "clusters-<hostedcluster-name>"
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+
+	// Labels are merged into the LoadBalancer Service metadata.labels on every
+	// reconciliation. Existing labels not listed here are preserved. Use this to
+	// flag the Service for ExternalDNS running inside the hosted cluster, e.g.
+	// "external-dns.example.com/publish: yes".
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations are merged into the LoadBalancer Service metadata.annotations
+	// on every reconciliation. Existing annotations not listed here are
+	// preserved (except the MetalLB pool annotation, which is managed by the
+	// operator). Use this to publish the wildcard hostname via ExternalDNS, e.g.
+	// "external-dns.alpha.kubernetes.io/hostname: *.apps.mycluster.example.com."
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // AppsIngressPorts defines the HTTP and HTTPS ports for the ingress.

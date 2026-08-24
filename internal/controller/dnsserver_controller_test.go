@@ -754,6 +754,32 @@ var _ = Describe("DNSServer Controller", func() {
 	})
 })
 
+var _ = Describe("resolveUpstreamDNS", func() {
+	It("joins explicit upstream servers", func() {
+		Expect(resolveUpstreamDNS([]string{"10.201.0.2", "10.201.0.1"})).To(Equal("10.201.0.2 10.201.0.1"))
+	})
+
+	It("falls back to 8.8.8.8 when nothing is configured", func() {
+		Expect(resolveUpstreamDNS(nil)).To(Equal("8.8.8.8"))
+		Expect(resolveUpstreamDNS([]string{})).To(Equal("8.8.8.8"))
+	})
+
+	It("expands the resolv.conf sentinel to node nameservers", func() {
+		result := resolveUpstreamDNS([]string{"resolv.conf"})
+		Expect(result).NotTo(BeEmpty())
+		Expect(result).NotTo(ContainSubstring("resolv.conf"))
+		for _, ns := range strings.Fields(result) {
+			Expect(ns).To(MatchRegexp(`^\d+\.\d+\.\d+\.\d+$|^[\da-fA-F:]+$`), "expected a parsed nameserver, got %q", ns)
+		}
+	})
+
+	It("expands the node sentinel and mixes with explicit servers", func() {
+		result := resolveUpstreamDNS([]string{"node", "9.9.9.9"})
+		Expect(result).To(HaveSuffix("9.9.9.9"))
+		Expect(strings.Fields(result)).To(HaveLen(2))
+	})
+})
+
 // Helper function to find a condition by type
 func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
 	for i := range conditions {

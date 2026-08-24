@@ -525,16 +525,38 @@ func (r *InfraReconciler) ensureAppsIngressService(ctx context.Context, hostedCl
 		if infra.Spec.AppsIngress.MetalLB.AddressPoolName != "" {
 			service.Annotations["metallb.universe.tf/address-pool"] = infra.Spec.AppsIngress.MetalLB.AddressPoolName
 		}
+		if service.Labels == nil {
+			service.Labels = map[string]string{}
+		}
+		for key, value := range infra.Spec.AppsIngress.Service.Labels {
+			service.Labels[key] = value
+		}
+		for key, value := range infra.Spec.AppsIngress.Service.Annotations {
+			service.Annotations[key] = value
+		}
 		return hostedClient.Update(ctx, service)
+	}
+
+	labels := map[string]string{}
+	for key, value := range infra.Spec.AppsIngress.Service.Labels {
+		labels[key] = value
+	}
+	annotations := map[string]string{
+		"metallb.universe.tf/address-pool": infra.Spec.AppsIngress.MetalLB.AddressPoolName,
+	}
+	for key, value := range infra.Spec.AppsIngress.Service.Annotations {
+		annotations[key] = value
+	}
+	if infra.Spec.AppsIngress.MetalLB.AddressPoolName == "" {
+		delete(annotations, "metallb.universe.tf/address-pool")
 	}
 
 	service = &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: serviceNamespace,
-			Annotations: map[string]string{
-				"metallb.universe.tf/address-pool": infra.Spec.AppsIngress.MetalLB.AddressPoolName,
-			},
+			Name:        serviceName,
+			Namespace:   serviceNamespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeLoadBalancer,
@@ -546,10 +568,6 @@ func (r *InfraReconciler) ensureAppsIngressService(ctx context.Context, hostedCl
 				"ingresscontroller.operator.openshift.io/deployment-ingresscontroller": "default",
 			},
 		},
-	}
-
-	if infra.Spec.AppsIngress.MetalLB.AddressPoolName == "" {
-		service.Annotations = nil
 	}
 
 	return hostedClient.Create(ctx, service)

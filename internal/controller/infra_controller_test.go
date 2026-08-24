@@ -743,6 +743,79 @@ var _ = Describe("Infra Controller", func() {
 			Expect(service.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "lab-network"))
 		})
 
+		It("should merge service labels and annotations onto the ingress LoadBalancer service", func() {
+			By("building a fake hosted cluster client")
+			scheme := runtime.NewScheme()
+			Expect(hostedclusterv1alpha1.AddToScheme(scheme)).To(Succeed())
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+			By("creating an Infra with appsIngress ExternalDNS metadata")
+			infra := &hostedclusterv1alpha1.Infra{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "apps-ingress-extdns",
+					Namespace: "default",
+				},
+				Spec: hostedclusterv1alpha1.InfraSpec{
+					AppsIngress: hostedclusterv1alpha1.AppsIngressConfig{
+						Enabled: true,
+						HostedClusterRef: hostedclusterv1alpha1.HostedClusterReference{
+							Name:      "mycluster",
+							Namespace: "clusters",
+						},
+						MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
+							AddressPoolName:    "lab-network",
+							IPAddressPoolRange: "10.202.64.221-10.202.64.240",
+						},
+						Service: hostedclusterv1alpha1.AppsIngressService{
+							Name:      "oooi-ingress",
+							Namespace: "openshift-ingress",
+							Annotations: map[string]string{
+								"external-dns.alpha.kubernetes.io/hostname": "*.apps.mycluster.example.com.",
+							},
+							Labels: map[string]string{
+								"external-dns.example.com/publish": "yes",
+							},
+						},
+						Ports: hostedclusterv1alpha1.AppsIngressPorts{
+							HTTP:  80,
+							HTTPS: 443,
+						},
+					},
+				},
+			}
+
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				HostedClusterClientFactory: func(ctx context.Context, _ *hostedclusterv1alpha1.Infra) (client.Client, error) {
+					return hostedClient, nil
+				},
+			}
+			Expect(controllerReconciler.ensureAppsIngressService(ctx, hostedClient, infra)).To(Succeed())
+
+			By("verifying labels and annotations are applied on create")
+			service := &corev1.Service{}
+			Expect(hostedClient.Get(ctx, types.NamespacedName{Name: "oooi-ingress", Namespace: "openshift-ingress"}, service)).To(Succeed())
+			Expect(service.Annotations).To(HaveKeyWithValue("external-dns.alpha.kubernetes.io/hostname", "*.apps.mycluster.example.com."))
+			Expect(service.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "lab-network"))
+			Expect(service.Labels).To(HaveKeyWithValue("external-dns.example.com/publish", "yes"))
+
+			By("re-reconciling with updated spec annotations")
+			infra.Spec.AppsIngress.Service.Annotations = map[string]string{
+				"external-dns.alpha.kubernetes.io/hostname": "*.apps2.mycluster.example.com.",
+			}
+			infra.Spec.AppsIngress.Service.Labels = nil
+			Expect(controllerReconciler.ensureAppsIngressService(ctx, hostedClient, infra)).To(Succeed())
+
+			By("verifying annotations are updated and pre-existing values preserved")
+			service = &corev1.Service{}
+			Expect(hostedClient.Get(ctx, types.NamespacedName{Name: "oooi-ingress", Namespace: "openshift-ingress"}, service)).To(Succeed())
+			Expect(service.Annotations).To(HaveKeyWithValue("external-dns.alpha.kubernetes.io/hostname", "*.apps2.mycluster.example.com."))
+			Expect(service.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "lab-network"))
+			Expect(service.Labels).To(HaveKeyWithValue("external-dns.example.com/publish", "yes"), "labels not in spec should be preserved")
+		})
+
 		It("should discover external IP and transition to Ready with DNS/Proxy wildcard", func() {
 			By("building a fake hosted cluster client with Service having external IP")
 			scheme := runtime.NewScheme()

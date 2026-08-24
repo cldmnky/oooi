@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
+	"os"
 	"reflect"
 	"strings"
 
@@ -214,11 +216,14 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 		}
 	}
 
-	// Get upstream DNS servers (default to 8.8.8.8 if not specified)
-	upstream := "8.8.8.8"
-	if len(dnsServer.Spec.UpstreamDNS) > 0 {
-		upstream = strings.Join(dnsServer.Spec.UpstreamDNS, " ")
-	}
+	// Get upstream DNS servers. Supported values:
+	// - Explicit IPs (e.g. "10.201.0.1")
+	// - The sentinel "resolv.conf" or "node", which expands to the nameservers
+	//   configured on the management cluster node running the DNS pod. Use this
+	//   when the secondary network has no direct egress to public resolvers
+	//   (e.g. firewalled labs where only the node's resolver can forward).
+	// Falls back to "8.8.8.8" when nothing is configured or detectable.
+	upstream := resolveUpstreamDNS(dnsServer.Spec.UpstreamDNS)
 
 	// Get reload interval (default to 5s if not specified)
 	reloadInterval := dnsServer.Spec.ReloadInterval
@@ -361,6 +366,50 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 			"Corefile": corefile,
 		},
 	}
+}
+
+// resolveUpstreamDNS builds the CoreDNS forward target from the configured
+// upstream DNS servers. Entries equal to "resolv.conf" or "node" are expanded
+// to the nameservers found in /etc/resolv.conf (the node's resolver). When no
+// servers are configured or none can be detected, it falls back to 8.8.8.8.
+func resolveUpstreamDNS(upstreamDNS []string) string {
+	resolved := make([]string, 0, len(upstreamDNS)+2)
+	for _, entry := range upstreamDNS {
+		if entry == "resolv.conf" || entry == "node" {
+			resolved = append(resolved, resolvConfNameservers()...)
+			continue
+		}
+		resolved = append(resolved, entry)
+	}
+	if len(resolved) == 0 {
+		return "8.8.8.8"
+	}
+	return strings.Join(resolved, " ")
+}
+
+// resolvConfNameservers parses /etc/resolv.conf and returns up to three
+// nameserver entries. Returns nil when the file is missing or contains no
+// usable nameservers.
+func resolvConfNameservers() []string {
+	data, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		return nil
+	}
+	var nameservers []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "nameserver ") {
+			continue
+		}
+		ns := strings.TrimSpace(strings.TrimPrefix(line, "nameserver "))
+		if ns != "" && (net.ParseIP(ns) != nil) {
+			nameservers = append(nameservers, ns)
+		}
+		if len(nameservers) >= 3 {
+			break
+		}
+	}
+	return nameservers
 }
 
 // newDNSServiceAccount returns a ServiceAccount object for the DNS server

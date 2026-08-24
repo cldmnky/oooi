@@ -51,12 +51,50 @@ spec:
     service:
       name: "oooi-ingress"
       namespace: "openshift-ingress"
+      # Optional: merged onto the Service on every reconcile. Use these to let
+      # ExternalDNS (running inside the hosted cluster) publish the wildcard:
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: "*.apps.mycluster.example.com."
+      labels:
+        external-dns.example.com/publish: "yes"
     ports:
       http: 80
       https: 443
 ```
 
 Result: `*.apps.mycluster.example.com` → VLAN 10.202.64.221, pod-network → proxy ClusterIP → MetalLB.
+
+## Public DNS ownership (Route53 / ExternalDNS)
+
+The MetalLB VIP is only reachable from the VLAN; clients elsewhere resolve the
+wildcard through your public DNS provider. The operator manages the VLAN-side
+DNS view but does **not** write public DNS records. Two supported patterns:
+
+1. **ExternalDNS inside the hosted cluster (recommended).** The OpenShift
+   ExternalDNS Operator (>= 1.3.0) supports hosted clusters and can watch the
+   `oooi-ingress` LoadBalancer Service via its label filter. Set
+   `spec.appsIngress.service.labels` / `.annotations` on the Infra CR as shown
+   above so the Service carries the hostname annotation and publish label.
+   When MetalLB assigns a new VIP (e.g. after pool changes), ExternalDNS
+   updates the public record automatically — no stale records.
+
+2. **Manual record management.** Create/Update an A record
+   `*.apps.<cluster>.<baseDomain>` pointing at
+   `status.appsIngressStatus.externalIP`. Re-check it whenever the VIP changes;
+   a stale record silently breaks console/canary route health in the hosted
+   cluster (`ClusterOperatorNotAvailable`, `RouteHealth_FailedGet`) because the
+   ingress operator resolves the wildcard through public DNS.
+
+Verify convergence from both views:
+
+```bash
+# Public view (authoritative)
+dig +short console-openshift-console.apps.<cluster>.<domain> @<public-resolver>
+# Expected: status.appsIngressStatus.externalIP
+
+# VLAN view (oooi split-horizon DNS)
+dig +short foo.apps.<cluster>.<domain> @<dns.serverIP>
+```
 
 ## DNS / Proxy Details
 
@@ -70,3 +108,4 @@ Result: `*.apps.mycluster.example.com` → VLAN 10.202.64.221, pod-network → p
 - Service selector is fixed to `ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default` — override not yet supported.
 - Dual-stack not tested (IPv4 only).
 - No validating webhook; required fields validated at runtime (Degraded if missing).
+- Public DNS records are not written by the operator — see "Public DNS ownership" above.

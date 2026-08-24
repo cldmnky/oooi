@@ -91,7 +91,7 @@ spec:
 ```
 
 **Key Fields**:
-- `networkConfig.dnsServers`: **Upstream DNS servers** that CoreDNS forwards non-HCP queries to (e.g., 8.8.8.8, corporate DNS)
+- `networkConfig.dnsServers`: **Upstream DNS servers** that CoreDNS forwards non-HCP queries to (e.g., 8.8.8.8, corporate DNS). Use the special value `resolv.conf` (or `node`) on networks without direct egress to public resolvers — CoreDNS then forwards to the management-cluster node's own nameservers instead of assuming internet access.
 - `infraComponents.dns.enabled`: When `true`, DHCP automatically configures clients to use the DNS server IP
 - `infraComponents.dns.serverIP`: IP address of CoreDNS server on secondary network (192.168.100.3)
 - `proxy.serverIP`: External Envoy proxy IP on secondary network (for VMs)
@@ -102,6 +102,14 @@ spec:
 2. CoreDNS resolves HCP domains (api.*, oauth.*) to proxy at 192.168.100.10
 3. CoreDNS forwards all other queries to upstream DNS (8.8.8.8, 8.8.4.4)
 4. VMs get both HCP access and external DNS resolution
+
+> **Upstream reachability**: if `forward . 8.8.8.8` times out from the DNS pod
+> (firewalled labs where only the node resolver can reach the internet), set
+> `networkConfig.dnsServers: ["resolv.conf"]`. The generated Corefile will
+> forward to the node's `/etc/resolv.conf` nameservers. Verify with:
+> `kubectl -n <ns> exec deploy/<name>-dns -c dns-server -- getent hosts kubernetes.io`
+> after temporarily pointing `/etc/resolv.conf` at the DNS pod — or simply run
+> a query for a non-static name through `<dns.serverIP>` from a VLAN client.
 
 ### 2. Deploy the Infrastructure
 
@@ -365,6 +373,28 @@ oc get configmap my-cluster-dns-dns-config -n clusters -o jsonpath='{.data.Coref
    oc get configmap my-cluster-dns-dns-config -n clusters -o jsonpath='{.data.Corefile}' | grep -A 20 "view default"
    ```
 
+### Stale Public Wildcard Record (console/canary RouteHealth failures)
+
+**Symptom**: Hosted cluster `console`/`ingress` ClusterOperators degraded
+(`RouteHealth_FailedGet`) although the MetalLB VIP answers fine when probed
+directly; hosted pods resolve `*.apps.<cluster>.<domain>` to an old IP.
+
+**Cause**: The public DNS record for the apps wildcard still points at a
+previous LoadBalancer IP. The hosted ingress operator validates routes through
+public DNS, so a stale record blocks ClusterVersion convergence even though the
+VLAN-side split-horizon view is correct.
+
+**Fix**:
+1. Compare: `status.appsIngressStatus.externalIP` vs.
+   `dig +short console-openshift-console.apps.<cluster>.<domain> @<public-resolver>`.
+2. Update the record at your DNS provider (or let ExternalDNS inside the
+   hosted cluster manage it — see `docs/apps-ingress.md` "Public DNS ownership").
+3. Allow for TTL (typically 60s) and re-check the ClusterOperator conditions.
+
+**Prevention**: publish the wildcard via ExternalDNS with the Service labels/
+annotations from `spec.appsIngress.service`, so VIP changes propagate
+automatically.
+
 ## Advanced Configuration
 
 ### Custom DNS Entries
@@ -390,7 +420,7 @@ spec:
   - hostname: "custom.my-cluster.example.com"  # Custom entry
     ip: "192.168.100.10"
   upstreamDNS:
-  - "8.8.8.8"
+  - "8.8.8.8"   # or "resolv.conf" to inherit the node's nameservers
 ```
 
 ### Changing DNS Port
@@ -468,7 +498,7 @@ Both proxies should route traffic to the actual HCP services in the control plan
 | `networkConfig.secondaryNetworkCIDR` | CIDR for view matching | No | - |
 | `hostedClusterDomain` | HCP domain | Yes | - |
 | `staticEntries` | DNS A records | Yes | - |
-| `upstreamDNS` | Upstream DNS servers | No | `["8.8.8.8"]` |
+| `upstreamDNS` | Upstream DNS servers (`resolv.conf`/`node` sentinel inherits the node's nameservers) | No | `["8.8.8.8"]` |
 | `cacheTTL` | DNS cache TTL | No | `"30s"` |
 | `reloadInterval` | Config reload interval | No | `"5s"` |
 
