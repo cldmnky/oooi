@@ -77,18 +77,20 @@ attachment.
 |---|---|---|---|
 | `InfraReconciler` | — | `registry.example.com/oooi` | Validates input, creates children, drives apps-ingress automation, aggregates status |
 | DHCP | `DHCPServer` | oooi image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
-| DNS | `DNSServer` | CoreDNS | Split-horizon views; static HCP answers; upstream forwarding |
+| DNS | `DNSServer` | oooi image (CoreDNS component) | Split-horizon views; static HCP answers; upstream forwarding |
 | Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
 | Apps ingress | (part of Infra) | MetalLB operator | Installs MetalLB into the hosted cluster, allocates and advertises the wildcard VIP |
 
 ### Ownership and garbage collection
 
-Every created object carries an owner reference chain up to the `Infra`
-resource (`ctrl.SetControllerReference`). Deleting `Infra` garbage-collects the
-three child CRs, their workloads, Services, NetworkPolicies, and RBAC.
-Uninstalling the operator does **not** delete existing `Infra` resources' state
-unexpectedly — see [Uninstall and cleanup](operations/uninstall.md) for the
-supported teardown order.
+The three child CRs carry owner references to `Infra`. Deleting `Infra`
+garbage-collects those child CRs and their namespaced workloads, Services, and
+RBAC. The control-plane NetworkPolicy and DHCP ClusterRole/ClusterRoleBinding
+cannot carry an `Infra` owner reference because they are cross-namespace or
+cluster-scoped; remove them during cleanup. Apps-ingress resources live in the
+hosted cluster and must also be checked and removed separately. See
+[Uninstall and cleanup](operations/uninstall.md) for the supported teardown
+order.
 
 ## Traffic flows
 
@@ -105,7 +107,7 @@ sequenceDiagram
     S-->>VM: TLS session end-to-end (hosted cluster certs)
 ```
 
-- `api.<cluster>.<domain>:6443` → `controlPlaneNamespace/apiServerService`
+- `api.<cluster>.<domain>:6443` → `controlPlaneNamespace/kube-apiserver`
 - `oauth|ignition|konnectivity.<cluster>.<domain>:443` → matching HCP Services
 
 Because Envoy never terminates TLS, certificates remain inside the hosted
@@ -154,12 +156,13 @@ HCP endpoint and `*.apps` names differ per view.
 | Exposed ports | VLAN: DHCP/67+68, DNS/53, proxy `443`+`6443`; Envoy admin `9901` stays ClusterIP-only |
 | External exposure | Optional `<infra>-proxy-external` LoadBalancer exposes **only** the configured ingress port — never admin or backend ports |
 | OpenShift SCC | With `--enable-openshift=true`, a scoped `privileged` SCC RoleBinding is created for the proxy ServiceAccount (privileged ports <1024) |
-| Egress policy | A namespace NetworkPolicy `allow-infrastructure` permits the proxy's required paths |
+| Control-plane policy | An ingress-only `allow-infrastructure` NetworkPolicy selects all pods in the control-plane namespace and allows traffic from namespaces labeled `hostedcluster.densityops.com/network-policy-group=infrastructure` |
 | Tenant isolation | No tenant-to-management routes; hosted clusters never need to reach hosting-cluster ingress |
 
 ## Status model
 
-`Infra.status` aggregates everything a sysadmin needs:
+`Infra.status` reports reconciliation state. It does not replace checking the
+child Deployments for runtime availability:
 
 ```text
 status:

@@ -7,15 +7,6 @@ proxy, apps ingress, and public OAuth DNS.
 The names, addresses, registry, and zone below are documentation values. Replace
 them before applying anything.
 
-## Learning objectives
-
-After completing this quickstart, you can:
-
-- deploy the oooi controller on an OpenShift Container Platform management cluster;
-- configure an `Infra` resource for an isolated worker VLAN;
-- verify control-plane, applications, and public-DNS connectivity; and
-- identify the status fields and logs to inspect when reconciliation does not complete.
-
 ## Before you begin
 
 Complete the [prerequisites](prerequisites.md), including the

@@ -14,7 +14,7 @@ Defines the secondary network. **Required.**
 | `cidr` | string | — (**Required**) | IP range of the secondary network, CIDR notation, e.g. `192.0.2.0/24`. Validated pattern. |
 | `gateway` | string | — (**Required**) | Default gateway on that network, e.g. `192.0.2.1`. |
 | `networkAttachmentDefinition` | string | — (**Required**) | Name of the Multus NAD representing the VLAN. |
-| `networkAttachmentNamespace` | string | *(empty)* | Namespace of the NAD. When empty, oooi looks in the Infra's namespace first, then `default`. |
+| `networkAttachmentNamespace` | string | *(empty)* | Namespace of the NAD. When empty, oooi uses the namespace of the `Infra` resource. |
 | `dnsServers` | []string | *(empty)* | Upstream DNS servers used by CoreDNS forwarding. Entries may be IPs or the literal `"resolv.conf"` to inherit node resolvers. |
 
 ## spec.infraComponents.dhcp
@@ -42,7 +42,7 @@ Split-horizon CoreDNS. `enabled` defaults to `true`.
 | `serverIP` | string | *(empty)* | Static VLAN address of CoreDNS. |
 | `baseDomain` | string | *(empty)* | Base domain of the hosted cluster, e.g. `clusters.example.com`. |
 | `clusterName` | string | *(empty)* | Hosted cluster name; combined with `baseDomain` builds FQDNs (`api.<clusterName>.<baseDomain>`). |
-| `image` | string | CoreDNS default | Override the CoreDNS image. |
+| `image` | string | oooi image | Override the image that runs the CoreDNS component. |
 
 Static answers generated per view:
 
@@ -64,7 +64,7 @@ Envoy L4 SNI-passthrough gateway. `enabled` defaults to `true`.
 | `enabled` | bool | `true` | Deploy the ProxyServer child and workload. |
 | `serverIP` | string | *(empty)* | Static VLAN address of Envoy. |
 | `controlPlaneNamespace` | string | *(empty)* | Management-cluster namespace hosting the control-plane Services (`clusters-<name>`). |
-| `apiServerService` | string | `kube-apiserver` | Service name of the hosted API server in that namespace. |
+| `apiServerService` | string | `kube-apiserver` | Reserved API field. `Infra` currently always routes API traffic to the `kube-apiserver` Service. |
 | `internalProxyService` | string | *(empty)* | DNS name **or** ClusterIP of the proxy Service used in the pod-network DNS view. Omit to hide HCP names from pods. Example: `<infra>-proxy.clusters.svc.cluster.local`. |
 | `proxyImage` | string | `envoyproxy/envoy:v1.36.4` | Envoy image. |
 | `managerImage` | string | oooi image | xDS manager sidecar image. |
@@ -96,11 +96,11 @@ defaults to `false`.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable apps-ingress automation. |
-| `baseDomain` | string | `infraComponents.dns.baseDomain` | Overrides the domain used for the wildcard. |
+| `baseDomain` | string | `<dns.clusterName>.<dns.baseDomain>` | Overrides the domain used for the wildcard. When set, oooi creates `*.apps.<baseDomain>`. |
 | `hostedClusterRef.name` | string | *(empty)* | HostedCluster whose ingress/MetalLB will be configured. Required when enabled. |
 | `hostedClusterRef.namespace` | string | `clusters` | Namespace of that HostedCluster. |
 | `metallb.addressPoolName` | string | *(empty)* | IPAddressPool created in the hosted cluster (`openshift-operators`). |
-| `metallb.ipAddressPoolRange` | string | *(empty)* | Documented/validated range, `start-end` or CIDR. Must be unused, routable L2 space reachable from workers. |
+| `metallb.ipAddressPoolRange` | string | *(empty)* | Required when apps ingress is enabled. Passed to the hosted-cluster `IPAddressPool` as `spec.addresses`; use a valid MetalLB range or CIDR that is unused, routable L2 space reachable from workers. |
 | `metallb.l2AdvertisementName` | string | `advertise-<addressPoolName>` | L2Advertisement resource name. |
 | `service.name` | string | `oooi-ingress` | LoadBalancer Service name created in the hosted cluster. |
 | `service.namespace` | string | `openshift-ingress` | Namespace for that Service. |
@@ -114,8 +114,8 @@ Behavior sequence and status phases are described in
 
 | Field | Description |
 |---|---|
-| `conditions[]` | Standard conditions. Watch `Ready` for overall health. |
-| `componentStatus.dhcpReady` / `.dnsReady` / `.proxyReady` | Per-child readiness booleans. |
+| `conditions[]` | Reconciliation status. `Ready=True` confirms that oooi provisioned the declared components; it does not confirm Deployment availability. |
+| `componentStatus.dhcpReady` / `.dnsReady` / `.proxyReady` | Provisioning booleans set when the corresponding component is enabled. Check Deployment status for runtime readiness. |
 | `appsIngressStatus.phase` | `Pending`, `Ready`, or `Degraded`. |
 | `appsIngressStatus.reason` | Machine-readable phase reason, e.g. `WaitingForHostedClusterNodes`, `WaitingForMetalLBCRDs`, `WaitingForExternalIP`, `ReconciliationSucceeded`, `HostedClusterAccessFailed`, `MetalLBInstallFailed`, `IngressServiceFailed`, `ExternalIPDiscoveryFailed`. |
 | `appsIngressStatus.message` | Human-readable detail when Degraded. |
@@ -127,5 +127,6 @@ Behavior sequence and status phases are described in
 
 - `spec.services` on the *HostedCluster* (not Infra) is immutable after
   creation — plan publishing strategies up front.
-- Infra fields themselves are mutable; oooi reconciles changes including
-  removing children when a component is disabled.
+- Infra fields are mutable. Setting a component's `enabled` field to `false`
+  stops its reconciliation but does not delete an existing child resource;
+  delete that child explicitly when retiring the component.

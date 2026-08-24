@@ -37,7 +37,7 @@ If you cannot consume the published image, build and push with ko (multi-arch,
 UBI9-based):
 
 ```bash
-KO_DOCKER_REPO=registry.example.com/oooi make container-build
+make container-build IMAGE_TAG_BASE=registry.example.com/oooi
 ```
 
 See [Build images](build-images.md).

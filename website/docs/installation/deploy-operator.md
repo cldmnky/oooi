@@ -37,7 +37,7 @@ workstation against the current context:
 make install          # CRDs must exist in the target cluster
 make run              # go run ./main.go manager
 # Debug logging:
-make run -- --zap-log-level=debug
+go run ./main.go manager --zap-log-level=debug
 ```
 
 The local process uses your current kubeconfig; ensure it has permissions equal

@@ -1,16 +1,17 @@
 # Uninstall and cleanup
 
-Tear down in the right order so garbage collection does the heavy lifting and
-no orphans are left behind.
+Tear down in the right order. Owner references remove the namespaced child
+resources, but cross-namespace, cluster-scoped, and hosted-cluster resources
+require a manual check.
 
 ## Recommended order
 
 ```mermaid
 flowchart TB
-    A["1. Delete Infra resources<br/>(GC removes DHCP/DNS/proxy children,<br/>Services, NetworkPolicy, SCC bindings)"]
-    --> B["2. Delete NodePool + HostedCluster<br/>(HyperShift tears down control-plane<br/>namespace, VMs, PVCs)"]
-    --> C["3. Remove cluster-specific ExternalDNS<br/>Deployments + credentials"]
-    --> D["4. Remove public DNS records<br/>(or let --policy=sync owners clean up)"]
+    A["1. Delete Infra resources<br/>(GC removes DHCP/DNS/proxy children<br/>and their namespaced workloads)"]
+    --> B["2. Clean unowned resources<br/>(NetworkPolicy and DHCP cluster RBAC)"]
+    --> C["3. Delete NodePool + HostedCluster<br/>(HyperShift tears down control-plane<br/>namespace, VMs, PVCs)"]
+    --> D["4. Remove ExternalDNS resources<br/>and public DNS records"]
     --> E["5. make undeploy + make uninstall<br/>(operator, RBAC, CRDs)"]
 ```
 
@@ -22,14 +23,30 @@ Owner references cascade-delete every child object:
 kubectl -n clusters get infra
 kubectl -n clusters delete infra <name>
 
-# Children disappear as GC completes:
+# Child CRs and their namespaced workloads disappear as GC completes:
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver   # → No resources found
-kubectl -n clusters get all,networkpolicy -l app=proxy-server
+kubectl -n clusters get all -l app=proxy-server
 ```
 
-MetalLB releases the VIP automatically (pool usage drops).
+The external proxy Service is owned by the ProxyServer and is removed with it.
+Apps-ingress resources created in the hosted cluster are not owned by `Infra`.
+Check the hosted cluster for `oooi-ingress`, `metallb`, `IPAddressPool`, and
+`L2Advertisement`; remove resources that are no longer required before
+expecting the apps-ingress VIP to be released.
 
-### 2. Delete the hosted cluster
+### 2. Clean unowned resources
+
+The control-plane NetworkPolicy is cross-namespace and DHCP's KubeVirt reader
+RBAC is cluster-scoped, so Kubernetes cannot use `Infra` as their owner. Check
+and remove those resources after deleting the `Infra` resource:
+
+```bash
+kubectl -n clusters-<name> delete networkpolicy allow-infrastructure --ignore-not-found
+kubectl delete clusterrole <name>-dhcp-kubevirt-reader --ignore-not-found
+kubectl delete clusterrolebinding <name>-dhcp-kubevirt-reader --ignore-not-found
+```
+
+### 3. Delete the hosted cluster
 
 ```bash
 kubectl -n clusters delete nodepool <name> --wait=false
@@ -48,7 +65,7 @@ kubectl get ns clusters-<name>            # Terminating → NotFound
     The shared `clusters` namespace is *not* deleted — only the per-cluster
     control-plane namespace is.
 
-### 3. Remove cluster-specific ExternalDNS instances
+### 4. Remove cluster-specific ExternalDNS instances
 
 If you followed [Public DNS and OAuth publishing](../guides/public-dns-oauth.md),
 each hosted cluster may have its own watcher. Delete it **before** relying on
@@ -61,7 +78,7 @@ kubectl -n external-dns-operator delete deploy <cluster>-external-dns \
   secret/<cluster>-external-dns-credentials --ignore-not-found=true
 ```
 
-### 4. Clean public DNS records
+### 5. Clean public DNS records
 
 - Records owned by an ExternalDNS running with `--policy=sync` are deleted when
   their Services disappear.
@@ -78,7 +95,7 @@ kubectl -n external-dns-operator delete deploy <cluster>-external-dns \
 
 Verify convergence (`INSYNC`) and that nothing resolves anymore.
 
-### 5. Uninstall the operator
+### 6. Uninstall the operator
 
 ```bash
 make undeploy ignore-not-found=true     # Deployment, RBAC, oooi-system namespace

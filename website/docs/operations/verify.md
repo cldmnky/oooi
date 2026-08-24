@@ -20,10 +20,14 @@ kubectl -n clusters get infra <name> \
 kubectl -n clusters get infra <name> \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver
+kubectl -n clusters rollout status deployment/<name>-dhcp --timeout=5m
+kubectl -n clusters rollout status deployment/<name>-dns --timeout=5m
+kubectl -n clusters rollout status deployment/<name>-proxy --timeout=5m
 ```
 
-All three child CRs should exist (for enabled components) with their
-Deployments `Ready`.
+The `Infra` condition and component-status fields confirm reconciliation, not
+Deployment availability. A successful `rollout status` confirms each enabled
+component is available.
 
 ## 2. From the VLAN
 
