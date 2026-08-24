@@ -41,6 +41,10 @@ import (
 const (
 	// PhaseDegraded indicates a component is in a degraded state
 	PhaseDegraded = "Degraded"
+
+	phaseReady           = "Ready"
+	appsHTTPBackendName  = "apps-http"
+	appsHTTPSBackendName = "apps-https"
 )
 
 // InfraReconciler reconciles a Infra object
@@ -86,10 +90,7 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// Reconcile apps ingress first to discover external IP for DNS/Proxy wildcard
-	appsIngressResult, err := r.reconcileAppsIngress(ctx, infra)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	appsIngressResult := r.reconcileAppsIngress(ctx, infra)
 
 	if err := r.reconcileDNSComponent(ctx, infra); err != nil {
 		return ctrl.Result{}, err
@@ -100,14 +101,13 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// Update status
-	result, err := r.updateInfraStatus(ctx, infra)
-	if err != nil {
+	if err := r.updateInfraStatus(ctx, infra); err != nil {
 		return ctrl.Result{}, err
 	}
 	if appsIngressResult.Requeue || appsIngressResult.RequeueAfter > 0 {
 		return appsIngressResult, nil
 	}
-	return result, nil
+	return ctrl.Result{}, nil
 }
 
 // reconcileDHCPComponent handles DHCP server creation and updates
@@ -251,11 +251,11 @@ func (r *InfraReconciler) reconcileNetworkPolicy(ctx context.Context, infra *hos
 }
 
 // reconcileAppsIngress handles apps ingress configuration for hosted clusters.
-func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (ctrl.Result, error) {
+func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra) ctrl.Result {
 	// If apps ingress is not enabled, clear status and skip
 	if !infra.Spec.AppsIngress.Enabled {
 		infra.Status.AppsIngressStatus = hostedclusterv1alpha1.AppsIngressStatus{}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}
 	}
 
 	hostedClient, err := r.getHostedClusterClient(ctx, infra)
@@ -266,7 +266,7 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
 
 	if err := r.ensureMetalLBInstalled(ctx, hostedClient, infra); err != nil {
@@ -276,7 +276,7 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
 
 	if err := r.ensureAppsIngressService(ctx, hostedClient, infra); err != nil {
@@ -286,7 +286,7 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
 
 	externalIP, externalHostname, err := r.discoverAppsIngressExternalIP(ctx, hostedClient, infra)
@@ -297,7 +297,7 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 15 * time.Second}
 	}
 	if externalIP == "" && externalHostname == "" {
 		infra.Status.AppsIngressStatus.Phase = "Pending"
@@ -306,12 +306,12 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		infra.Status.AppsIngressStatus.ExternalIP = ""
 		infra.Status.AppsIngressStatus.ExternalHostname = ""
 		infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 15 * time.Second}
 	}
 
 	infra.Status.AppsIngressStatus.ExternalIP = externalIP
 	infra.Status.AppsIngressStatus.ExternalHostname = externalHostname
-	infra.Status.AppsIngressStatus.Phase = "Ready"
+	infra.Status.AppsIngressStatus.Phase = phaseReady
 	infra.Status.AppsIngressStatus.Reason = "ReconciliationSucceeded"
 	endpoint := externalIP
 	if endpoint == "" {
@@ -319,7 +319,7 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 	}
 	infra.Status.AppsIngressStatus.Message = "Apps ingress ready with external endpoint " + endpoint
 	infra.Status.AppsIngressStatus.LastSyncTime = metav1.Now()
-	return ctrl.Result{}, nil
+	return ctrl.Result{}
 }
 
 // discoverAppsIngressExternalIP reads the LoadBalancer Service status from the hosted cluster.
@@ -556,12 +556,12 @@ func intstrFromInt32(value int32) intstr.IntOrString {
 }
 
 // updateInfraStatus updates the status of the Infra resource
-func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (ctrl.Result, error) {
+func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
 	log := logf.FromContext(ctx)
 
 	infra.Status.ObservedGeneration = infra.Generation
 	condition := metav1.Condition{
-		Type:               "Ready",
+		Type:               phaseReady,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: infra.Generation,
 		LastTransitionTime: metav1.Now(),
@@ -582,10 +582,10 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 
 	if err := r.Status().Update(ctx, infra); err != nil {
 		log.Error(err, "Failed to update Infra status")
-		return ctrl.Result{}, err
+		return err
 	}
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // dhcpServerForInfra returns a DHCPServer object for the Infra
@@ -700,7 +700,7 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 
 	// Apps ingress wildcard handling: only add DNS static entries when ExternalIP is available,
 	// since DNSStaticEntry.IP requires a valid IPv4 address.
-	if infra.Spec.AppsIngress.Enabled && infra.Status.AppsIngressStatus.ExternalIP != "" && infra.Status.AppsIngressStatus.Phase == "Ready" {
+	if infra.Spec.AppsIngress.Enabled && infra.Status.AppsIngressStatus.ExternalIP != "" && infra.Status.AppsIngressStatus.Phase == phaseReady {
 		hostedClusterDomainForApps := dnsSpec.ClusterName + "." + dnsSpec.BaseDomain
 		if hostedClusterDomainForApps == "." || hostedClusterDomainForApps == "" {
 			if infra.Spec.AppsIngress.BaseDomain != "" {
@@ -854,7 +854,7 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 	if externalEndpoint == "" {
 		externalEndpoint = infra.Status.AppsIngressStatus.ExternalHostname
 	}
-	if infra.Spec.AppsIngress.Enabled && externalEndpoint != "" && infra.Status.AppsIngressStatus.Phase == "Ready" {
+	if infra.Spec.AppsIngress.Enabled && externalEndpoint != "" && infra.Status.AppsIngressStatus.Phase == phaseReady {
 		hostedClusterDomainForProxy := infra.Spec.InfraComponents.DNS.ClusterName + "." + infra.Spec.InfraComponents.DNS.BaseDomain
 		if hostedClusterDomainForProxy == "." || hostedClusterDomainForProxy == "" {
 			if infra.Spec.AppsIngress.BaseDomain != "" {
@@ -872,7 +872,7 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 				httpsPort = 443
 			}
 			backends = append(backends, hostedclusterv1alpha1.ProxyBackend{
-				Name:            "apps-http",
+				Name:            appsHTTPBackendName,
 				Hostname:        wildcardHostname,
 				Port:            httpPort,
 				TargetService:   externalEndpoint,
@@ -882,7 +882,7 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 				TimeoutSeconds:  30,
 			})
 			backends = append(backends, hostedclusterv1alpha1.ProxyBackend{
-				Name:            "apps-https",
+				Name:            appsHTTPSBackendName,
 				Hostname:        wildcardHostname,
 				Port:            httpsPort,
 				TargetService:   externalEndpoint,

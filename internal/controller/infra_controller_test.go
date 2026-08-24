@@ -711,13 +711,12 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			_, err := controllerReconciler.reconcileAppsIngress(ctx, infra)
-			Expect(err).NotTo(HaveOccurred())
+			controllerReconciler.reconcileAppsIngress(ctx, infra)
 
 			By("verifying the MetalLB Subscription is created")
 			subscription := &unstructured.Unstructured{}
 			subscription.SetGroupVersionKind(schema.GroupVersionKind{Group: "operators.coreos.com", Version: "v1alpha1", Kind: "Subscription"})
-			err = hostedClient.Get(ctx, types.NamespacedName{Name: "metallb-operator", Namespace: "openshift-operators"}, subscription)
+			err := hostedClient.Get(ctx, types.NamespacedName{Name: "metallb-operator", Namespace: "openshift-operators"}, subscription)
 			Expect(err).NotTo(HaveOccurred())
 			name, _, _ := unstructured.NestedString(subscription.Object, "spec", "name")
 			Expect(name).To(Equal("metallb-operator"))
@@ -831,8 +830,7 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			result, err := controllerReconciler.reconcileAppsIngress(ctx, infra)
-			Expect(err).NotTo(HaveOccurred())
+			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
 			Expect(result.Requeue).To(BeFalse())
 			Expect(result.RequeueAfter).To(BeZero())
 			Expect(infra.Status.AppsIngressStatus.Phase).To(Equal("Ready"))
@@ -855,12 +853,12 @@ var _ = Describe("Infra Controller", func() {
 			foundHTTP := false
 			foundHTTPS := false
 			for _, b := range proxyServer.Spec.Backends {
-				if b.Name == "apps-http" {
+				if b.Name == appsHTTPBackendName {
 					foundHTTP = true
 					Expect(b.Hostname).To(Equal("*.apps.mycluster.example.com"))
 					Expect(b.TargetService).To(Equal(externalIP))
 				}
-				if b.Name == "apps-https" {
+				if b.Name == appsHTTPSBackendName {
 					foundHTTPS = true
 					Expect(b.Hostname).To(Equal("*.apps.mycluster.example.com"))
 					Expect(b.TargetService).To(Equal(externalIP))
@@ -881,7 +879,7 @@ var _ = Describe("Infra Controller", func() {
 
 			By("verifying proxy backends use primary DNS-derived wildcard, not the override")
 			for _, b := range proxyServer.Spec.Backends {
-				if b.Name == "apps-http" || b.Name == "apps-https" {
+				if b.Name == appsHTTPBackendName || b.Name == appsHTTPSBackendName {
 					Expect(b.Hostname).To(Equal("*.apps.mycluster.example.com"), "proxy backends should use ClusterName.BaseDomain, not appsIngress.baseDomain override")
 				}
 			}
@@ -959,8 +957,7 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			result, err := controllerReconciler.reconcileAppsIngress(ctx, infra)
-			Expect(err).NotTo(HaveOccurred())
+			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
 			Expect(result.RequeueAfter).To(BeZero())
 			Expect(infra.Status.AppsIngressStatus.Phase).To(Equal("Ready"))
 			Expect(infra.Status.AppsIngressStatus.ExternalIP).To(BeEmpty(), "ExternalIP must be empty when LoadBalancer reports a hostname")
@@ -977,11 +974,11 @@ var _ = Describe("Infra Controller", func() {
 			foundHTTP := false
 			foundHTTPS := false
 			for _, b := range proxyServer.Spec.Backends {
-				if b.Name == "apps-http" {
+				if b.Name == appsHTTPBackendName {
 					foundHTTP = true
 					Expect(b.TargetService).To(Equal(externalHostname))
 				}
-				if b.Name == "apps-https" {
+				if b.Name == appsHTTPSBackendName {
 					foundHTTPS = true
 					Expect(b.TargetService).To(Equal(externalHostname))
 				}
@@ -1043,8 +1040,7 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			result, err := controllerReconciler.reconcileAppsIngress(ctx, infra)
-			Expect(err).NotTo(HaveOccurred())
+			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
 			Expect(result.RequeueAfter).NotTo(BeZero())
 			Expect(infra.Status.AppsIngressStatus.Phase).To(Equal("Pending"))
 			Expect(infra.Status.AppsIngressStatus.ExternalIP).To(BeEmpty())
