@@ -23,7 +23,7 @@ While functional, these approaches create security concerns in air-gapped or hig
 ### Solution
 `oooi` addresses this by deploying the essential infrastructure services **directly onto the secondary network (VLAN)**, eliminating the need for tenant clusters to route traffic to or access the hosting cluster. This maintains strict network isolation while ensuring seamless connectivity to hosted control plane services.
 
-The oooi operator watches for `HostedCluster` resources and automatically provisions:
+The oooi operator is driven by a declarative `Infra` custom resource and automatically provisions:
 - **DHCP Server**: Provides IP addresses and network configuration to VMs on the VLAN
 - **DNS Server**: Resolves internal cluster DNS queries using split-horizon DNS
 - **L4 Proxy (Envoy)**: Forwards traffic from the VLAN to control plane services
@@ -35,10 +35,13 @@ The oooi operator watches for `HostedCluster` resources and automatically provis
 
 ## Features
 
-- 🚀 **Automatic Provisioning**: Deploys infrastructure when HostedCluster resources are created
-- 🔒 **Network Isolation**: Supports air-gapped VLAN environments
-- 🏗️ **Infrastructure as Code**: Declarative configuration via Kubernetes CRDs
-- 🧹 **Garbage Collection**: Automatic cleanup when HostedClusters are deleted
+- 🚀 **Automatic Provisioning**: Provisions DHCP, DNS, and L4 proxy onto the VLAN from a single declarative `Infra` custom resource
+- 🔒 **Network Isolation**: Supports air-gapped VLAN environments (`attach-default-network: false`) — tenant clusters never need routes into the management cluster
+- 🌐 **Split-Horizon DNS**: Dual-view CoreDNS — VMs on the VLAN resolve HCP names to the external proxy, management-cluster pods resolve them to an internal proxy (or are shielded entirely)
+- 📦 **Apps Ingress Automation**: Installs MetalLB in the hosted cluster, creates the wildcard `*.apps.*` LoadBalancer VIP, and wires SNI wildcard proxying plus DNS entries for both views
+- 🏷️ **ExternalDNS Integration**: Declarative labels/annotations on the hosted ingress Service so public DNS records follow VIP changes automatically
+- 🔌 **Static IPAM**: Fixed per-component IPs with KubeVirt-aware DHCP (detects VMI interfaces and preserves existing leases)
+- 🧹 **Garbage Collection**: Owner references ensure automatic cleanup when the `Infra` resource is deleted
 - 📊 **Observability**: Metrics and logging integration
 - 🧪 **Comprehensive Testing**: Unit tests with envtest, E2E tests with Kind
 
@@ -75,20 +78,21 @@ make deploy IMG=your-registry/oooi:dev
 ## Usage
 
 ### Creating Infrastructure
-The operator automatically watches for `HostedCluster` resources. When a cluster is created with the appropriate annotations, the operator provisions the required infrastructure.
 
-Example HostedCluster spec:
-```yaml
-apiVersion: hypershift.openshift.io/v1beta1
-kind: HostedCluster
-metadata:
-  name: example-cluster
-  namespace: clusters
-spec:
-  # ... cluster configuration
-  infra:
-    networkType: OVNKubernetes
-    # Additional configuration for VLAN networking
+Create a HostedCluster (e.g. with `hcp create cluster kubevirt ...`), then
+declare the VLAN infrastructure with an `Infra` custom resource. The operator
+provisions a `DHCPServer`, `DNSServer`, and `ProxyServer` — each pinned to its
+static IP on the secondary network via a Multus network-attachment — and keeps
+them reconciled. Deleting the `Infra` resource garbage-collects everything.
+
+```
+KubeVirt VMs (isolated VLAN, 192.168.100.0/24)   Management cluster pod network
+┌───────────────────────────┐                  ┌────────────────────────────────┐
+│  DHCP ← 192.168.100.2     │                  │  Hosted control plane pods     │
+│  DNS  ← 192.168.100.3 ────┼── static HCP ───▶│  kube-apiserver / oauth /      │
+│  Envoy← 192.168.100.10 ───┼── SNI proxy ────▶│  ignition / konnectivity       │
+│  *.apps → MetalLB VIP     │◀──── wildcard ───┤  oooi-ingress LoadBalancer     │
+└───────────────────────────┘                  └────────────────────────────────┘
 ```
 
 ### Configuration
@@ -107,8 +111,7 @@ spec:
     networkAttachmentDefinition: "vlan100"
     networkAttachmentNamespace: "default"
     dnsServers:  # Upstream DNS servers for CoreDNS forwarding
-      - "8.8.8.8"
-      - "8.8.4.4"
+      - "resolv.conf"   # inherit the node's nameservers (or use explicit IPs)
   
   infraComponents:
     # DHCP Server Configuration
@@ -131,15 +134,55 @@ spec:
       enabled: true
       serverIP: "192.168.100.10"
       controlPlaneNamespace: "clusters-my-cluster"
+      # Optional: pod-network view — management pods resolve HCP names to the
+      # in-cluster proxy instead of public DNS. Leave unset to hide HCP from pods.
+      internalProxyService: "example-infra-proxy.clusters.svc.cluster.local"
 ```
 
 **Key Configuration Points**:
 
-- **`networkConfig.dnsServers`**: Upstream DNS servers that CoreDNS forwards non-HCP queries to
+- **`networkConfig.dnsServers`**: Upstream DNS servers that CoreDNS forwards non-HCP queries to. Use `"resolv.conf"` on networks without direct egress to public resolvers.
 - **`infraComponents.dns.enabled: true`**: When enabled, DHCP automatically uses the DNS server IP
-- **DNS Flow**: VMs → DHCP assigns CoreDNS IP → CoreDNS resolves HCP domains → CoreDNS forwards other queries to upstream
+- **`infraComponents.proxy.internalProxyService`**: Enables the pod-network split-horizon view
+- **DNS Flow**: VMs → DHCP assigns CoreDNS IP → CoreDNS resolves HCP domains to the external proxy → other queries forwarded upstream
 
-See [DNS_SETUP.md](docs/DNS_SETUP.md) for detailed DNS configuration and [PROXY_SETUP.md](docs/PROXY_SETUP.md) for proxy configuration.
+### Apps Ingress (wildcard `*.apps.*`)
+
+With `appsIngress.enabled`, the operator installs MetalLB in the hosted
+cluster, creates a wildcard LoadBalancer VIP for the default IngressController,
+adds SNI wildcard backends to Envoy, and publishes `*.apps.<cluster>.<domain>`
+in both DNS views:
+
+```yaml
+spec:
+  appsIngress:
+    enabled: true
+    hostedClusterRef:
+      name: "my-cluster"
+      namespace: "clusters"
+    metallb:
+      addressPoolName: "vlan203-apps"
+      ipAddressPoolRange: "192.168.100.200-192.168.100.220"
+    service:
+      name: "oooi-ingress"
+      namespace: "openshift-ingress"
+      # Merged onto the Service every reconcile; lets ExternalDNS running in
+      # the hosted cluster publish and track the public wildcard record
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: "*.apps.my-cluster.example.com."
+      labels:
+        external-dns.example.com/publish: "yes"
+    ports:
+      http: 80
+      https: 443
+```
+
+Progress is reported via `.status.appsIngressStatus` (`Pending` → `Ready` /
+`Degraded`) with the assigned VIP in `.externalIP`.
+
+See [apps-ingress.md](docs/apps-ingress.md) for public-DNS ownership patterns
+and [DNS_SETUP.md](docs/DNS_SETUP.md) / [PROXY_SETUP.md](docs/PROXY_SETUP.md)
+for detailed configuration.
 
 ## Development
 
@@ -235,8 +278,9 @@ make cleanup-test-e2e
 
 - [Architecture Design](PLAN.md) - Comprehensive technical design document
 - [E2E Testing Guide](QUICKSTART_E2E.md) - Quick start for end-to-end testing
-- [DNS Setup](docs/DNS_SETUP.md) - DNS configuration details
-- [Proxy Setup](docs/PROXY_SETUP.md) - Proxy configuration details
+- [DNS Setup](docs/DNS_SETUP.md) - Split-horizon DNS configuration, pod-network view, upstream selection, troubleshooting
+- [Proxy Setup](docs/PROXY_SETUP.md) - Envoy L4 proxy configuration details
+- [Apps Ingress](docs/apps-ingress.md) - Wildcard `*.apps.*` ingress, MetalLB automation, public-DNS ownership
 - [Static IPAM](docs/STATIC_IPAM.md) - IP address management
 
 ## License
