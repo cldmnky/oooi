@@ -286,9 +286,15 @@ spec:
               appsIngressStatus:
                 description: AppsIngressStatus tracks the status of apps ingress configuration.
                 properties:
+                  externalHostname:
+                    description: |-
+                      ExternalHostname is the external hostname assigned to the hosted cluster's LoadBalancer service.
+                      Only populated when the LoadBalancer reports a hostname instead of an IP address.
+                    type: string
                   externalIP:
-                    description: ExternalIP is the external IP assigned by MetalLB
-                      to the hosted cluster's LoadBalancer service.
+                    description: |-
+                      ExternalIP is the external IP assigned by MetalLB to the hosted cluster's LoadBalancer service.
+                      Only populated when the LoadBalancer reports an IP address.
                     type: string
                   lastSyncTime:
                     description: LastSyncTime is the timestamp of the last successful

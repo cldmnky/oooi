@@ -711,13 +711,13 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			_, err = controllerReconciler.reconcileAppsIngress(ctx, infra)
+			_, err := controllerReconciler.reconcileAppsIngress(ctx, infra)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the MetalLB Subscription is created")
 			subscription := &unstructured.Unstructured{}
 			subscription.SetGroupVersionKind(schema.GroupVersionKind{Group: "operators.coreos.com", Version: "v1alpha1", Kind: "Subscription"})
-			err := hostedClient.Get(ctx, types.NamespacedName{Name: "metallb-operator", Namespace: "openshift-operators"}, subscription)
+			err = hostedClient.Get(ctx, types.NamespacedName{Name: "metallb-operator", Namespace: "openshift-operators"}, subscription)
 			Expect(err).NotTo(HaveOccurred())
 			name, _, _ := unstructured.NestedString(subscription.Object, "spec", "name")
 			Expect(name).To(Equal("metallb-operator"))
@@ -864,6 +864,126 @@ var _ = Describe("Infra Controller", func() {
 					foundHTTPS = true
 					Expect(b.Hostname).To(Equal("*.apps.mycluster.example.com"))
 					Expect(b.TargetService).To(Equal(externalIP))
+				}
+			}
+			Expect(foundHTTP).To(BeTrue())
+			Expect(foundHTTPS).To(BeTrue())
+
+			By("verifying baseDomain override adds a second DNS wildcard")
+			foundOverrideWildcard := false
+			for _, e := range dnsServer.Spec.StaticEntries {
+				if e.Hostname == "*.apps.apps.example.com" && e.IP == externalIP {
+					foundOverrideWildcard = true
+					break
+				}
+			}
+			Expect(foundOverrideWildcard).To(BeTrue(), "DNS should contain wildcard for appsIngress.baseDomain override")
+
+			By("verifying proxy backends use primary DNS-derived wildcard, not the override")
+			for _, b := range proxyServer.Spec.Backends {
+				if b.Name == "apps-http" || b.Name == "apps-https" {
+					Expect(b.Hostname).To(Equal("*.apps.mycluster.example.com"), "proxy backends should use ClusterName.BaseDomain, not appsIngress.baseDomain override")
+				}
+			}
+		})
+
+		It("should set ExternalHostname (not ExternalIP) when LoadBalancer reports a hostname", func() {
+			By("building a fake hosted cluster client with hostname-based ingress service")
+			scheme := runtime.NewScheme()
+			Expect(hostedclusterv1alpha1.AddToScheme(scheme)).To(Succeed())
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+			externalHostname := "my-lb.cloud.example.com"
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oooi-ingress",
+					Namespace: "openshift-ingress",
+				},
+				Spec: corev1.ServiceSpec{
+					Type: corev1.ServiceTypeLoadBalancer,
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{{Hostname: externalHostname}},
+					},
+				},
+			}
+			Expect(hostedClient.Create(ctx, svc)).To(Succeed())
+
+			infra := &hostedclusterv1alpha1.Infra{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "apps-ingress-hostname",
+					Namespace: "default",
+				},
+				Spec: hostedclusterv1alpha1.InfraSpec{
+					NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+						CIDR:                        "192.168.100.0/24",
+						Gateway:                     "192.168.100.1",
+						NetworkAttachmentDefinition: "tenant-vlan-100",
+					},
+					InfraComponents: hostedclusterv1alpha1.InfraComponents{
+						DNS: hostedclusterv1alpha1.DNSConfig{
+							Enabled:     true,
+							ServerIP:    "192.168.100.3",
+							BaseDomain:  "example.com",
+							ClusterName: "mycluster",
+						},
+						Proxy: hostedclusterv1alpha1.ProxyConfig{
+							Enabled:  true,
+							ServerIP: "192.168.100.10",
+						},
+					},
+					AppsIngress: hostedclusterv1alpha1.AppsIngressConfig{
+						Enabled: true,
+						HostedClusterRef: hostedclusterv1alpha1.HostedClusterReference{
+							Name:      "mycluster",
+							Namespace: "clusters",
+						},
+						MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
+							AddressPoolName:    "lab-network",
+							IPAddressPoolRange: "10.202.64.221-10.202.64.240",
+						},
+						Service: hostedclusterv1alpha1.AppsIngressService{
+							Name:      "oooi-ingress",
+							Namespace: "openshift-ingress",
+						},
+					},
+				},
+			}
+
+			controllerReconciler := &InfraReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				HostedClusterClientFactory: func(ctx context.Context, _ *hostedclusterv1alpha1.Infra) (client.Client, error) {
+					return hostedClient, nil
+				},
+			}
+			result, err := controllerReconciler.reconcileAppsIngress(ctx, infra)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+			Expect(infra.Status.AppsIngressStatus.Phase).To(Equal("Ready"))
+			Expect(infra.Status.AppsIngressStatus.ExternalIP).To(BeEmpty(), "ExternalIP must be empty when LoadBalancer reports a hostname")
+			Expect(infra.Status.AppsIngressStatus.ExternalHostname).To(Equal(externalHostname))
+
+			By("verifying DNS static entries are not added for hostname (no IP available)")
+			dnsServer := controllerReconciler.dnsServerForInfra(infra)
+			for _, e := range dnsServer.Spec.StaticEntries {
+				Expect(e.Hostname).NotTo(ContainSubstring("*.apps."), "DNS static entries must not be added when only a hostname is available (IP required)")
+			}
+
+			By("verifying proxy backends use the external hostname as TargetService")
+			proxyServer := controllerReconciler.proxyServerForInfra(infra)
+			foundHTTP := false
+			foundHTTPS := false
+			for _, b := range proxyServer.Spec.Backends {
+				if b.Name == "apps-http" {
+					foundHTTP = true
+					Expect(b.TargetService).To(Equal(externalHostname))
+				}
+				if b.Name == "apps-https" {
+					foundHTTPS = true
+					Expect(b.TargetService).To(Equal(externalHostname))
 				}
 			}
 			Expect(foundHTTP).To(BeTrue())

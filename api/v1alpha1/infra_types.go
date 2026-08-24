@@ -321,8 +321,14 @@ type AppsIngressStatus struct {
 	Phase string `json:"phase,omitempty"`
 
 	// ExternalIP is the external IP assigned by MetalLB to the hosted cluster's LoadBalancer service.
+	// Only populated when the LoadBalancer reports an IP address.
 	// +optional
 	ExternalIP string `json:"externalIP,omitempty"`
+
+	// ExternalHostname is the external hostname assigned to the hosted cluster's LoadBalancer service.
+	// Only populated when the LoadBalancer reports a hostname instead of an IP address.
+	// +optional
+	ExternalHostname string `json:"externalHostname,omitempty"`
 
 	// LastSyncTime is the timestamp of the last successful reconciliation.
 	// +optional

@@ -40,7 +40,7 @@ spec:
       serverIP: "192.168.100.10"
   appsIngress:
     enabled: true
-    baseDomain: "apps.example.com"  # optional, default uses dns.baseDomain
+    baseDomain: "example.com"  # optional, defaults to dns.baseDomain; wildcard uses *.apps.<clusterName>.<baseDomain>
     hostedClusterRef:
       name: "mycluster"
       namespace: "clusters"
