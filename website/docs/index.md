@@ -13,8 +13,8 @@ hide:
 
 ### OpenShift on OpenShift Infra
 
-Infrastructure services for OpenShift Hosted Control Planes on isolated networks —
-**O**pen**S**hift **o**n **O**penShift **I**nfra.
+The name says it all: **OpenShift on OpenShift Infra** — infrastructure that
+lets one OpenShift cluster host another.
 
 Kubernetes operator that provisions **DHCP**, **split-horizon DNS**, and a
 **TLS-passthrough L4 proxy** onto an isolated VLAN so KubeVirt worker nodes can
