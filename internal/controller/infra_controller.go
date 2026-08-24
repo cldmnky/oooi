@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"net"
+	"net/url"
 	"reflect"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -156,6 +159,13 @@ func (r *InfraReconciler) reconcileDNSComponent(ctx context.Context, infra *host
 	}
 
 	dnsServer := r.dnsServerForInfra(infra)
+	if internalProxy := dnsServer.Spec.NetworkConfig.InternalProxyIP; internalProxy != "" && net.ParseIP(internalProxy) == nil {
+		resolvedProxyIP, err := r.resolveInternalProxyService(ctx, internalProxy)
+		if err != nil {
+			return err
+		}
+		dnsServer.Spec.NetworkConfig.InternalProxyIP = resolvedProxyIP
+	}
 	if err := ctrl.SetControllerReference(infra, dnsServer, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for DNSServer")
 		return err
@@ -179,6 +189,29 @@ func (r *InfraReconciler) reconcileDNSComponent(ctx context.Context, infra *host
 	}
 
 	return nil
+}
+
+// resolveInternalProxyService resolves an internal proxy Service reference to
+// its ClusterIP so the generated CoreDNS hosts records remain valid A records.
+// A missing or headless Service is treated as pending; the owning ProxyServer
+// event will cause Infra to retry once the Service has a ClusterIP.
+func (r *InfraReconciler) resolveInternalProxyService(ctx context.Context, reference string) (string, error) {
+	parts := strings.Split(strings.TrimSuffix(reference, "."), ".")
+	if len(parts) < 2 {
+		return "", errors.NewBadRequest("internalProxyService must be a ClusterIP or service.namespace DNS name")
+	}
+
+	service := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{Name: parts[0], Namespace: parts[1]}, service); err != nil {
+		if errors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if service.Spec.ClusterIP == "" || service.Spec.ClusterIP == corev1.ClusterIPNone {
+		return "", nil
+	}
+	return service.Spec.ClusterIP, nil
 }
 
 // reconcileProxyComponent handles proxy server creation, updates, and network policy
@@ -415,6 +448,36 @@ func (r *InfraReconciler) getHostedClusterClient(ctx context.Context, infra *hos
 	if err != nil {
 		return nil, err
 	}
+
+	// The kubeconfig endpoint is intended for cluster clients on the VLAN. The
+	// management controller must use the in-cluster API Service instead, while
+	// retaining the public hostname for certificate validation and SNI.
+	serverURL, err := url.Parse(config.Host)
+	if err != nil {
+		return nil, err
+	}
+	serverName := config.ServerName
+	if serverName == "" {
+		serverName = serverURL.Hostname()
+	}
+	port := serverURL.Port()
+	if port == "" {
+		port = "443"
+	}
+	apiServerService := infra.Spec.InfraComponents.Proxy.APIServerService
+	if apiServerService == "" {
+		apiServerService = "kube-apiserver"
+	}
+	controlPlaneNamespace := infra.Spec.InfraComponents.Proxy.ControlPlaneNamespace
+	if controlPlaneNamespace == "" {
+		controlPlaneNamespace = hostedClusterNamespace + "-" + hostedClusterName
+	}
+	apiServerHost := apiServerService + "." + controlPlaneNamespace + ".svc.cluster.local"
+	config.Host = (&url.URL{
+		Scheme: "https",
+		Host:   net.JoinHostPort(apiServerHost, port),
+	}).String()
+	config.ServerName = serverName
 
 	hostedScheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(hostedScheme); err != nil {

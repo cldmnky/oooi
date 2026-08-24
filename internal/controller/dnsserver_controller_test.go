@@ -486,12 +486,14 @@ var _ = Describe("DNSServer Controller", func() {
 			By("verifying all endpoints are in multus view with external proxy")
 			Expect(corefile).To(MatchRegexp(`view multus[\s\S]*?192\.168\.100\.10\s+api\.my-cluster\.example\.com`))
 			Expect(corefile).To(MatchRegexp(`view multus[\s\S]*?192\.168\.100\.10\s+api-int\.my-cluster\.example\.com`))
-			Expect(corefile).To(MatchRegexp(`view multus[\s\S]*?192\.168\.100\.10\s+\*\.apps\.my-cluster\.example\.com`))
+			By("verifying wildcard app records use CoreDNS templates")
+			Expect(corefile).To(ContainSubstring(`match ^[^.]+\.apps\.my-cluster\.example\.com\.$`))
+			Expect(strings.Count(corefile, `answer "{{ .Name }} 30 IN A 192.168.100.10"`)).To(Equal(1))
 
 			By("verifying all endpoints are in default view with internal proxy")
 			Expect(corefile).To(MatchRegexp(`view default[\s\S]*?10\.96\.100\.200\s+api\.my-cluster\.example\.com`))
 			Expect(corefile).To(MatchRegexp(`view default[\s\S]*?10\.96\.100\.200\s+api-int\.my-cluster\.example\.com`))
-			Expect(corefile).To(MatchRegexp(`view default[\s\S]*?10\.96\.100\.200\s+\*\.apps\.my-cluster\.example\.com`))
+			Expect(strings.Count(corefile, `answer "{{ .Name }} 30 IN A 10.96.100.200"`)).To(Equal(1))
 
 			By("verifying each view has exactly 3 endpoints")
 			// Count occurrences of each IP in the Corefile

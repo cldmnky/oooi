@@ -41,6 +41,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -430,4 +431,73 @@ func (xs *XDSServer) WatchProxyServers(ctx context.Context, namespace string) er
 
 	log.Info("initialized xDS configuration", "proxies", len(proxyList.Items))
 	return nil
+}
+
+// WatchProxyServerChanges keeps xDS snapshots synchronized with ProxyServer
+// changes after the initial list has been loaded.
+func (xs *XDSServer) WatchProxyServerChanges(ctx context.Context, namespace string) error {
+	watchClient, ok := xs.client.(client.WithWatch)
+	if !ok {
+		return fmt.Errorf("kubernetes client does not support watches")
+	}
+
+	go xs.watchProxyServerChanges(ctx, namespace, watchClient)
+	return nil
+}
+
+func (xs *XDSServer) watchProxyServerChanges(ctx context.Context, namespace string, watchClient client.WithWatch) {
+	log := logf.FromContext(ctx)
+	for {
+		proxyWatch, err := watchClient.Watch(ctx, &hostedclusterv1alpha1.ProxyServerList{}, client.InNamespace(namespace))
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Error(err, "failed to watch ProxyServer resources")
+			if !waitForProxyWatchRetry(ctx) {
+				return
+			}
+			continue
+		}
+
+		for event := range proxyWatch.ResultChan() {
+			switch event.Type {
+			case watch.Added, watch.Modified:
+				proxy, ok := event.Object.(*hostedclusterv1alpha1.ProxyServer)
+				if !ok {
+					log.Error(fmt.Errorf("unexpected watch object type %T", event.Object), "ignoring ProxyServer event")
+					continue
+				}
+				if err := xs.UpdateProxyConfig(ctx, proxy); err != nil {
+					log.Error(err, "failed to update proxy configuration", "proxy", proxy.Name)
+				}
+			case watch.Deleted:
+				proxy, ok := event.Object.(*hostedclusterv1alpha1.ProxyServer)
+				if ok {
+					xs.RemoveProxyConfig(ctx, proxy.Name)
+				}
+			case watch.Error:
+				log.Error(fmt.Errorf("ProxyServer watch returned an error: %v", event.Object), "restarting ProxyServer watch")
+				proxyWatch.Stop()
+			}
+		}
+
+		if ctx.Err() != nil {
+			return
+		}
+		if !waitForProxyWatchRetry(ctx) {
+			return
+		}
+	}
+}
+
+func waitForProxyWatchRetry(ctx context.Context) bool {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

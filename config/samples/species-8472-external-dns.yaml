@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: species-8472-external-dns
+  namespace: external-dns-operator
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: species-8472-external-dns
+  namespace: external-dns-operator
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/instance: species-8472-external-dns
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-dns
+      app.kubernetes.io/instance: species-8472-external-dns
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: external-dns
+        app.kubernetes.io/instance: species-8472-external-dns
+    spec:
+      serviceAccountName: species-8472-external-dns
+      containers:
+      - name: external-dns
+        image: registry.redhat.io/edo/external-dns-rhel9@sha256:bff2bf48be1d62005dda3b939066fb9d3ba2877799373ec0d1b02feac7728bc9
+        imagePullPolicy: IfNotPresent
+        args:
+        - --kubeconfig=/etc/kubeconfig/config
+        - --provider=aws
+        - --source=service
+        - --policy=sync
+        - --registry=txt
+        - --txt-owner-id=species-8472-external-dns
+        - --txt-prefix=external-dns-
+        - --zone-id-filter=Z0744581GI2T7BTVHI4Y
+        - --label-filter=external-dns.blahonga.me/publish=yes
+        - --service-type-filter=LoadBalancer
+        - --metrics-address=127.0.0.1:7979
+        - --log-level=debug
+        env:
+        - name: AWS_SHARED_CREDENTIALS_FILE
+          value: /etc/kubernetes/aws-credentials
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: kubeconfig
+          mountPath: /etc/kubeconfig
+          readOnly: true
+        - name: aws-credentials
+          mountPath: /etc/kubernetes
+          readOnly: true
+      volumes:
+      - name: kubeconfig
+        secret:
+          secretName: species-8472-external-dns-kubeconfig
+      - name: aws-credentials
+        secret:
+          secretName: species-8472-external-dns-credentials
+          items:
+          - key: credentials
+            path: aws-credentials

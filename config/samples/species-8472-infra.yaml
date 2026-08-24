@@ -1,0 +1,58 @@
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: Infra
+metadata:
+  name: species-8472
+  namespace: clusters
+spec:
+  networkConfig:
+    cidr: 10.202.64.0/24
+    gateway: 10.202.64.1
+    networkAttachmentDefinition: vlan203
+    networkAttachmentNamespace: default
+    # The management cluster's resolvers can reach the lab DNS upstreams;
+    # public DNS egress from the DNS pod is not required.
+    dnsServers:
+    - 10.201.0.2
+    - 10.201.0.1
+  infraComponents:
+    dhcp:
+      enabled: true
+      image: quay.io/cldmnky/oooi@sha256:6b34bd4a8d598fbd7ec21c24284fbc7b232c3bfd761f95f851e6061515b114e0
+      serverIP: 10.202.64.2
+      rangeStart: 10.202.64.200
+      rangeEnd: 10.202.64.254
+      leaseTime: 1h
+    dns:
+      enabled: true
+      image: quay.io/cldmnky/oooi@sha256:6b34bd4a8d598fbd7ec21c24284fbc7b232c3bfd761f95f851e6061515b114e0
+      serverIP: 10.202.64.3
+      baseDomain: clusters.blahonga.me
+      clusterName: species-8472
+    proxy:
+      enabled: true
+      managerImage: quay.io/cldmnky/oooi@sha256:6b34bd4a8d598fbd7ec21c24284fbc7b232c3bfd761f95f851e6061515b114e0
+      proxyImage: envoyproxy/envoy:v1.36.4
+      serverIP: 10.202.64.4
+      controlPlaneNamespace: clusters-species-8472
+      apiServerService: kube-apiserver
+      internalProxyService: species-8472-proxy.clusters.svc.cluster.local
+  appsIngress:
+    enabled: true
+    hostedClusterRef:
+      name: species-8472
+      namespace: clusters
+    metallb:
+      addressPoolName: vlan203-apps
+      ipAddressPoolRange: 10.202.64.180-10.202.64.190
+    service:
+      name: oooi-ingress
+      namespace: openshift-ingress
+      # These are consumed by ExternalDNS when it watches the hosted cluster.
+      # Public DNS must otherwise be updated from appsIngressStatus.externalIP.
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: '*.apps.species-8472.clusters.blahonga.me.'
+      labels:
+        external-dns.blahonga.me/publish: "yes"
+    ports:
+      http: 80
+      https: 443

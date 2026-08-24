@@ -22,6 +22,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -202,17 +203,19 @@ func (r *DNSServerReconciler) ensureDNSDeployment(ctx context.Context, dnsServer
 func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.DNSServer) *corev1.ConfigMap {
 	// Build hosts entries for multus view (external proxy - for VMs on secondary network)
 	var multusHostsEntries strings.Builder
+	var multusTemplateEntries strings.Builder
 	for _, entry := range dnsServer.Spec.StaticEntries {
-		multusHostsEntries.WriteString(fmt.Sprintf("        %s %s\n", entry.IP, entry.Hostname))
+		appendDNSStaticEntry(&multusHostsEntries, &multusTemplateEntries, entry)
 	}
 
 	// Build hosts entries for default view (internal proxy - for management cluster pods)
 	var defaultHostsEntries strings.Builder
+	var defaultTemplateEntries strings.Builder
 	internalProxyIP := dnsServer.Spec.NetworkConfig.InternalProxyIP
 	if internalProxyIP != "" {
 		// If internal proxy is configured, create entries pointing to it
 		for _, entry := range dnsServer.Spec.StaticEntries {
-			defaultHostsEntries.WriteString(fmt.Sprintf("        %s %s\n", internalProxyIP, entry.Hostname))
+			appendDNSStaticEntryWithIP(&defaultHostsEntries, &defaultTemplateEntries, entry, internalProxyIP)
 		}
 	}
 
@@ -271,6 +274,7 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 %s        fallthrough
     }
 
+%s
     forward . %s {
         policy sequential
     }
@@ -295,6 +299,7 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 %s        fallthrough
     }
 
+%s
     forward . %s {
         policy sequential
     }
@@ -304,7 +309,7 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     errors
     reload %s
 }
-`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, defaultHostsEntries.String(), upstream, cacheTTL, reloadInterval)
+`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), multusTemplateEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, defaultHostsEntries.String(), defaultTemplateEntries.String(), upstream, cacheTTL, reloadInterval)
 	} else {
 		// No internal proxy - default view just forwards to upstream (HCP hidden from management cluster)
 		corefileBody = fmt.Sprintf(`# Multus view - traffic from secondary network (%s)
@@ -318,6 +323,7 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 %s        fallthrough
     }
 
+%s
     forward . %s {
         policy sequential
     }
@@ -344,7 +350,7 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
     errors
     reload %s
 }
-`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, upstream, cacheTTL, reloadInterval)
+`, secondaryCIDR, dnsPort, secondaryCIDR, multusHostsEntries.String(), multusTemplateEntries.String(), upstream, cacheTTL, reloadInterval, dnsPort, upstream, cacheTTL, reloadInterval)
 	}
 
 	corefile := fmt.Sprintf(`# Hosted Control Plane dual-view split-horizon DNS using view plugin
@@ -366,6 +372,31 @@ func (r *DNSServerReconciler) newDNSConfigMap(dnsServer *hostedclusterv1alpha1.D
 			"Corefile": corefile,
 		},
 	}
+}
+
+func appendDNSStaticEntry(hosts, templates *strings.Builder, entry hostedclusterv1alpha1.DNSStaticEntry) {
+	appendDNSStaticEntryWithIP(hosts, templates, entry, entry.IP)
+}
+
+func appendDNSStaticEntryWithIP(hosts, templates *strings.Builder, entry hostedclusterv1alpha1.DNSStaticEntry, ip string) {
+	if net.ParseIP(ip) == nil {
+		return
+	}
+	if !strings.HasPrefix(entry.Hostname, "*.") {
+		_, _ = fmt.Fprintf(hosts, "        %s %s\n", ip, entry.Hostname)
+		return
+	}
+
+	suffix := strings.TrimSuffix(strings.TrimPrefix(entry.Hostname, "*."), ".")
+	if suffix == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(templates, `    template IN A {
+        match ^[^.]+\.%s\.$
+        answer "{{ .Name }} 30 IN A %s"
+        fallthrough
+    }
+`, regexp.QuoteMeta(suffix), ip)
 }
 
 // resolveUpstreamDNS builds the CoreDNS forward target from the configured

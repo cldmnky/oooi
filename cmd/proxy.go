@@ -95,7 +95,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 
-	k8sClient, err := client.New(config, client.Options{
+	k8sClient, err := client.NewWithWatch(config, client.Options{
 		Scheme: scheme,
 	})
 	if err != nil {
@@ -114,6 +114,9 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	// Watch ProxyServer resources
 	if err := xdsServer.WatchProxyServers(ctx, proxyNamespace); err != nil {
 		return fmt.Errorf("failed to watch proxy servers: %w", err)
+	}
+	if err := xdsServer.WatchProxyServerChanges(ctx, proxyNamespace); err != nil {
+		return fmt.Errorf("failed to watch proxy server changes: %w", err)
 	}
 
 	// Setup signal handling for graceful shutdown

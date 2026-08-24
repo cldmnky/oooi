@@ -9,6 +9,107 @@ Kubernetes operator for deploying infrastructure components required by OpenShif
 
 When KubeVirt VMs run with `attach-default-network: false` on isolated VLANs, they lack direct connectivity to the hosted control plane services running on the management cluster's pod network. This operator bridges that gap by deploying infrastructure services (DHCP, DNS, L4 proxy) onto the secondary network.
 
+## Getting started
+
+This walkthrough creates the HyperShift `HostedCluster` first and then applies the oooi `Infra` resource. oooi consumes an existing HostedCluster; it does not create one.
+
+### Prerequisites
+
+- An OpenShift management cluster with HyperShift, OpenShift Virtualization, Multus, and MetalLB operator access
+- `kubectl` or `oc`, `hcp`, Go 1.24+, and access to push images to the configured registry
+- A Multus NAD for the isolated network, such as `default/vlan203`
+- HCP secrets in the HostedCluster namespace: pull secret, SSH key, and etcd encryption key
+- A DHCP-disabled upstream network DHCP service for the VLAN, so oooi is the only DHCP server on that network
+
+Confirm the management-cluster prerequisites before deploying:
+
+```bash
+kubectl get net-attach-def -n default vlan203
+kubectl get secret -n clusters pullsecret-clusters sshkey-clusters etcd-encryption-key-clusters
+```
+
+### Build and deploy oooi
+
+`make container-build` builds and pushes a multi-architecture image. Use the manifest digest printed by `ko` for both the operator and the component images. The checked-in species-8472 sample is pinned to the last validated digest.
+
+```bash
+make container-build
+
+# Replace <digest> with the digest printed by the build.
+export OOOI_IMAGE=quay.io/cldmnky/oooi@sha256:<digest>
+make deploy IMG="$OOOI_IMAGE"
+kubectl -n oooi-system rollout status deployment/oooi-controller-manager --timeout=5m
+```
+
+When using a newly built image, update the three oooi image fields in `config/samples/species-8472-infra.yaml` to the same digest before applying that sample.
+
+### Create the HostedCluster
+
+Apply the HostedCluster and NodePool manifest generated for the environment. For the lab used by this repository:
+
+```bash
+kubectl apply -f /path/to/home-lab/demos/multicluster/hosted-species-8472.yaml
+```
+
+The lab manifest targets OpenShift 4.22 and creates `species-8472` in namespace `clusters`, with three KubeVirt workers on `default/vlan203`, `attachDefaultNetwork: false`, and the HCP endpoints under `clusters.blahonga.me`.
+
+### Apply Infra
+
+Apply the declarative sample after the HostedCluster object exists. Do not wait for the HostedCluster to become Available before applying `Infra`; the apps ingress and HCP operators may need the infrastructure services while the control plane finishes bootstrapping.
+
+```bash
+kubectl apply -f config/samples/species-8472-infra.yaml
+
+kubectl -n clusters wait --for=condition=Available hostedcluster/species-8472 --timeout=30m
+kubectl -n clusters wait --for=condition=Ready infra/species-8472 --timeout=30m
+kubectl -n clusters get dhcpserver,dnsserver,proxyserver
+kubectl -n clusters get infra species-8472
+```
+
+The validated sample uses VLAN `10.202.64.0/24` with gateway `10.202.64.1`, DHCP `10.202.64.2`, DNS `10.202.64.3`, proxy `10.202.64.4`, DHCP pool `10.202.64.200-10.202.64.254`, and apps VIP `10.202.64.180`. It forwards external DNS to the lab resolvers `10.201.0.2` and `10.201.0.1`. `internalProxyService` points to the proxy Service; oooi resolves that Service to its ClusterIP when generating the pod-network DNS view.
+
+### Verify from the VLAN
+
+Use a real VLAN client or a VLAN-attached probe, not only a management-cluster pod. The following names should resolve through `10.202.64.3`:
+
+```bash
+dig @10.202.64.3 api.species-8472.clusters.blahonga.me
+dig @10.202.64.3 console-openshift-console.apps.species-8472.clusters.blahonga.me
+
+curl -k https://api.species-8472.clusters.blahonga.me:6443/version
+curl -k -o /dev/null -w '%{http_code}\n' \
+  'https://oauth.species-8472.clusters.blahonga.me/oauth/authorize?client_id=openshift-challenging-client&response_type=token'
+curl -k -o /dev/null -w '%{http_code}\n' \
+  https://console-openshift-console.apps.species-8472.clusters.blahonga.me
+```
+
+Expected results are API `200`, unauthenticated OAuth `401`, and console `200`. Ignition normally returns `404` at `/`, and konnectivity returns `415` to a plain HTTP request; those statuses still prove that the TLS/SNI proxy path reached the intended backend. From the pod network, the same HCP and apps names should resolve to the proxy Service ClusterIP instead of the VLAN IP.
+
+### Public DNS ownership
+
+The `Infra` controller manages the hosted `oooi-ingress` Service, MetalLB VIP, VLAN DNS records, and proxy backends. It does not write public DNS records. The sample adds ExternalDNS labels and annotations, but a Route53 writer must run where it can watch the hosted cluster Service. Management-cluster ExternalDNS cannot see that Service. Without a public DNS writer, VLAN clients still work through oooi DNS; publish `*.apps.species-8472.clusters.blahonga.me` to the apps VIP when public resolution is required.
+
+For this lab, the Route53 ExternalDNS operator watches the management cluster by default, so use a separate ExternalDNS Deployment with a hosted-cluster kubeconfig:
+
+```bash
+tmp=$(mktemp -d)
+kubectl -n clusters get secret species-8472-admin-kubeconfig \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d > "$tmp/config"
+sed -i.bak \
+  's#server: https://api.species-8472.clusters.blahonga.me:6443#server: https://kube-apiserver.clusters-species-8472.svc.cluster.local:6443\n    tls-server-name: api.species-8472.clusters.blahonga.me#' \
+  "$tmp/config"
+rm -f "$tmp/config.bak"
+kubectl -n external-dns-operator create secret generic species-8472-external-dns-kubeconfig \
+  --from-file=config="$tmp/config" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n external-dns-operator create secret generic species-8472-external-dns-credentials \
+  --from-file=credentials="$HOME/.aws/credentials" --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f config/samples/species-8472-external-dns.yaml
+kubectl -n external-dns-operator rollout status deployment/species-8472-external-dns --timeout=5m
+rm -rf "$tmp"
+```
+
+Use a read-only hosted-cluster ServiceAccount kubeconfig instead of the published admin kubeconfig in a shared environment. Verify convergence with `dig +short console-openshift-console.apps.species-8472.clusters.blahonga.me @1.1.1.1`; it should return the current `appsIngressStatus.externalIP`.
+
 ## Architecture
 
 ### Core Problem
