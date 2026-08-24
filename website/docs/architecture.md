@@ -9,7 +9,7 @@ network — **without** opening the management cluster to tenant traffic.
 OpenShift Hosted Control Planes decouple control planes from workers: hosted
 control-plane pods (`kube-apiserver`, OAuth server, Ignition server,
 konnectivity) run in a management-cluster namespace such as
-`clusters-species-8472`, while worker nodes are KubeVirt VMs. When those VMs are
+`clusters-example-hcp`, while worker nodes are KubeVirt VMs. When those VMs are
 placed on an isolated VLAN with `attachDefaultNetwork: false` — desirable for
 air-gapped or high-security designs — they lose all direct paths to those
 Services.
@@ -24,13 +24,13 @@ oooi deploys the network services the VLAN is missing *onto* the VLAN itself:
 
 ```mermaid
 flowchart LR
-    subgraph vlan["Isolated VLAN  ·  e.g. 10.202.64.0/24"]
+    subgraph vlan["Isolated VLAN  ·  e.g. 192.0.2.0/24"]
         direction TB
         W["KubeVirt<br/>worker VMs"]
         DHCP["DHCPServer · .2"]
         DNS["DNSServer (CoreDNS) · .3"]
         PRX["ProxyServer (Envoy) · .4"]
-        VIP["MetalLB VIP · .180"]
+        VIP["MetalLB VIP · .200"]
         W -->|DHCP lease| DHCP
         W -->|cluster + upstream DNS| DNS
         W -->|"api :6443 · HCP :443<br/>(TLS passthrough by SNI)"| PRX
@@ -75,7 +75,7 @@ attachment.
 
 | Component | Child CR | Image | Role |
 |---|---|---|---|
-| `InfraReconciler` | — | `quay.io/cldmnky/oooi` | Validates input, creates children, drives apps-ingress automation, aggregates status |
+| `InfraReconciler` | — | `registry.example.com/oooi` | Validates input, creates children, drives apps-ingress automation, aggregates status |
 | DHCP | `DHCPServer` | oooi image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
 | DNS | `DNSServer` | CoreDNS | Split-horizon views; static HCP answers; upstream forwarding |
 | Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
@@ -132,13 +132,13 @@ worker VMs reach the ingress without any external load balancer.
 
 ```mermaid
 flowchart LR
-    Q{{"query for api.species-8472.clusters.example.com"}}
+    Q{{"query for api.example-hcp.clusters.example.com"}}
     subgraph C["CoreDNS (two views)"]
         V1["VLAN view<br/>source = networkConfig.cidr"]
         V2["Default view<br/>(pod network)"]
     end
     Q --> C
-    V1 -->|"static: proxy.serverIP<br/>10.202.64.4"| A1[/"A record"/]
+    V1 -->|"static: proxy.serverIP<br/>192.0.2.4"| A1[/"A record"/]
     V2 -->|"internalProxyService ClusterIP"| A2[/"A record"/]
     Q -.->|"non-HCP names"| UP["Upstream resolvers<br/>networkConfig.dnsServers"]
 ```

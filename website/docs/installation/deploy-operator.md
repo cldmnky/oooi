@@ -21,7 +21,7 @@ kustomize build config/default > /tmp/operator.yaml
 ```
 
 ```bash
-export OOOI_IMAGE=quay.io/cldmnky/oooi@sha256:<digest>
+export OOOI_IMAGE=registry.example.com/oooi@sha256:<digest>
 
 kubectl apply -f /tmp/crds.yaml
 cd config/manager && kustomize edit set image controller="$OOOI_IMAGE" && cd ../..
@@ -45,19 +45,19 @@ to the operator ClusterRole.
 
 ## Verify RBAC
 
-The operator needs to manage its child resources *and* reach into hosted
-clusters for apps-ingress automation:
+Confirm that the controller ServiceAccount can manage child resources in the
+namespace where you plan to create `Infra`:
 
 ```bash
 kubectl auth can-i --as=system:serviceaccount:oooi-system:oooi-controller-manager \
-  create ipaddresspool.metallb.io -n clusters-species-8472   # via hosted kubeconfig at runtime
-kubectl -n oooi-system get sa,clusterrole,clusterrolebinding \
-  -l app.kubernetes.io/name=oooi
+  create deployments.apps -n clusters
+kubectl auth can-i --as=system:serviceaccount:oooi-system:oooi-controller-manager \
+  create infras.hostedcluster.densityops.com -n clusters
 ```
 
 Apps ingress uses the hosted cluster's **admin kubeconfig secret** referenced
-by `.status.kubeconfig.name` of the HostedCluster — the management-cluster RBAC
-does not grant access to hosted clusters directly.
+by `.status.kubeconfig.name` of the HostedCluster. Management-cluster RBAC does
+not grant the controller direct access to hosted-cluster APIs.
 
 ## Health and metrics
 

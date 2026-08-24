@@ -1,24 +1,18 @@
 # Quickstart
 
-This walkthrough takes you from an installed operator to a verified hosted
-cluster with apps ingress and a publicly resolvable OAuth endpoint. It mirrors
-the validated lab configuration shipped in
-[`config/samples/species-8472-infra.yaml`](https://github.com/cldmnky/oooi/blob/main/config/samples/species-8472-infra.yaml).
+This walkthrough creates a KubeVirt hosted cluster, attaches its workers to an
+isolated VLAN, and adds oooi infrastructure for DHCP, DNS, the control-plane
+proxy, apps ingress, and public OAuth DNS.
 
-**Estimated time:** 45–60 minutes (mostly the hosted cluster bootstrap).
-
-## 0. Complete the prerequisites
-
-Make sure you have verified every item in [Prerequisites](prerequisites.md) —
-in particular the NAD, the three HCP secrets, and your IP plan.
+The names, addresses, registry, and zone below are documentation values. Replace
+them before applying anything.
 
 ## 1. Install oooi
 
-Install CRDs and the controller into namespace `oooi-system`:
+Install the CRDs and the controller in `oooi-system`:
 
 ```bash
-# Use the published multi-arch image, or build your own (see Installation)
-export OOOI_IMAGE=quay.io/cldmnky/oooi:latest
+export OOOI_IMAGE=registry.example.com/oooi:latest
 
 make install
 make deploy IMG="$OOOI_IMAGE"
@@ -27,222 +21,216 @@ kubectl -n oooi-system rollout status deployment/oooi-controller-manager --timeo
 
 ## 2. Create the HostedCluster
 
-Create a KubeVirt-hosted cluster whose workers live on the isolated VLAN. The
-essential properties are `attachDefaultNetwork: false` on the NodePool platform
-and matching `dns` / service publishing settings. Example skeleton:
+The example follows the structure used by a KubeVirt HostedCluster and NodePool:
 
-```yaml
+- `spec.services` is a list of service publishing strategies.
+- KubeVirt worker networks are configured with `additionalNetworks`.
+- `attachDefaultNetwork: false` leaves workers with only the VLAN interface.
+
+The service publishing strategy is immutable after creation. On KubeVirt, OAuth
+uses a `Route`; [publish it through the proxy external Service](../guides/public-dns-oauth.md)
+when it must be reachable from outside the VLAN.
+
+```yaml title="hosted-example-hcp.yaml"
 apiVersion: hypershift.openshift.io/v1beta1
 kind: HostedCluster
 metadata:
-  name: species-8472
+  name: example-hcp
   namespace: clusters
 spec:
   release:
-    image: quay.io/openshift-release-dev/ocp-release:4.22.10-multi
+    image: registry.example.com/openshift-release:4.22.10
   dns:
-    baseDomain: clusters.blahonga.me        # api.<name>.<baseDomain> etc.
+    baseDomain: clusters.example.com
   networking:
     clusterNetwork:
       - cidr: 10.132.0.0/14
     serviceNetwork:
       - cidr: 172.31.0.0/16
+    networkType: OVNKubernetes
   platform:
     type: KubeVirt
-    kubevirt:
-      baseDomainPolicies:
-        - ExternalDNS                        # publish via Routes, not LBs
-      controlPlaneServiceType: ClusterIP
+    kubevirt: {}
   services:
-    # Immutable after creation — choose deliberately.
-    servicePublishingStrategy:
-      apiserver:
-        type: Route                          # SNI-proxied through oooi Envoy
-      oauthServer:
-        type: Route                          # published via proxy external Service
-      ignition:
+    - service: APIServer
+      servicePublishingStrategy:
+        type: LoadBalancer
+        loadBalancer:
+          hostname: api.example-hcp.clusters.example.com
+    - service: OAuthServer
+      servicePublishingStrategy:
         type: Route
-      konnectivity:
+        route:
+          hostname: oauth.example-hcp.clusters.example.com
+    - service: Konnectivity
+      servicePublishingStrategy:
         type: Route
+        route:
+          hostname: konnectivity.example-hcp.clusters.example.com
+    - service: Ignition
+      servicePublishingStrategy:
+        type: Route
+        route:
+          hostname: ignition.example-hcp.clusters.example.com
   pullSecret:
-    name: pullsecret-clusters
+    name: pull-secret
   sshKey:
-    name: sshkey-clusters
-  etcdEncryptionKeySecretRef:
-    name: etcd-encryption-key-clusters
+    name: ssh-key
+  secretEncryption:
+    type: aescbc
+    aescbc:
+      activeKey:
+        name: etcd-encryption-key
 ---
 apiVersion: hypershift.openshift.io/v1beta1
 kind: NodePool
 metadata:
-  name: species-8472
+  name: example-hcp
   namespace: clusters
 spec:
-  clusterName: species-8472
+  arch: amd64
+  clusterName: example-hcp
   replicas: 3
   management:
     autoRepair: true
+    upgradeType: Replace
   platform:
     type: KubeVirt
     kubevirt:
-      attachDefaultNetwork: false            # workers only see the VLAN
-      nodeNetworking:
-        network:
-          networkAttachmentDefinition:
-            name: vlan203
-            namespace: default
+      additionalNetworks:
+        - name: default/vlan100
+      attachDefaultNetwork: false
+      compute:
+        cores: 4
+        memory: 16Gi
+      rootVolume:
+        type: Persistent
+        persistent:
+          size: 50Gi
+  release:
+    image: registry.example.com/openshift-release:4.22.10
 ```
 
-Apply it and wait for the object to be accepted (not Available — that comes later):
-
 ```bash
-kubectl apply -f hosted-species-8472.yaml
+kubectl apply -f hosted-example-hcp.yaml
 kubectl -n clusters get hostedcluster,nodepool
 ```
 
-!!! important "Publishing strategy is immutable"
-
-    HyperShift rejects changes to `spec.services` after creation. On KubeVirt,
-    OAuth defaults to `Route`; a direct `LoadBalancer` OAuth service is **only**
-    supported on self-managed Azure. To put OAuth on a MetalLB VIP anyway, use
-    [Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
-
 ## 3. Apply the Infra resource
 
-Declare the VLAN infrastructure immediately after the HostedCluster exists:
+Apply `Infra` as soon as the HostedCluster object exists. The DHCP, DNS, and
+proxy services are needed while workers bootstrap; do not wait for the hosted
+cluster to become Available.
 
-```yaml title="infra-species-8472.yaml"
+```yaml title="infra-example-hcp.yaml"
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: Infra
 metadata:
-  name: species-8472
+  name: example-hcp
   namespace: clusters
 spec:
   networkConfig:
-    cidr: 10.202.64.0/24
-    gateway: 10.202.64.1
-    networkAttachmentDefinition: vlan203
+    cidr: 192.0.2.0/24
+    gateway: 192.0.2.1
+    networkAttachmentDefinition: vlan100
     networkAttachmentNamespace: default
     dnsServers:
-      - 10.201.0.2          # upstream resolvers for non-cluster queries
-      - 10.201.0.1
+      - 198.51.100.53
+      - 198.51.100.54
   infraComponents:
     dhcp:
-      enabled: true
-      serverIP: 10.202.64.2
-      rangeStart: 10.202.64.200
-      rangeEnd: 10.202.64.254
+      serverIP: 192.0.2.2
+      rangeStart: 192.0.2.100
+      rangeEnd: 192.0.2.199
       leaseTime: 1h
     dns:
-      enabled: true
-      serverIP: 10.202.64.3
-      clusterName: species-8472
-      baseDomain: clusters.blahonga.me
+      serverIP: 192.0.2.3
+      clusterName: example-hcp
+      baseDomain: clusters.example.com
     proxy:
-      enabled: true
-      serverIP: 10.202.64.4
-      controlPlaneNamespace: clusters-species-8472
-      internalProxyService: species-8472-proxy.clusters.svc.cluster.local
-      # Publish the OAuth endpoint through the hosting-cluster MetalLB so
-      # ExternalDNS can map it to a VIP. See the Public DNS guide.
+      serverIP: 192.0.2.4
+      controlPlaneNamespace: clusters-example-hcp
+      internalProxyService: example-hcp-proxy.clusters.svc.cluster.local
       externalService:
         enabled: true
-        addressPoolName: metallb-pool
+        addressPoolName: hosting-public-pool
         annotations:
-          external-dns.alpha.kubernetes.io/hostname: oauth.species-8472.clusters.blahonga.me.
+          external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
         labels:
-          external-dns.blahonga.me/publish: "yes"
+          external-dns.example.com/publish: "yes"
   appsIngress:
     enabled: true
     hostedClusterRef:
-      name: species-8472
+      name: example-hcp
       namespace: clusters
     metallb:
-      addressPoolName: vlan203-apps
-      ipAddressPoolRange: 10.202.64.180-10.202.64.190
+      addressPoolName: apps-pool
+      ipAddressPoolRange: 192.0.2.200-192.0.2.220
     service:
       annotations:
-        external-dns.alpha.kubernetes.io/hostname: "*.apps.species-8472.clusters.blahonga.me."
+        external-dns.alpha.kubernetes.io/hostname: "*.apps.example-hcp.clusters.example.com."
       labels:
-        external-dns.blahonga.me/publish: "yes"
-    ports:
-      http: 80
-      https: 443
+        external-dns.example.com/publish: "yes"
 ```
 
 ```bash
-kubectl apply -f infra-species-8472.yaml
+kubectl apply -f infra-example-hcp.yaml
 ```
 
 ## 4. Watch it converge
 
 ```bash
-# Hosted control plane becomes available (~15 min)
 kubectl -n clusters wait --for=condition=Available \
-  hostedcluster/species-8472 --timeout=30m
-
-# Infrastructure becomes Ready
+  hostedcluster/example-hcp --timeout=30m
 kubectl -n clusters wait --for=condition=Ready \
-  infra/species-8472 --timeout=30m
+  infra/example-hcp --timeout=30m
 
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver,infra
-```
-
-Apps-ingress progress is reported separately:
-
-```bash
-kubectl -n clusters get infra species-8472 \
+kubectl -n clusters get infra example-hcp \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 ```
 
-Typical progression: `WaitingForHostedClusterNodes` → `WaitingForMetalLBCRDs`
-→ `WaitingForExternalIP` → `Ready`.
+Apps ingress normally progresses through `WaitingForHostedClusterNodes`,
+`WaitingForMetalLBCRDs`, `WaitingForExternalIP`, and `Ready`.
 
 ## 5. Verify from the VLAN
 
-Run these from a real VLAN client (or a VLAN-attached probe), not just a
-management pod:
+Run these from a client attached to the VLAN, not from a management-cluster pod:
 
 ```bash
-dig @10.202.64.3 +short api.species-8472.clusters.blahonga.me                 # → 10.202.64.4
-dig @10.202.64.3 +short console-openshift-console.apps.species-8472.clusters.blahonga.me  # → 10.202.64.180
+dig @192.0.2.3 +short api.example-hcp.clusters.example.com
+# 192.0.2.4
+dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.example.com
+# 192.0.2.200
 
-curl -k https://api.species-8472.clusters.blahonga.me:6443/version            # HTTP 200
+curl -k https://api.example-hcp.clusters.example.com:6443/version
 curl -k -o /dev/null -w '%{http_code}\n' \
-  'https://oauth.species-8472.clusters.blahonga.me/oauth/authorize?client_id=openshift-challenging-client&response_type=token'   # HTTP 401 (expected)
+  'https://oauth.example-hcp.clusters.example.com/oauth/authorize?client_id=openshift-challenging-client&response_type=token'
 curl -k -o /dev/null -w '%{http_code}\n' \
-  https://console-openshift-console.apps.species-8472.clusters.blahonga.me    # HTTP 200
+  https://console-openshift-console.apps.example-hcp.clusters.example.com
 ```
 
-| Check | Expected |
+| Check | Expected result |
 |---|---|
 | API `/version` | `200` |
-| Unauthenticated OAuth | `401` (proves TLS reached the OAuth backend) |
-| Console | `200` |
-| Ignition `/` | `404` (normal at root path) |
-| konnectivity plain HTTP | `415` |
+| Unauthenticated OAuth request | `401` |
+| Console route | `200` |
+| Ignition root path | `404` |
+| Plain HTTP to konnectivity | `415` |
 
-From the **pod network**, the same names must resolve to the proxy *ClusterIP*
-instead of VLAN IPs — that is the split-horizon view working.
+The OAuth `401`, Ignition `404`, and konnectivity `415` responses show that the
+SNI proxy reached the intended backend. From the pod network, the same HCP
+names should resolve to the proxy ClusterIP rather than the VLAN addresses.
 
 ## 6. Publish public DNS
 
-If clients outside the VLAN need to reach OAuth or `*.apps`, run an ExternalDNS
-instance that can watch the relevant Services and write records to your public
-zone. Full instructions, including why a management-cluster ExternalDNS cannot
-see these Services, are in
-[Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
-
-Quick check once converged (`1.1.1.1` = any public resolver):
+Use ExternalDNS or your DNS provider to publish `*.apps` and OAuth. See
+[Public DNS and OAuth publishing](../guides/public-dns-oauth.md) for the
+ownership model and a hosted-cluster ExternalDNS pattern.
 
 ```bash
-dig +short console-openshift-console.apps.species-8472.clusters.blahonga.me @1.1.1.1
-dig +short oauth.species-8472.clusters.blahonga.me @1.1.1.1
+dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
+dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 ```
 
-Both should return the current MetalLB-assigned VIPs.
-
-## Next steps
-
-- Understand what was created: [Architecture](../architecture.md)
-- Tune DNS behavior: [Split-horizon DNS](../guides/split-horizon-dns.md)
-- Learn the apps-ingress state machine: [Apps ingress](../guides/apps-ingress.md)
+Both answers should match the current MetalLB VIPs.

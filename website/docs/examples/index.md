@@ -17,8 +17,8 @@ with your environment's values.
 
     ---
 
-    The validated lab configuration: apps ingress, MetalLB, ExternalDNS
-    metadata, and pod-network proxy view.
+    A complete, generic configuration: apps ingress, MetalLB, ExternalDNS
+    metadata, and the pod-network proxy view.
 
     [View](#full-hosted-cluster-stack)
 
@@ -44,22 +44,22 @@ metadata:
   namespace: clusters
 spec:
   networkConfig:
-    cidr: 192.168.100.0/24
-    gateway: 192.168.100.1
+    cidr: 192.0.2.0/24
+    gateway: 192.0.2.1
     networkAttachmentDefinition: vlan100
     dnsServers:
       - "resolv.conf"          # inherit node resolvers
   infraComponents:
     dhcp:
-      serverIP: 192.168.100.2
-      rangeStart: 192.168.100.100
-      rangeEnd: 192.168.100.200
+      serverIP: 192.0.2.2
+      rangeStart: 192.0.2.100
+      rangeEnd: 192.0.2.199
     dns:
-      serverIP: 192.168.100.3
+      serverIP: 192.0.2.3
       clusterName: mycluster
       baseDomain: example.com
     proxy:
-      serverIP: 192.168.100.10
+      serverIP: 192.0.2.10
       controlPlaneNamespace: clusters-mycluster
 ```
 
@@ -67,9 +67,9 @@ What you get:
 
 | Resource | Address | Purpose |
 |---|---|---|
-| `DHCPServer/mycluster-dhcp` | `192.168.100.2` | Leases `.100–.200` to worker VMs |
-| `DNSServer/mycluster-dns` | `192.168.100.3` | Split-horizon answers + forwarding |
-| `ProxyServer/mycluster-proxy` | `192.168.100.10` | SNI passthrough for `api` :6443 and HCP :443 |
+| `DHCPServer/mycluster-dhcp` | `192.0.2.2` | Leases `.100–.199` to worker VMs |
+| `DNSServer/mycluster-dns` | `192.0.2.3` | Split-horizon answers + forwarding |
+| `ProxyServer/mycluster-proxy` | `192.0.2.10` | SNI passthrough for `api` :6443 and HCP :443 |
 
 No `internalProxyService` → management pods get no static HCP answers.
 No `appsIngress` → no wildcard routing; consoles reachable only from the VLAN
@@ -77,64 +77,65 @@ via explicit hostnames you add yourself.
 
 ## Full hosted cluster stack
 
-Modeled on the validated sample
-([`config/samples/species-8472-infra.yaml`](https://github.com/cldmnky/oooi/blob/main/config/samples/species-8472-infra.yaml)):
+This configuration uses the same HostedCluster/NodePool and Infra relationships
+as the repository's KubeVirt lab manifest, with documentation-only names and
+addresses:
 
 ```yaml
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: Infra
 metadata:
-  name: species-8472
+  name: example-hcp
   namespace: clusters
 spec:
   networkConfig:
-    cidr: 10.202.64.0/24
-    gateway: 10.202.64.1
-    networkAttachmentDefinition: vlan203
+    cidr: 192.0.2.0/24
+    gateway: 192.0.2.1
+    networkAttachmentDefinition: vlan100
     networkAttachmentNamespace: default
     dnsServers:
-      - 10.201.0.2
-      - 10.201.0.1
+      - 198.51.100.53
+      - 198.51.100.54
   infraComponents:
     dhcp:
       enabled: true
-      serverIP: 10.202.64.2
-      rangeStart: 10.202.64.200
-      rangeEnd: 10.202.64.254
+      serverIP: 192.0.2.2
+      rangeStart: 192.0.2.100
+      rangeEnd: 192.0.2.199
       leaseTime: 1h
     dns:
       enabled: true
-      serverIP: 10.202.64.3
-      clusterName: species-8472
+      serverIP: 192.0.2.3
+      clusterName: example-hcp
       baseDomain: clusters.example.com
     proxy:
       enabled: true
-      serverIP: 10.202.64.4
-      controlPlaneNamespace: clusters-species-8472
+      serverIP: 192.0.2.4
+      controlPlaneNamespace: clusters-example-hcp
       apiServerService: kube-apiserver
-      internalProxyService: species-8472-proxy.clusters.svc.cluster.local
+      internalProxyService: example-hcp-proxy.clusters.svc.cluster.local
       externalService:
         enabled: true
-        addressPoolName: metallb-pool
+        addressPoolName: hosting-public-pool
         annotations:
-          external-dns.alpha.kubernetes.io/hostname: oauth.species-8472.clusters.example.com.
+          external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
         labels:
-          external-dns.blahonga.me/publish: "yes"
+          external-dns.example.com/publish: "yes"
   appsIngress:
     enabled: true
     hostedClusterRef:
-      name: species-8472
+      name: example-hcp
       namespace: clusters
     metallb:
-      addressPoolName: vlan203-apps
-      ipAddressPoolRange: 10.202.64.180-10.202.64.190
+      addressPoolName: apps-pool
+      ipAddressPoolRange: 192.0.2.200-192.0.2.220
     service:
       name: oooi-ingress
       namespace: openshift-ingress
       annotations:
-        external-dns.alpha.kubernetes.io/hostname: "*.apps.species-8472.clusters.example.com."
+        external-dns.alpha.kubernetes.io/hostname: "*.apps.example-hcp.clusters.example.com."
       labels:
-        external-dns.blahonga.me/publish: "yes"
+        external-dns.example.com/publish: "yes"
     ports:
       http: 80
       https: 443
@@ -143,12 +144,12 @@ spec:
 Resulting addressing on the VLAN:
 
 ```text
-10.202.64.1     gateway
-10.202.64.2     DHCP
-10.202.64.3     CoreDNS
-10.202.64.4     Envoy (SNI proxy)
-10.202.64.180   *.apps wildcard VIP (MetalLB L2, advertised by a worker)
-10.202.64.200+  DHCP pool for worker VMs
+192.0.2.1     gateway
+192.0.2.2     DHCP
+192.0.2.3     CoreDNS
+192.0.2.4     Envoy (SNI proxy)
+192.0.2.200   *.apps wildcard VIP (MetalLB L2, advertised by a worker)
+192.0.2.100+  DHCP pool for worker VMs
 ```
 
 Plus one hosting-cluster MetalLB VIP for `<infra>-proxy-external` (OAuth).
@@ -164,7 +165,7 @@ infraComponents:
   proxy:
     externalService:
       enabled: true
-      addressPoolName: metallb-pool
+      addressPoolName: hosting-public-pool
       annotations:
         external-dns.alpha.kubernetes.io/hostname: oauth.mycluster.example.com.
       labels:
@@ -186,5 +187,5 @@ Behavior notes:
 |---|---|
 | `config/samples/hostedcluster_v1alpha1_infra.yaml` | Bare Infra scaffold |
 | `config/samples/hostedcluster_v1alpha1_dhcpserver.yaml` etc. | Individual child CRs |
-| `config/samples/species-8472-external-dns.yaml` | Hosted-kubeconfig ExternalDNS Deployment |
+| Hosted-cluster ExternalDNS sample | The repository includes a lab-specific manifest; adapt its structure, not its identifiers |
 | `config/samples/openshift-example.yaml` | OpenShift-flavored example |

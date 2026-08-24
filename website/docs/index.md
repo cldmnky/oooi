@@ -5,47 +5,39 @@ hide:
   - navigation
 ---
 
-<!-- oooi: meet Ollie, the octopus who runs your VLAN infrastructure -->
-
 <div class="oooi-hero" markdown>
 
 # **oooi** { .gradient-text }
 
 ### OpenShift on OpenShift Infra
 
-The name says it all: **OpenShift on OpenShift Infra** — infrastructure that
-lets one OpenShift cluster host another.
-
-Kubernetes operator that provisions **DHCP**, **split-horizon DNS**, and a
-**TLS-passthrough L4 proxy** onto an isolated VLAN so KubeVirt worker nodes can
-reach their hosted control plane — without ever exposing the management cluster.
+oooi provides **DHCP**, **split-horizon DNS**, and a **TLS-passthrough L4
+proxy** for KubeVirt worker nodes on an isolated VLAN. It gives hosted workers a
+controlled path to their control plane without exposing the management cluster.
 
 [Get started :material-arrow-right:](getting-started/quickstart.md){ .md-button .md-button--primary }
 [Architecture :material-sitemap-outline:](architecture.md){ .md-button }
 
 <figure markdown class="oooi-mascot">
-  ![Ollie the oooi octopus wiring up DHCP, DNS and the proxy](assets/images/mascot.svg)
+  ![oooi logo showing DHCP, DNS, and proxy connectivity](assets/images/mascot.svg)
 </figure>
 
 </div>
 
 ---
 
-## Why oooi?
+## Use case
 
 When you run OpenShift **Hosted Control Planes (HCP)** on **OpenShift
 Virtualization** with worker VMs attached to an isolated VLAN
 (`attachDefaultNetwork: false`), those workers have *no route* to the hosted
 control plane Services, which live on the management cluster's pod network.
-Traditional fixes — Routes on the hosting cluster's ingress or shared load
-balancers — punch holes through your network isolation.
+Routes on the hosting cluster's ingress and shared load balancers can expose
+management-cluster networking to tenant traffic. oooi instead places the
+required services on the isolated VLAN. The only cross-network traffic is the
+SNI passthrough traffic needed for the configured control-plane Services.
 
-**oooi takes the opposite approach:** it moves the required network services
-*onto* the isolated VLAN. Tenant clusters never need connectivity into the
-management cluster; only tightly scoped SNI passthrough traffic leaves the VLAN,
-and only toward the specific control-plane Services you declare.
-
-## Feature highlights
+## Capabilities
 
 <div class="grid cards" markdown>
 
@@ -102,12 +94,12 @@ and only toward the specific control-plane Services you declare.
 
 ```mermaid
 flowchart LR
-    subgraph VLAN["Isolated VLAN 10.202.64.0/24"]
+    subgraph VLAN["Isolated VLAN 192.0.2.0/24"]
         W["Worker VMs<br/>(KubeVirt)"]
-        D["DHCP ·10.2"]
-        N["CoreDNS ·10.3"]
-        P["Envoy ·10.4"]
-        V["MetalLB VIP ·.180"]
+        D["DHCP · 192.0.2.2"]
+        N["CoreDNS · 192.0.2.3"]
+        P["Envoy · 192.0.2.4"]
+        V["MetalLB VIP · 192.0.2.200"]
     end
     subgraph MGMT["Management cluster"]
         HCP["Hosted control plane<br/>apiserver · oauth · ignition<br/>konnectivity · ingress router"]

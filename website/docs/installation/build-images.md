@@ -1,13 +1,13 @@
 # Build images
 
 oooi images are built with [ko](https://ko.build) from the repository root.
-Builds are multi-architecture (`linux/amd64` and `linux/arm64`) on a
-UBI9 base (`registry.access.redhat.com/ubi9/ubi:9.4`, see `.ko.yaml`).
+Builds are multi-architecture (`linux/amd64` and `linux/arm64`) on a UBI9 base
+(see `.ko.yaml`).
 
 ## Build and push
 
 ```bash
-export KO_DOCKER_REPO=quay.io/example/oooi   # any registry you can push to
+export KO_DOCKER_REPO=registry.example.com/oooi
 make container-build
 ```
 
@@ -16,7 +16,7 @@ operator image and the component images referenced by `Infra` should be the
 same build:
 
 ```bash
-export OOOI_IMAGE=quay.io/example/oooi@sha256:<digest>
+export OOOI_IMAGE=registry.example.com/oooi@sha256:<digest>
 make deploy IMG="$OOOI_IMAGE"
 ```
 
@@ -48,5 +48,5 @@ make build          # produces bin/oooi
 
 ```bash
 podman run --rm "$OOOI_IMAGE" version 2>/dev/null || true
-docker manifest inspect "quay.io/example/oooi@sha256:<digest>" | head -30
+docker manifest inspect "registry.example.com/oooi@sha256:<digest>" | head -30
 ```

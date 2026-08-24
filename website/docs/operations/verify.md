@@ -30,22 +30,22 @@ Deployments `Ready`.
 Use a real VLAN client or a VLAN-attached probe. With DNS at `.3`:
 
 ```bash
-dig @10.202.64.3 +short api.species-8472.clusters.example.com
-# → proxy serverIP, e.g. 10.202.64.4
+dig @192.0.2.3 +short api.example-hcp.clusters.example.com
+# → proxy serverIP, e.g. 192.0.2.4
 
-dig @10.202.64.3 +short console-openshift-console.apps.species-8472.clusters.example.com
-# → apps VIP, e.g. 10.202.64.180
+dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.example.com
+# → apps VIP, e.g. 192.0.2.200
 ```
 
 HTTP checks and expected results:
 
 ```bash
-curl -k https://api.species-8472.clusters.example.com:6443/version          # 200
+curl -k https://api.example-hcp.clusters.example.com:6443/version          # 200
 curl -k -o /dev/null -w '%{http_code}\n' \
-  'https://oauth.species-8472.clusters.example.com/oauth/authorize?client_id=openshift-challenging-client&response_type=token'
+  'https://oauth.example-hcp.clusters.example.com/oauth/authorize?client_id=openshift-challenging-client&response_type=token'
 # 401 — unauthenticated reach proves the TLS/SNI path to the OAuth backend
 curl -k -o /dev/null -w '%{http_code}\n' \
-  https://console-openshift-console.apps.species-8472.clusters.example.com  # 200
+  https://console-openshift-console.apps.example-hcp.clusters.example.com  # 200
 ```
 
 | Endpoint | Status | Meaning |
@@ -61,22 +61,22 @@ curl -k -o /dev/null -w '%{http_code}\n' \
 The same names must resolve to the **proxy Service ClusterIP**:
 
 ```bash
-DNSCLUSTERIP=$(kubectl -n clusters get svc species-8472-dns \
+DNSCLUSTERIP=$(kubectl -n clusters get svc example-hcp-dns \
   -o jsonpath='{.spec.clusterIP}')
 kubectl run dnstest --rm -it --restart=Never \
-  --image=registry.access.redhat.com/ubi9/ubi-minimal -- \
-  sh -c "nslookup api.species-8472.clusters.example.com $DNSCLUSTERIP"
+  --image=registry.example.com/diagnostics:latest -- \
+  sh -c "nslookup api.example-hcp.clusters.example.com $DNSCLUSTERIP"
 ```
 
 ## 4. Public resolution
 
-Once ExternalDNS has converged (typically ≤ 2 sync intervals):
+Once ExternalDNS has converged:
 
 ```bash
-dig +short console-openshift-console.apps.species-8472.clusters.example.com @1.1.1.1
+dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
 # → current .status.appsIngressStatus.externalIP
 
-dig +short oauth.species-8472.clusters.example.com @1.1.1.1
+dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 # → current <infra>-proxy-external EXTERNAL-IP
 ```
 

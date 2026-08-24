@@ -36,28 +36,28 @@ Requirements:
 - **Upstream DNS reachable.** The CoreDNS forwarders (`networkConfig.dnsServers`)
   must be reachable from the VLAN or from the pod network.
 
-Create (or verify) the NAD, e.g. `default/vlan203`:
+Create (or verify) the NAD, e.g. `default/vlan100`:
 
 ```yaml
 apiVersion: k8s.cni.cncf.io/v1
 kind: NetworkAttachmentDefinition
 metadata:
-  name: vlan203
+  name: vlan100
   namespace: default
 spec:
   config: |-
     {
       "cniVersion": "0.3.1",
-      "name": "vlan203",
+      "name": "vlan100",
       "type": "bridge",
-      "bridge": "br-vlan203",
-      "vlan": 203,
+      "bridge": "br-vlan100",
+      "vlan": 100,
       "ipam": {}
     }
 ```
 
 ```bash
-kubectl get net-attach-def -n default vlan203
+kubectl get net-attach-def -n default vlan100
 ```
 
 !!! note "Bridge name"
@@ -74,16 +74,16 @@ without them:
 
 ```bash
 kubectl get secret -n clusters \
-  pullsecret-clusters \
-  sshkey-clusters \
-  etcd-encryption-key-clusters
+  pull-secret \
+  ssh-key \
+  etcd-encryption-key
 ```
 
 | Secret | Purpose |
 |---|---|
-| `pullsecret-clusters` | Registry pull secret for the release payload |
-| `sshkey-clusters` | SSH key injected into workers |
-| `etcd-encryption-key-clusters` | etcd encryption key for the hosted cluster |
+| `pull-secret` | Registry pull secret for the release payload |
+| `ssh-key` | SSH key injected into workers |
+| `etcd-encryption-key` | etcd encryption key for the hosted cluster |
 
 ## Tools
 
@@ -97,18 +97,18 @@ kubectl get secret -n clusters \
 
 ## IP planning worksheet
 
-Reserve addresses before writing the `Infra` resource. Example plan for a
-`10.202.64.0/24` VLAN (gateway `.1`) modeled on the validated sample:
+Reserve addresses before writing the `Infra` resource. This uses an RFC 5737
+documentation range; replace it with an unused range on your VLAN:
 
 | Assignment | Address | Notes |
 |---|---|---|
-| VLAN gateway | `10.202.64.1` | Provided by your router/switch |
-| DHCPServer static IP | `10.202.64.2` | Must be inside the CIDR |
-| DNSServer static IP | `10.202.64.3` | Must be inside the CIDR |
-| ProxyServer static IP | `10.202.64.4` | Must be inside the CIDR |
-| DHCP pool (worker VMs) | `10.202.64.200–10.202.64.254` | Exclude all statics above |
-| Apps ingress MetalLB range | `10.202.64.180–10.202.64.190` | L2-advertised VIPs; keep clear of gateway/statics/pool |
-| External proxy Service (optional) | auto from hosting-cluster MetalLB pool | e.g. `metallb-pool`; used to publish OAuth publicly |
+| VLAN gateway | `192.0.2.1` | Provided by your router/switch |
+| DHCPServer static IP | `192.0.2.2` | Must be inside the CIDR |
+| DNSServer static IP | `192.0.2.3` | Must be inside the CIDR |
+| ProxyServer static IP | `192.0.2.4` | Must be inside the CIDR |
+| DHCP pool (worker VMs) | `192.0.2.100–192.0.2.199` | Exclude all statics above |
+| Apps ingress MetalLB range | `192.0.2.200–192.0.2.220` | L2-advertised VIPs; keep clear of gateway, static addresses, and DHCP pool |
+| External proxy Service (optional) | Allocated from a hosting-cluster MetalLB pool | For example, `hosting-public-pool`; used to publish OAuth publicly |
 
 !!! warning "Keep ranges disjoint"
 

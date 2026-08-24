@@ -9,14 +9,14 @@ then find your symptom below.
 |---|---|---|
 | DHCP pod running | `kubectl -n clusters get pods -l app=proxy-server` and `<infra>-dhcp` pods | Read pod events; check NAD name/namespace |
 | Only DHCP server on VLAN | Inspect upstream network config | Disable competing DHCP servers — oooi must be the sole authority |
-| Static IP free | `arping 10.202.64.2` from VLAN | Pick unused `serverIP`s inside the CIDR |
+| Static IP free | `arping 192.0.2.2` from VLAN | Pick unused `serverIP`s inside the CIDR |
 
 ## DNS resolution failures
 
 **From the VLAN:**
 
 ```bash
-dig @10.202.64.3 api.<cluster>.<domain>     # no answer?
+dig @192.0.2.3 api.<cluster>.<domain>     # no answer?
 ```
 
 - *Timeout*: DNSServer not Ready or wrong `serverIP`. Check
@@ -79,7 +79,7 @@ not the hosted Route. Verify:
 
 ```bash
 kubectl -n <infra-namespace> get svc <infra>-proxy-external   # EXTERNAL-IP
-dig +short oauth.<cluster>.<domain> @1.1.1.1                   # must match above
+dig +short oauth.<cluster>.<domain> @<public-resolver>         # must match above
 curl -k -o /dev/null -w '%{http_code}\n' \
   'https://oauth.<cluster>.<domain>/oauth/authorize?client_id=openshift-challenging-client&response_type=token'  # 401 = good
 ```

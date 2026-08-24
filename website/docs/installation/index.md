@@ -6,10 +6,10 @@ for (by default: cluster-wide).
 
 ## Deploy the operator
 
-The fastest path uses the published multi-architecture image:
+Set the operator image to the published or mirrored image for your environment:
 
 ```bash
-export OOOI_IMAGE=quay.io/cldmnky/oooi:latest
+export OOOI_IMAGE=registry.example.com/oooi:latest
 
 # 1. CRDs
 make install          # = kustomize build config/crd | kubectl apply -f -
@@ -25,7 +25,7 @@ kubectl -n oooi-system rollout status deployment/oooi-controller-manager --timeo
 reproducible environments:
 
 ```bash
-export OOOI_IMAGE=quay.io/cldmnky/oooi@sha256:<digest>
+export OOOI_IMAGE=registry.example.com/oooi@sha256:<digest>
 ```
 
 Detailed behavior, RBAC, and troubleshooting:
@@ -37,7 +37,7 @@ If you cannot consume the published image, build and push with ko (multi-arch,
 UBI9-based):
 
 ```bash
-KO_DOCKER_REPO=quay.io/example/oooi make container-build
+KO_DOCKER_REPO=registry.example.com/oooi make container-build
 ```
 
 See [Build images](build-images.md).

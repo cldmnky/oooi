@@ -26,20 +26,20 @@ metadata:
   namespace: clusters
 spec:
   networkConfig:
-    cidr: 192.168.100.0/24
-    gateway: 192.168.100.1
+    cidr: 192.0.2.0/24
+    gateway: 192.0.2.1
     networkAttachmentDefinition: vlan100
   infraComponents:
     dhcp:
-      serverIP: 192.168.100.2
-      rangeStart: 192.168.100.100
-      rangeEnd: 192.168.100.200
+      serverIP: 192.0.2.2
+      rangeStart: 192.0.2.100
+      rangeEnd: 192.0.2.199
     dns:
-      serverIP: 192.168.100.3
+      serverIP: 192.0.2.3
       clusterName: mycluster
       baseDomain: example.com
     proxy:
-      serverIP: 192.168.100.10
+      serverIP: 192.0.2.4
       controlPlaneNamespace: clusters-mycluster
 ```
 

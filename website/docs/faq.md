@@ -4,9 +4,8 @@
 
 ### What does "oooi" stand for?
 
-**O**pen**S**hift **o**n **O**penShift **I**nfra — infrastructure that lets one
-OpenShift cluster host another. The mascot, Ollie the octopus, reaches into the
-isolated VLAN with exactly three arms: DHCP, DNS, and the proxy.
+**OpenShift on OpenShift Infra**. It provides the DHCP, DNS, and proxy services
+needed when one OpenShift cluster hosts another on an isolated VLAN.
 
 ### Does oooi create hosted clusters?
 

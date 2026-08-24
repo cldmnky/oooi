@@ -42,8 +42,8 @@ flowchart TB
 spec:
   networkConfig:
     dnsServers:
-      - 10.201.0.2        # explicit IPs (recommended)
-      - 10.201.0.1
+      - 198.51.100.53        # explicit IPs (recommended)
+      - 198.51.100.54
 ```
 
 Use the literal value `"resolv.conf"` on networks without direct egress to
@@ -61,7 +61,7 @@ Service DNS name (or a literal ClusterIP):
 
 ```yaml
     proxy:
-      internalProxyService: species-8472-proxy.clusters.svc.cluster.local
+      internalProxyService: example-hcp-proxy.clusters.svc.cluster.local
 ```
 
 oooi resolves the name and publishes its ClusterIP in the default view. If you
@@ -70,34 +70,34 @@ choice when pods should never see hosted endpoints.
 
 ## Verification
 
-From a **VLAN client** (`10.202.64.3` is the DNSServer):
+From a **VLAN client** (`192.0.2.3` is the DNSServer):
 
 ```bash
-dig @10.202.64.3 +short api.species-8472.clusters.example.com
-# → 10.202.64.4   (proxy.serverIP)
+dig @192.0.2.3 +short api.example-hcp.clusters.example.com
+# → 192.0.2.4   (proxy.serverIP)
 
-dig @10.202.64.3 +short console-openshift-console.apps.species-8472.clusters.example.com
-# → MetalLB VIP, e.g. 10.202.64.180
+dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.example.com
+# → MetalLB VIP, e.g. 192.0.2.200
 
-dig @10.202.64.3 +short redhat.com
+dig @192.0.2.3 +short www.example.net
 # → forwarded answer from your resolvers
 ```
 
 From the **pod network**, query the DNSServer's ClusterIP:
 
 ```bash
-DNSCLUSTERIP=$(kubectl -n clusters get svc species-8472-dns \
+DNSCLUSTERIP=$(kubectl -n clusters get svc example-hcp-dns \
   -o jsonpath='{.spec.clusterIP}')
-kubectl run dnstest --rm -it --image=registry.access.redhat.com/ubi9/ubi-minimal \
+kubectl run dnstest --rm -it --image=registry.example.com/diagnostics:latest \
   --restart=Never -- \
-  sh -c "curl -s $DNSCLUSTERIP:53 >/dev/null; nslookup api.species-8472.clusters.example.com $DNSCLUSTERIP"
+  sh -c "curl -s $DNSCLUSTERIP:53 >/dev/null; nslookup api.example-hcp.clusters.example.com $DNSCLUSTERIP"
 # → the proxy Service ClusterIP
 ```
 
 Watch live query logs while testing:
 
 ```bash
-kubectl -n clusters logs deploy/species-8472-dns -f
+kubectl -n clusters logs deploy/example-hcp-dns -f
 ```
 
 ## Troubleshooting

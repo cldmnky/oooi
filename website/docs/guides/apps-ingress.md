@@ -48,19 +48,19 @@ spec:
   appsIngress:
     enabled: true
     hostedClusterRef:
-      name: species-8472
+      name: example-hcp
       namespace: clusters
     metallb:
-      addressPoolName: vlan203-apps
-      ipAddressPoolRange: 10.202.64.180-10.202.64.190   # unused L2 space!
-      # l2AdvertisementName: advertise-vlan203-apps     # optional override
+      addressPoolName: apps-pool
+      ipAddressPoolRange: 192.0.2.200-192.0.2.220   # unused L2 space
+      # l2AdvertisementName: advertise-apps-pool     # optional override
     service:
       name: oooi-ingress                # defaults shown
       namespace: openshift-ingress
       annotations:                      # merged every reconcile — ExternalDNS hook
-        external-dns.alpha.kubernetes.io/hostname: "*.apps.species-8472.clusters.example.com."
+        external-dns.alpha.kubernetes.io/hostname: "*.apps.example-hcp.clusters.example.com."
       labels:
-        external-dns.blahonga.me/publish: "yes"
+        external-dns.example.com/publish: "yes"
     ports:
       http: 80
       https: 443
@@ -100,7 +100,7 @@ from a worker). Do not include:
 Query:
 
 ```bash
-kubectl -n clusters get infra species-8472 \
+kubectl -n clusters get infra example-hcp \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 ```
 
@@ -117,7 +117,7 @@ kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-ingress get svc oooi-ingre
 An allocated VIP alone proves little — confirm all three paths:
 
 1. **VLAN → VIP**: `dig @<dns.serverIP> foo.apps.<cluster>.<domain>` returns
-   the VIP; `curl -k https://console-openshift-console.…` returns 200.
+   the VIP; a request to a hosted application route returns its expected response.
 2. **Pod network → proxy ClusterIP**: same query against the DNS ClusterIP.
 3. **Public → VIP** (if ExternalDNS is used): query your public resolver.
 

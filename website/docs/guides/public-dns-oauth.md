@@ -40,10 +40,8 @@ Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
 
 === "Dedicated Deployment with a hosted-cluster kubeconfig"
 
-    Run upstream ExternalDNS anywhere, pointed at the hosted API via a
-    kubeconfig secret. The repository ships a working sample
-    ([`config/samples/species-8472-external-dns.yaml`](https://github.com/cldmnky/oooi/blob/main/config/samples/species-8472-external-dns.yaml))
-    with arguments like:
+    Run ExternalDNS anywhere, pointed at the hosted API through a kubeconfig
+    secret. The following arguments are a generic Route53 example:
 
     ```yaml
     args:
@@ -52,10 +50,10 @@ Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
       - --source=service
       - --policy=sync                                # also removes stale records
       - --registry=txt
-      - --txt-owner-id=species-8472-external-dns
+      - --txt-owner-id=example-hcp-external-dns
       - --txt-prefix=external-dns-
-      - --zone-id-filter=Z0744581GI2T7BTVHI4Y       # your public zone
-      - --label-filter=external-dns.blahonga.me/publish=yes
+      - --zone-id-filter=<ROUTE53_HOSTED_ZONE_ID>
+      - --label-filter=external-dns.example.com/publish=yes
       - --service-type-filter=LoadBalancer
     ```
 
@@ -64,14 +62,14 @@ Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
 
     ```bash
     tmp=$(mktemp -d)
-    kubectl -n clusters get secret species-8472-admin-kubeconfig \
+    kubectl -n clusters get secret example-hcp-admin-kubeconfig \
       -o jsonpath='{.data.kubeconfig}' | base64 -d > "$tmp/config"
     sed -i.bak \
-      's#server: https://api.species-8472.clusters.example.com:6443#server: https://kube-apiserver.clusters-species-8472.svc.cluster.local:6443\n    tls-server-name: api.species-8472.clusters.example.com#' \
+      's#server: https://api.example-hcp.clusters.example.com:6443#server: https://kube-apiserver.clusters-example-hcp.svc.cluster.local:6443\n    tls-server-name: api.example-hcp.clusters.example.com#' \
       "$tmp/config"
     rm -f "$tmp/config.bak"
     kubectl -n external-dns-operator create secret generic \
-      species-8472-external-dns-kubeconfig \
+      example-hcp-external-dns-kubeconfig \
       --from-file=config="$tmp/config" --dry-run=client -o yaml | kubectl apply -f -
     rm -rf "$tmp"
     ```
@@ -104,15 +102,15 @@ flowchart LR
    infraComponents:
      proxy:
        enabled: true
-       serverIP: 10.202.64.4
-       controlPlaneNamespace: clusters-species-8472
+       serverIP: 192.0.2.4
+       controlPlaneNamespace: clusters-example-hcp
        externalService:
          enabled: true
-         addressPoolName: metallb-pool            # hosting-cluster IPAddressPool
+         addressPoolName: hosting-public-pool            # hosting-cluster IPAddressPool
          annotations:
-           external-dns.alpha.kubernetes.io/hostname: oauth.species-8472.clusters.example.com.
+           external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
          labels:
-           external-dns.blahonga.me/publish: "yes"
+           external-dns.example.com/publish: "yes"
    ```
 
 2. Ensure the HostedCluster uses the default `Route` OAuth publishing strategy
@@ -122,17 +120,17 @@ flowchart LR
    kubeconfig is needed:
 
    ```bash
-   kubectl -n clusters get svc species-8472-proxy-external -o wide
+   kubectl -n clusters get svc example-hcp-proxy-external -o wide
    # TYPE           EXTERNAL-IP     PORT(S)
-   # LoadBalancer   10.201.0.21     443:32241/TCP
+    # LoadBalancer   198.51.100.20     443:<node-port>/TCP
    ```
 
 4. Verify convergence:
 
    ```bash
-   dig +short oauth.species-8472.clusters.example.com @1.1.1.1   # → the VIP
+    dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
    curl -k -o /dev/null -w '%{http_code}\n' \
-     'https://oauth.species-8472.clusters.example.com/oauth/authorize?client_id=openshift-challenging-client&response_type=token'
+     'https://oauth.example-hcp.clusters.example.com/oauth/authorize?client_id=openshift-challenging-client&response_type=token'
    # → 401 (unauthenticated reach = healthy path)
    ```
 

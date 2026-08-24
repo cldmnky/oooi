@@ -68,8 +68,6 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/cldmnky/oooi
-    - icon: material/kubernetes
-      link: https://quay.io/repository/cldmnky/oooi
   status:
     new: Recently added
   generator: false

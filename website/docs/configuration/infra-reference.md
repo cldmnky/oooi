@@ -11,8 +11,8 @@ Defines the secondary network. **Required.**
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `cidr` | string | — (**Required**) | IP range of the secondary network, CIDR notation, e.g. `192.168.100.0/24`. Validated pattern. |
-| `gateway` | string | — (**Required**) | Default gateway on that network, e.g. `192.168.100.1`. |
+| `cidr` | string | — (**Required**) | IP range of the secondary network, CIDR notation, e.g. `192.0.2.0/24`. Validated pattern. |
+| `gateway` | string | — (**Required**) | Default gateway on that network, e.g. `192.0.2.1`. |
 | `networkAttachmentDefinition` | string | — (**Required**) | Name of the Multus NAD representing the VLAN. |
 | `networkAttachmentNamespace` | string | *(empty)* | Namespace of the NAD. When empty, oooi looks in the Infra's namespace first, then `default`. |
 | `dnsServers` | []string | *(empty)* | Upstream DNS servers used by CoreDNS forwarding. Entries may be IPs or the literal `"resolv.conf"` to inherit node resolvers. |
