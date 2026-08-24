@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -160,7 +161,8 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 		// without SNI/TLS inspection. This allows HAProxy health checks (plain HTTP)
 		// to reach the backend and get rejected gracefully by kube-apiserver rather
 		// than failing at the proxy level.
-		usePlainTCP := port == 6443
+		// Use plain TCP for kube-apiserver (6443) and apps HTTP (80) - no SNI/TLS inspector
+		usePlainTCP := port == 6443 || port == 80
 
 		// For plain TCP ports, we'll create a single catch-all filter chain
 		// after processing all backends, so track the primary cluster name
@@ -169,12 +171,30 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 		for _, backend := range backends {
 			// Create cluster for this backend
 			clusterName := fmt.Sprintf("%s-%s", proxy.Name, backend.Name)
-			targetAddr := fmt.Sprintf("%s.%s.svc.cluster.local", backend.TargetService, backend.TargetNamespace)
+			// Handle direct IP/hostname for apps wildcard (externalIP) vs service DNS
+			var targetAddr string
+			var clusterType cluster.Cluster_DiscoveryType
+			var dnsFamily cluster.Cluster_DnsLookupFamily
+			isIP := net.ParseIP(backend.TargetService) != nil
+			isHostname := !isIP && strings.Contains(backend.TargetService, ".")
+			if isIP {
+				targetAddr = backend.TargetService
+				clusterType = cluster.Cluster_STATIC
+			} else if isHostname && backend.TargetNamespace == "default" && (backend.Name == "apps-http" || backend.Name == "apps-https") {
+				// Direct hostname (MetalLB external hostname) - use LOGICAL_DNS with hostname
+				targetAddr = backend.TargetService
+				clusterType = cluster.Cluster_LOGICAL_DNS
+				dnsFamily = cluster.Cluster_V4_ONLY
+			} else {
+				targetAddr = fmt.Sprintf("%s.%s.svc.cluster.local", backend.TargetService, backend.TargetNamespace)
+				clusterType = cluster.Cluster_LOGICAL_DNS
+				dnsFamily = cluster.Cluster_V4_ONLY
+			}
 
 			clusterResource := &cluster.Cluster{
 				Name:                 clusterName,
 				ConnectTimeout:       durationpb.New(time.Duration(backend.TimeoutSeconds) * time.Second),
-				ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_LOGICAL_DNS},
+				ClusterDiscoveryType: &cluster.Cluster_Type{Type: clusterType},
 				LbPolicy:             cluster.Cluster_ROUND_ROBIN,
 				LoadAssignment: &endpoint.ClusterLoadAssignment{
 					ClusterName: clusterName,
@@ -198,7 +218,7 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 						}},
 					}},
 				},
-				DnsLookupFamily: cluster.Cluster_V4_ONLY,
+				DnsLookupFamily: dnsFamily,
 			}
 			clusters = append(clusters, clusterResource)
 
