@@ -1,0 +1,149 @@
+site_name: oooi
+site_description: >-
+  oooi — OpenShift on OpenShift Infra. Hosted Control Plane infrastructure
+  operator: DHCP, split-horizon DNS, and an L4 SNI proxy for KubeVirt worker
+  nodes on isolated VLANs.
+site_url: https://cldmnky.github.io/oooi/
+repo_url: https://github.com/cldmnky/oooi
+repo_name: cldmnky/oooi
+edit_uri: edit/main/website/docs/
+
+copyright: Copyright &copy; 2026 oooi contributors &mdash; Apache License 2.0
+
+theme:
+  name: material
+  language: en
+  features:
+    - announce.dismiss
+    - content.code.annotate
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+  palette:
+    # Auto (follow system)
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/theme-light-dark
+        name: Switch to light mode
+    # Light
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    # Dark
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
+  font:
+    text: Inter
+    code: JetBrains Mono
+  favicon: assets/images/logo.svg
+  logo: assets/images/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
+
+# Self-hosted mermaid so diagrams render without third-party CDNs.
+# Material's integration detects the global and skips its unpkg import.
+extra_javascript:
+  - assets/javascripts/mermaid.min.js
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/cldmnky/oooi
+    - icon: material/kubernetes
+      link: https://quay.io/repository/cldmnky/oooi
+  status:
+    new: Recently added
+  generator: false
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/index.md
+      - Prerequisites: getting-started/prerequisites.md
+      - Quickstart: getting-started/quickstart.md
+  - Architecture: architecture.md
+  - Installation:
+      - installation/index.md
+      - Deploy the operator: installation/deploy-operator.md
+      - Build images: installation/build-images.md
+  - Configuration:
+      - configuration/index.md
+      - Infra CR reference: configuration/infra-reference.md
+  - Guides:
+      - Split-horizon DNS: guides/split-horizon-dns.md
+      - Apps ingress and MetalLB: guides/apps-ingress.md
+      - Public DNS and OAuth publishing: guides/public-dns-oauth.md
+  - Examples:
+      - examples/index.md
+  - Operations:
+      - operations/index.md
+      - Verification: operations/verify.md
+      - Troubleshooting: operations/troubleshooting.md
+      - Uninstall and cleanup: operations/uninstall.md
+  - FAQ: faq.md

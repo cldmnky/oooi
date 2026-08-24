@@ -39,3 +39,6 @@ go.work.sum
 internal/dhcp/plugins/leasedb/test.db
 internal/dhcp/plugins/leasedb/test_register.db
 
+
+# MkDocs build output
+website/site/

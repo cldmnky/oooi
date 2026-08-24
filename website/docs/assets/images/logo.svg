@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="oooiBody" x1="10" y1="6" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- tentacle curls -->
+  <g fill="none" stroke="url(#oooiBody)" stroke-width="5.5" stroke-linecap="round">
+    <path d="M18 46 C12 52, 8 50, 7 57"/>
+    <path d="M32 50 C32 57, 27 56, 25 61"/>
+    <path d="M46 46 C52 52, 56 50, 57 57"/>
+  </g>
+
+  <!-- head -->
+  <ellipse cx="32" cy="27" rx="21" ry="17.5" fill="url(#oooiBody)"/>
+  <rect x="13" y="32" width="38" height="14" rx="7" fill="url(#oooiBody)"/>
+
+  <!-- eyes -->
+  <circle cx="24" cy="25" r="5" fill="#ffffff"/>
+  <circle cx="40" cy="25" r="5" fill="#ffffff"/>
+  <circle cx="25.2" cy="25.8" r="2.4" fill="#1e1b4b"/>
+  <circle cx="41.2" cy="25.8" r="2.4" fill="#1e1b4b"/>
+  <circle cx="24.4" cy="24.6" r="0.9" fill="#ffffff"/>
+  <circle cx="40.4" cy="24.6" r="0.9" fill="#ffffff"/>
+
+  <!-- happy smile -->
+  <path d="M26.5 33 Q32 37.5 37.5 33" fill="none" stroke="#1e1b4b" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- cheeks -->
+  <circle cx="17.5" cy="31.5" r="2.4" fill="#f9a8d4" opacity="0.85"/>
+  <circle cx="46.5" cy="31.5" r="2.4" fill="#f9a8d4" opacity="0.85"/>
+</svg>

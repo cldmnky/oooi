@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 340" width="560" height="340" role="img" aria-label="Ollie the oooi octopus connecting DHCP, DNS and the proxy">
+  <defs>
+    <linearGradient id="mBody" x1="80" y1="30" x2="260" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="mStroke" x1="180" y1="120" x2="420" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- bubbles -->
+  <g fill="#6366f1" opacity="0.14">
+    <circle cx="70" cy="60" r="10"/>
+    <circle cx="120" cy="26" r="6"/>
+    <circle cx="250" cy="40" r="8"/>
+    <circle cx="300" cy="90" r="5"/>
+    <circle cx="60" cy="150" r="6"/>
+  </g>
+
+  <!-- tentacles to service chips -->
+  <g fill="none" stroke="url(#mStroke)" stroke-width="9" stroke-linecap="round">
+    <path d="M196 210 C250 235, 268 130, 336 106"/>
+    <path d="M206 236 C262 262, 268 208, 336 190"/>
+    <path d="M188 258 C240 292, 262 288, 336 274"/>
+  </g>
+  <!-- suction-cup dots along tentacles -->
+  <g fill="#0ea5e9" opacity="0.55">
+    <circle cx="252" cy="196" r="3.2"/>
+    <circle cx="286" cy="152" r="3.2"/>
+    <circle cx="258" cy="248" r="3.2"/>
+    <circle cx="292" cy="222" r="3.2"/>
+    <circle cx="244" cy="276" r="3.2"/>
+    <circle cx="284" cy="282" r="3.2"/>
+  </g>
+
+  <!-- service chips -->
+  <g font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="700" font-size="17" fill="#312e81">
+    <g>
+      <rect x="340" y="82" width="150" height="46" rx="14" fill="#ffffff" stroke="#c7d2fe" stroke-width="2"/>
+      <circle cx="364" cy="105" r="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+      <path d="M364 99 v12 M359 103 h10 M359 107 h10" stroke="#6366f1" stroke-width="1.6" fill="none"/>
+      <text x="382" y="111">DHCP</text>
+    </g>
+    <g>
+      <rect x="340" y="167" width="150" height="46" rx="14" fill="#ffffff" stroke="#a5f3fc" stroke-width="2"/>
+      <circle cx="364" cy="190" r="9" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+      <circle cx="364" cy="190" r="3.4" fill="none" stroke="#0891b2" stroke-width="1.6"/>
+      <path d="M355 190 h18 M364 181 a13 13 0 0 1 0 18 M364 181 a13 13 0 0 0 0 18" stroke="#0891b2" stroke-width="1.4" fill="none"/>
+      <text x="382" y="196">DNS</text>
+    </g>
+    <g>
+      <rect x="340" y="251" width="150" height="46" rx="14" fill="#ffffff" stroke="#bae6fd" stroke-width="2"/>
+      <path d="M364 259 l9 4 v7 c0 6 -4 9 -9 11 c-5 -2 -9 -5 -9 -11 v-7 z" fill="#f0f9ff" stroke="#0284c7" stroke-width="1.8"/>
+      <text x="382" y="280">PROXY</text>
+    </g>
+  </g>
+
+  <!-- octopus body -->
+  <g>
+    <!-- back tentacle curls -->
+    <g fill="none" stroke="url(#mBody)" stroke-width="13" stroke-linecap="round" opacity="0.95">
+      <path d="M118 262 C96 288, 70 282, 62 306"/>
+      <path d="M158 282 C158 306, 138 302, 132 322"/>
+      <path d="M204 268 C226 292, 248 284, 254 306"/>
+    </g>
+    <!-- head -->
+    <ellipse cx="160" cy="150" rx="86" ry="74" fill="url(#mBody)"/>
+    <path d="M76 168 a86 62 0 0 0 168 0 v18 a84 52 0 0 1 -168 0 z" fill="#4f46e5" opacity="0.35"/>
+
+    <!-- eyes -->
+    <circle cx="128" cy="140" r="21" fill="#ffffff"/>
+    <circle cx="192" cy="140" r="21" fill="#ffffff"/>
+    <circle cx="133" cy="144" r="10" fill="#1e1b4b"/>
+    <circle cx="197" cy="144" r="10" fill="#1e1b4b"/>
+    <circle cx="129" cy="139" r="3.4" fill="#ffffff"/>
+    <circle cx="193" cy="139" r="3.4" fill="#ffffff"/>
+
+    <!-- smile -->
+    <path d="M140 176 Q160 194 180 176" fill="none" stroke="#1e1b4b" stroke-width="6" stroke-linecap="round"/>
+
+    <!-- cheeks -->
+    <circle cx="100" cy="168" r="9" fill="#f9a8d4" opacity="0.9"/>
+    <circle cx="220" cy="168" r="9" fill="#f9a8d4" opacity="0.9"/>
+
+    <!-- head highlight -->
+    <ellipse cx="118" cy="96" rx="26" ry="14" fill="#ffffff" opacity="0.22" transform="rotate(-18 118 96)"/>
+  </g>
+
+  <!-- sparkles -->
+  <g fill="#22d3ee">
+    <path d="M300 40 l3.2 8 8 3.2 -8 3.2 -3.2 8 -3.2 -8 -8 -3.2 8 -3.2 z"/>
+    <path d="M46 210 l2.4 6 6 2.4 -6 2.4 -2.4 6 -2.4 -6 -6 -2.4 6 -2.4 z" fill="#818cf8"/>
+  </g>
+</svg>

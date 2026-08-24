@@ -1,0 +1,58 @@
+/* ---- Modern touches on top of Material ---------------------------------- */
+
+/* Hero block used on the landing page */
+.md-typeset .oooi-hero {
+  text-align: center;
+  padding: 2.2rem 0 1.4rem;
+}
+.md-typeset .oooi-mascot {
+  margin: 1.6rem auto 0;
+  max-width: 30rem;
+}
+.md-typeset .oooi-mascot img {
+  display: block;
+  margin: 0 auto;
+  filter: drop-shadow(0 14px 26px rgba(99, 102, 241, 0.18));
+}
+.md-typeset .oooi-hero h1 {
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.6rem;
+}
+.md-typeset .oooi-hero p {
+  font-size: 1.05rem;
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+/* Gradient headline accent */
+.md-typeset .gradient-text {
+  background: linear-gradient(90deg, #6366f1, #06b6d4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Compact, evenly spaced card grids */
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.5rem;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
+}
+
+/* Slightly tighter code blocks with rounded corners */
+.md-typeset code,
+.md-typeset pre > code {
+  border-radius: 0.35rem;
+}
+.md-typeset pre {
+  border-radius: 0.55rem;
+}
+
+/* Terminal-style prompt coloring inside bash fences */
+.md-typeset .language-bash .go { color: var(--md-code-hl-function-color); }
