@@ -48,6 +48,28 @@ func readyHostedNode() *corev1.Node {
 }
 
 var _ = Describe("Infra Controller", func() {
+	It("passes proxy external service configuration to ProxyServer", func() {
+		infra := &hostedclusterv1alpha1.Infra{
+			ObjectMeta: metav1.ObjectMeta{Name: "mycluster", Namespace: "clusters"},
+			Spec: hostedclusterv1alpha1.InfraSpec{
+				NetworkConfig: hostedclusterv1alpha1.NetworkConfig{NetworkAttachmentDefinition: "vlan100"},
+				InfraComponents: hostedclusterv1alpha1.InfraComponents{
+					DNS: hostedclusterv1alpha1.DNSConfig{ClusterName: "mycluster", BaseDomain: "example.com"},
+					Proxy: hostedclusterv1alpha1.ProxyConfig{
+						ExternalService: hostedclusterv1alpha1.ProxyExternalService{
+							Enabled:         true,
+							AddressPoolName: "metallb-pool",
+							Labels:          map[string]string{"external-dns.example.com/publish": "yes"},
+						},
+					},
+				},
+			},
+		}
+
+		proxyServer := (&InfraReconciler{}).proxyServerForInfra(infra)
+		Expect(proxyServer.Spec.ExternalService).To(Equal(infra.Spec.InfraComponents.Proxy.ExternalService))
+	})
+
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 

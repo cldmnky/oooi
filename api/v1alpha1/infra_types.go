@@ -183,6 +183,37 @@ type ProxyConfig struct {
 	// +optional
 	// +kubebuilder:default="quay.io/cldmnky/oooi:latest"
 	ManagerImage string `json:"managerImage,omitempty"`
+
+	// ExternalService exposes the proxy through a LoadBalancer Service on the
+	// hosting cluster. It can be labeled and annotated for integrations such as
+	// MetalLB and ExternalDNS.
+	// +optional
+	ExternalService ProxyExternalService `json:"externalService,omitempty"`
+}
+
+// ProxyExternalService defines optional hosting-cluster LoadBalancer exposure
+// for the Envoy proxy.
+type ProxyExternalService struct {
+	// Enabled changes the proxy Service from ClusterIP to LoadBalancer.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// AddressPoolName selects a MetalLB IPAddressPool through the standard
+	// metallb.universe.tf/address-pool Service annotation. When empty, the
+	// cluster's default LoadBalancer allocation policy is used.
+	// +optional
+	AddressPoolName string `json:"addressPoolName,omitempty"`
+
+	// Labels are reconciled onto the proxy Service. Use these to select the
+	// Service from ExternalDNS.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations are reconciled onto the proxy Service. Use these to configure
+	// integrations such as external-dns.alpha.kubernetes.io/hostname.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // AppsIngressConfig defines optional configuration for hosted cluster *.apps domain ingress handling.

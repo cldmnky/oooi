@@ -133,6 +133,22 @@ worker VM -- apps --> MetalLB VIP (.180) - Envoy -> hosted ingress router
 
 `internalProxyService` is optional. Set it to the proxy's ClusterIP Service DNS name when management-cluster pods need to use the hosted-cluster endpoint names. If it is omitted, the default DNS view does not publish those static HCP answers.
 
+`proxy.externalService` optionally adds a second Service, `<infra>-proxy-external`, on the hosting cluster. It is a `LoadBalancer` that selects the same Envoy pod but exposes only the proxy's configured ingress port, never Envoy's administrative port `9901` or other backend ports. This is the correct public path for hosted control-plane endpoints such as OAuth when the HostedCluster must use a `Route` publishing strategy: ExternalDNS maps the endpoint hostname to the hosting-cluster MetalLB VIP, and Envoy routes it by SNI to the HCP Service. It does not require exposing the hosting cluster's ingress router or node network.
+
+```yaml
+infraComponents:
+  proxy:
+    externalService:
+      enabled: true
+      addressPoolName: metallb-pool
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: oauth.mycluster.example.com.
+      labels:
+        external-dns.example.com/publish: "yes"
+```
+
+`addressPoolName` becomes the `metallb.universe.tf/address-pool` annotation. Labels and annotations are reconciled onto the external Service; use the label and hostname convention required by the hosting cluster's ExternalDNS deployment. The normal proxy Service remains `ClusterIP` for `internalProxyService` and pod-network DNS.
+
 ### Apps ingress and MetalLB
 
 Set `spec.appsIngress.enabled: true` to expose the default hosted-cluster `IngressController` on the VLAN. The feature is intentionally separate from the HCP proxy endpoints: the app wildcard terminates at the hosted ingress router, while Envoy makes it reachable from both DNS views.

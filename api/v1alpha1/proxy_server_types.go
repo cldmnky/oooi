@@ -60,6 +60,10 @@ type ProxyServerSpec struct {
 	// +kubebuilder:default="info"
 	// +kubebuilder:validation:Enum=trace;debug;info;warning;error;critical
 	LogLevel string `json:"logLevel,omitempty"`
+
+	// ExternalService configures optional LoadBalancer exposure for the proxy.
+	// +optional
+	ExternalService ProxyExternalService `json:"externalService,omitempty"`
 }
 
 // ProxyNetworkConfig defines the network configuration for the proxy server

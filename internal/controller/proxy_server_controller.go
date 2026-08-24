@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,8 +32,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
@@ -314,6 +318,11 @@ func (r *ProxyServerReconciler) ensureProxyDeployment(ctx context.Context, proxy
 		return ctrl.SetControllerReference(proxyServer, service, r.Scheme)
 	}); err != nil {
 		log.Error(err, "unable to ensure Service")
+		return err
+	}
+
+	if err := r.reconcileExternalProxyService(ctx, proxyServer); err != nil {
+		log.Error(err, "unable to ensure external proxy Service")
 		return err
 	}
 
@@ -615,12 +624,19 @@ func (r *ProxyServerReconciler) newProxyService(proxyServer *hostedclusterv1alph
 	for _, backend := range proxyServer.Spec.Backends {
 		backendPorts[backend.Port] = true
 	}
+	orderedBackendPorts := make([]int32, 0, len(backendPorts))
+	for backendPort := range backendPorts {
+		orderedBackendPorts = append(orderedBackendPorts, backendPort)
+	}
+	sort.Slice(orderedBackendPorts, func(i, j int) bool {
+		return orderedBackendPorts[i] < orderedBackendPorts[j]
+	})
 
 	// Build service ports list: include all backend ports + admin port
 	ports := make([]corev1.ServicePort, 0, len(backendPorts)+1)
 
 	// Add all backend ports
-	for backendPort := range backendPorts {
+	for _, backendPort := range orderedBackendPorts {
 		portName := "proxy"
 		if backendPort != port {
 			portName = fmt.Sprintf("proxy-%d", backendPort)
@@ -655,6 +671,88 @@ func (r *ProxyServerReconciler) newProxyService(proxyServer *hostedclusterv1alph
 			Ports: ports,
 		},
 	}
+}
+
+// newExternalProxyService exposes the configured proxy ingress port. The Envoy
+// admin port and other backend ports remain available only through ClusterIP.
+func (r *ProxyServerReconciler) newExternalProxyService(proxyServer *hostedclusterv1alpha1.ProxyServer) *corev1.Service {
+	labels := map[string]string{"app": "proxy-server"}
+	for key, value := range proxyServer.Spec.ExternalService.Labels {
+		labels[key] = value
+	}
+	annotations := map[string]string{}
+	for key, value := range proxyServer.Spec.ExternalService.Annotations {
+		annotations[key] = value
+	}
+	if poolName := proxyServer.Spec.ExternalService.AddressPoolName; poolName != "" {
+		annotations["metallb.universe.tf/address-pool"] = poolName
+	} else {
+		delete(annotations, "metallb.universe.tf/address-pool")
+	}
+
+	port := proxyServer.Spec.Port
+	if port == 0 {
+		port = 443
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        proxyServer.Name + "-external",
+			Namespace:   proxyServer.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeLoadBalancer,
+			Selector: map[string]string{
+				"app": "proxy-server",
+			},
+			Ports: []corev1.ServicePort{{
+				Name:       "proxy",
+				Port:       port,
+				TargetPort: intstr.FromInt(int(port)),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+}
+
+func (r *ProxyServerReconciler) reconcileExternalProxyService(ctx context.Context, proxyServer *hostedclusterv1alpha1.ProxyServer) error {
+	serviceName := proxyServer.Name + "-external"
+	service := &corev1.Service{}
+	key := types.NamespacedName{Name: serviceName, Namespace: proxyServer.Namespace}
+
+	if !proxyServer.Spec.ExternalService.Enabled {
+		if err := r.Get(ctx, key, service); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		return r.Delete(ctx, service)
+	}
+
+	service = r.newExternalProxyService(proxyServer)
+	if err := ctrl.SetControllerReference(proxyServer, service, r.Scheme); err != nil {
+		return err
+	}
+	return r.createOrUpdateWithRetries(ctx, service, func() error {
+		desired := r.newExternalProxyService(proxyServer)
+		// NodePorts are allocated by Kubernetes and must be retained on updates.
+		// Resetting them to zero would cause this Service watch to enqueue an
+		// otherwise identical ProxyServer indefinitely.
+		for desiredIndex := range desired.Spec.Ports {
+			for _, existingPort := range service.Spec.Ports {
+				if existingPort.Name == desired.Spec.Ports[desiredIndex].Name {
+					desired.Spec.Ports[desiredIndex].NodePort = existingPort.NodePort
+					break
+				}
+			}
+		}
+		service.Labels = desired.Labels
+		service.Annotations = desired.Annotations
+		service.Spec.Type = desired.Spec.Type
+		service.Spec.Selector = desired.Spec.Selector
+		service.Spec.Ports = desired.Spec.Ports
+		return ctrl.SetControllerReference(proxyServer, service, r.Scheme)
+	})
 }
 
 // createOrUpdateWithRetries attempts to create or update an object with exponential backoff retry logic
@@ -712,7 +810,14 @@ func (r *ProxyServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.ProxyServer{}).
 		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
+		// LoadBalancer status and third-party metadata updates must not enqueue the
+		// owner. Reconcile creates a replacement when a managed Service is deleted.
+		Owns(&corev1.Service{}, builder.WithPredicates(predicate.Funcs{
+			CreateFunc:  func(event.CreateEvent) bool { return false },
+			UpdateFunc:  func(event.UpdateEvent) bool { return false },
+			DeleteFunc:  func(event.DeleteEvent) bool { return true },
+			GenericFunc: func(event.GenericEvent) bool { return false },
+		})).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).

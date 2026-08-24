@@ -237,6 +237,8 @@ var _ = Describe("ProxyServer Controller", func() {
 			Expect(service.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
 			Expect(service.Spec.Selector).To(HaveKeyWithValue("app", "proxy-server"))
 			Expect(service.Spec.Ports).To(HaveLen(2)) // backend port (6443) + admin port
+			Expect(service.Spec.Ports[0].Port).To(Equal(int32(6443)))
+			Expect(service.Spec.Ports[1].Port).To(Equal(int32(9901)))
 			// Service should include all backend ports
 			var portNumbers []int32
 			for _, p := range service.Spec.Ports {
@@ -266,6 +268,56 @@ var _ = Describe("ProxyServer Controller", func() {
 			Expect(updatedProxyServer.Status.Conditions).To(HaveLen(1))
 			Expect(updatedProxyServer.Status.Conditions[0].Type).To(Equal("Ready"))
 			Expect(updatedProxyServer.Status.Conditions[0].Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("should manage a MetalLB external Service without exposing Envoy admin", func() {
+			proxyServer.Spec.ExternalService = hostedclusterv1alpha1.ProxyExternalService{
+				Enabled:         true,
+				AddressPoolName: "metallb-pool",
+				Labels: map[string]string{
+					"external-dns.example.com/publish": "yes",
+				},
+				Annotations: map[string]string{
+					"external-dns.alpha.kubernetes.io/hostname": "oauth.test-cluster.example.com.",
+				},
+			}
+			Expect(k8sClient.Update(ctx, proxyServer)).To(Succeed())
+
+			reconciler := &ProxyServerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			externalService := &corev1.Service{}
+			externalServiceKey := types.NamespacedName{Name: proxyServerName + "-external", Namespace: proxyServerNamespace}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, externalServiceKey, externalService)
+			}, timeout, interval).Should(Succeed())
+			Expect(externalService.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+			Expect(externalService.Labels).To(HaveKeyWithValue("external-dns.example.com/publish", "yes"))
+			Expect(externalService.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "metallb-pool"))
+			Expect(externalService.Annotations).To(HaveKeyWithValue("external-dns.alpha.kubernetes.io/hostname", "oauth.test-cluster.example.com."))
+			exposedPorts := make([]int32, 0, len(externalService.Spec.Ports))
+			for _, servicePort := range externalService.Spec.Ports {
+				exposedPorts = append(exposedPorts, servicePort.Port)
+			}
+			Expect(exposedPorts).To(ConsistOf(int32(443)))
+			Expect(externalService.OwnerReferences).To(HaveLen(1))
+			Expect(externalService.OwnerReferences[0].Name).To(Equal(proxyServerName))
+			resourceVersion := externalService.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, externalServiceKey, externalService)).To(Succeed())
+			Expect(externalService.ResourceVersion).To(Equal(resourceVersion))
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, proxyServer)).To(Succeed())
+			proxyServer.Spec.ExternalService.Enabled = false
+			Expect(k8sClient.Update(ctx, proxyServer)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() bool {
+				return errors.IsNotFound(k8sClient.Get(ctx, externalServiceKey, &corev1.Service{}))
+			}, timeout, interval).Should(BeTrue())
 		})
 
 		It("should handle multiple backends on different ports", func() {

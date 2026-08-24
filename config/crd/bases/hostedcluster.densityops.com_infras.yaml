@@ -232,6 +232,38 @@ spec:
                         description: Enabled determines whether the Envoy proxy should
                           be deployed.
                         type: boolean
+                      externalService:
+                        description: |-
+                          ExternalService exposes the proxy through a LoadBalancer Service on the
+                          hosting cluster. It can be labeled and annotated for integrations such as
+                          MetalLB and ExternalDNS.
+                        properties:
+                          addressPoolName:
+                            description: |-
+                              AddressPoolName selects a MetalLB IPAddressPool through the standard
+                              metallb.universe.tf/address-pool Service annotation. When empty, the
+                              cluster's default LoadBalancer allocation policy is used.
+                            type: string
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Annotations are reconciled onto the proxy Service. Use these to configure
+                              integrations such as external-dns.alpha.kubernetes.io/hostname.
+                            type: object
+                          enabled:
+                            default: false
+                            description: Enabled changes the proxy Service from ClusterIP
+                              to LoadBalancer.
+                            type: boolean
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Labels are reconciled onto the proxy Service. Use these to select the
+                              Service from ExternalDNS.
+                            type: object
+                        type: object
                       internalProxyService:
                         description: |-
                           InternalProxyService is the internal proxy service for pod network access.
