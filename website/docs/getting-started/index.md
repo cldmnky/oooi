@@ -1,8 +1,8 @@
 # Getting started
 
-oooi is deployed **after** your OpenShift management cluster has HyperShift and
-OpenShift Virtualization in place, and **alongside** the creation of a hosted
-cluster. The recommended flow is:
+Deploy oooi after your OpenShift Container Platform management cluster has
+hosted control planes (HyperShift) and Red Hat OpenShift Virtualization in
+place, and while you create a hosted cluster. The recommended flow is:
 
 1. [Verify prerequisites](prerequisites.md) — cluster operators, network, IP plan, secrets.
 2. [Install oooi](../installation/deploy-operator.md) — CRDs plus the controller Deployment.

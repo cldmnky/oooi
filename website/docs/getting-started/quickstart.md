@@ -7,6 +7,23 @@ proxy, apps ingress, and public OAuth DNS.
 The names, addresses, registry, and zone below are documentation values. Replace
 them before applying anything.
 
+## Learning objectives
+
+After completing this quickstart, you can:
+
+- deploy the oooi controller on an OpenShift Container Platform management cluster;
+- configure an `Infra` resource for an isolated worker VLAN;
+- verify control-plane, applications, and public-DNS connectivity; and
+- identify the status fields and logs to inspect when reconciliation does not complete.
+
+## Before you begin
+
+Complete the [prerequisites](prerequisites.md), including the
+`NetworkAttachmentDefinition`, hosted-cluster secrets, IP plan, and an image
+registry that your cluster can pull from. The examples target OpenShift Container
+Platform 4.22. Replace the example release image with a payload supported by
+your HyperShift and Red Hat OpenShift Virtualization versions.
+
 ## 1. Install oooi
 
 Install the CRDs and the controller in `oooi-system`:
@@ -193,6 +210,10 @@ kubectl -n clusters get infra example-hcp \
 Apps ingress normally progresses through `WaitingForHostedClusterNodes`,
 `WaitingForMetalLBCRDs`, `WaitingForExternalIP`, and `Ready`.
 
+If either wait command times out, inspect the `Ready` condition and the
+apps-ingress status before retrying. The [troubleshooting guide](../operations/troubleshooting.md)
+maps the reported reason to corrective actions.
+
 ## 5. Verify from the VLAN
 
 Run these from a client attached to the VLAN, not from a management-cluster pod:
@@ -233,4 +254,6 @@ dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<pub
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 ```
 
-Both answers should match the current MetalLB VIPs.
+Both answers should match their current MetalLB VIPs. Use the
+[verification guide](../operations/verify.md) for the expected DNS and HTTP
+results.

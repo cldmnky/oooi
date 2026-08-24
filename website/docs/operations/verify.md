@@ -61,12 +61,15 @@ curl -k -o /dev/null -w '%{http_code}\n' \
 The same names must resolve to the **proxy Service ClusterIP**:
 
 ```bash
+export DIAGNOSTICS_IMAGE=registry.example.com/diagnostics:latest
 DNSCLUSTERIP=$(kubectl -n clusters get svc example-hcp-dns \
   -o jsonpath='{.spec.clusterIP}')
 kubectl run dnstest --rm -it --restart=Never \
-  --image=registry.example.com/diagnostics:latest -- \
+  --image="$DIAGNOSTICS_IMAGE" -- \
   sh -c "nslookup api.example-hcp.clusters.example.com $DNSCLUSTERIP"
 ```
+
+Set `DIAGNOSTICS_IMAGE` to an image in your registry that provides `nslookup`.
 
 ## 4. Public resolution
 

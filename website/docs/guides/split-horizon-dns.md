@@ -86,13 +86,16 @@ dig @192.0.2.3 +short www.example.net
 From the **pod network**, query the DNSServer's ClusterIP:
 
 ```bash
+export DIAGNOSTICS_IMAGE=registry.example.com/diagnostics:latest
 DNSCLUSTERIP=$(kubectl -n clusters get svc example-hcp-dns \
   -o jsonpath='{.spec.clusterIP}')
-kubectl run dnstest --rm -it --image=registry.example.com/diagnostics:latest \
+kubectl run dnstest --rm -it --image="$DIAGNOSTICS_IMAGE" \
   --restart=Never -- \
-  sh -c "curl -s $DNSCLUSTERIP:53 >/dev/null; nslookup api.example-hcp.clusters.example.com $DNSCLUSTERIP"
+  nslookup api.example-hcp.clusters.example.com "$DNSCLUSTERIP"
 # → the proxy Service ClusterIP
 ```
+
+Set `DIAGNOSTICS_IMAGE` to an image in your registry that provides `nslookup`.
 
 Watch live query logs while testing:
 

@@ -23,11 +23,11 @@ Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
 
 === "ExternalDNS Operator inside the hosted cluster"
 
-    The OpenShift ExternalDNS Operator (≥ 1.3.0) supports hosted clusters and
-    watches Services through its label filter. Configure the `ExternalDNS`
-    resource with your provider credentials and a label filter such as
-    `external-dns.example.com/publish=yes`, then make sure the Infra resource
-    carries the matching metadata:
+    Configure the Red Hat External DNS Operator `ExternalDNS` resource with
+    provider credentials and a label filter such as
+    `external-dns.example.com/publish=yes`. Then make sure the `Infra` resource
+    carries matching metadata. Confirm that the Operator version and supported
+    providers match your OpenShift Container Platform release.
 
     ```yaml
     appsIngress:
@@ -81,9 +81,9 @@ Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
 
 ## Pattern B — publish OAuth via a hosting-cluster VIP
 
-On KubeVirt, HyperShift rejects `oauthServer.type: LoadBalancer` (only
-self-managed Azure allows it) and defaults OAuth to `Route`. Because
-`spec.services` is **immutable**, you cannot switch later. The supported path:
+For the KubeVirt hosted-control-plane configuration used by this guide, OAuth
+uses the `Route` publishing strategy. Because `spec.services` is immutable, plan
+the publishing strategy before creating the HostedCluster. The supported path:
 
 ```mermaid
 flowchart LR
@@ -141,7 +141,7 @@ automatically** — no stale records after pool changes or re-allocation.
 
 | Alternative | Rejected because |
 |---|---|
-| `oauthServer.type: LoadBalancer` on KubeVirt | HyperShift rejects it at admission; only self-managed Azure supports it; `spec.services` immutable |
+| Changing OAuth publishing after creation | `spec.services` on the HostedCluster is immutable; create the HostedCluster with the required strategy |
 | Publishing via hosting-cluster router Routes | Exposes tenant traffic on the hosting cluster's ingress infrastructure — breaks isolation goals |
 | Manual A records | Stale after VIP changes; silently breaks console/canary route health |
 

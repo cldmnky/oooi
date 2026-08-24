@@ -9,7 +9,7 @@ hide:
 
 # **oooi** { .gradient-text }
 
-### OpenShift on OpenShift Infra
+**OpenShift on OpenShift Infra**
 
 oooi provides **DHCP**, **split-horizon DNS**, and a **TLS-passthrough L4
 proxy** for KubeVirt worker nodes on an isolated VLAN. It gives hosted workers a

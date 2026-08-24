@@ -156,8 +156,8 @@ Plus one hosting-cluster MetalLB VIP for `<infra>-proxy-external` (OAuth).
 
 ## Public OAuth VIP
 
-The minimal delta that puts OAuth on a public VIP while HyperShift keeps
-`oauthServer.type: Route` (see
+The minimal delta that puts OAuth on a public VIP when the HostedCluster uses
+the `Route` OAuth publishing strategy (see
 [Public DNS and OAuth publishing](../guides/public-dns-oauth.md)):
 
 ```yaml

@@ -85,9 +85,8 @@ selecting the same Envoy pod, exposing **only** the configured ingress port.
 | `labels` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. your ExternalDNS publish label. |
 | `annotations` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. `external-dns.alpha.kubernetes.io/hostname: oauth.<cluster>.<domain>.` |
 
-This is the supported way to put OAuth (and similar Route-published endpoints)
-on a public VIP when HyperShift rejects `LoadBalancer` publishing strategies on
-KubeVirt. See [Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
+Use this to put OAuth and other Route-published endpoints on a public VIP. See
+[Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
 
 ## spec.appsIngress
 

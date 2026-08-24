@@ -7,8 +7,8 @@ then find your symptom below.
 
 | Check | Command | Fix |
 |---|---|---|
-| DHCP pod running | `kubectl -n clusters get pods -l app=proxy-server` and `<infra>-dhcp` pods | Read pod events; check NAD name/namespace |
-| Only DHCP server on VLAN | Inspect upstream network config | Disable competing DHCP servers — oooi must be the sole authority |
+| DHCP pod running | `kubectl -n clusters get pods -l app=dhcp-server` | Read pod events; check NAD name and namespace |
+| Only DHCP server on VLAN | Inspect the upstream network configuration | Disable competing DHCP servers; oooi must be the sole authority |
 | Static IP free | `arping 192.0.2.2` from VLAN | Pick unused `serverIP`s inside the CIDR |
 
 ## DNS resolution failures
@@ -34,12 +34,14 @@ kubectl -n clusters logs deploy/<infra>-dns -f
 
 ## Hosted cluster stuck installing
 
-Workers bootstrap via Ignition through Envoy — if `ignition.<cluster>…` does
-not resolve on the VLAN, nodes hang at `NotReady`.
+Workers bootstrap through Envoy to Ignition. If
+`ignition.<cluster>.<domain>` does not resolve on the VLAN, nodes remain
+`NotReady`.
 
 1. Confirm `Infra` was applied **before** nodes booted.
-2. From the VLAN: `curl -k https://ignition.<cluster>.<domain>` → expect any
-   HTTP status (404 is fine); a timeout means the proxy path is broken.
+2. From the VLAN, run `curl -k https://ignition.<cluster>.<domain>`. Any HTTP
+   status, including `404`, confirms that the proxy path responds. A timeout
+   indicates that the proxy path is unavailable.
 3. Check ProxyServer logs for SNI routing errors:
    `kubectl -n clusters logs deploy/<infra>-proxy -c manager`.
 
@@ -59,16 +61,18 @@ kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-operators \
 kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-ingress get svc oooi-ingress -o wide
 ```
 
-If `ipAddressPoolRange` overlaps gateway/statics/DHCP pool, allocation fails or
-the VIP is unreachable — fix by editing the Infra to use a disjoint range.
+If `ipAddressPoolRange` overlaps the gateway, static addresses, or DHCP pool,
+allocation can fail or the VIP can be unreachable. Edit the `Infra` resource to
+use a disjoint range.
 
 ## Console / canary route health fails after working
 
-A classic **stale public wildcard record**: the ingress operator resolves
-`*.apps.…` through public DNS; if it points at an old VIP after re-allocation,
-routes fail with `RouteHealth_FailedGet`.
+A stale public wildcard record can cause this failure. The ingress Operator
+resolves `*.apps.<cluster>.<domain>` through public DNS. If the record points to
+an old VIP after reallocation, routes fail with `RouteHealth_FailedGet`.
 
-- Re-check `.status.appsIngressStatus.externalIP` vs `dig …@<public-resolver>`.
+- Compare `.status.appsIngressStatus.externalIP` with a query to your public
+  resolver.
 - With ExternalDNS (`--policy=sync`) records self-heal; without it, update the
   A record manually.
 
@@ -86,16 +90,16 @@ curl -k -o /dev/null -w '%{http_code}\n' \
 
 ## Proxy pods crash-loop binding ports
 
-Envoy binds privileged ports (<1024) such as 443/80.
+Envoy binds privileged ports below `1024`, such as `443` and `80`.
 
 ```bash
 kubectl -n clusters get pod <proxy-pod> -o jsonpath='{.spec.serviceAccountName}'
-kubectl get clusterrolebinding | grep <infra>
+kubectl -n clusters get rolebinding <infra>-proxy-privileged-scc
 ```
 
-With `--enable-openshift=true`, oooi creates the scoped `privileged` SCC
-RoleBinding automatically. If you disabled OpenShift integration, grant `anyuid`
-(or a custom SCC) to the component ServiceAccounts yourself.
+With `--enable-openshift=true`, oooi creates the scoped `privileged` Security
+Context Constraints (SCC) RoleBinding automatically. If OpenShift integration
+is disabled, grant an equivalent custom SCC to the component ServiceAccounts.
 
 ## Operator hot-looping on Services
 

@@ -1,23 +1,27 @@
 # Prerequisites
 
-Everything a sysadmin must have in place before deploying oooi. Work through
-this page top to bottom; each section includes a check you can run.
+Everything a cluster administrator must have in place before deploying oooi.
+Work through this page in order; each section includes a verification command.
 
 ## Management cluster
 
-oooi runs on an **OpenShift management cluster** (the *hosting* cluster) that
-provides the following capabilities:
+oooi runs on an **OpenShift Container Platform management cluster** (the
+*hosting cluster*) that provides the following capabilities:
 
 | Capability | Why it is needed | Verify |
 |---|---|---|
-| HyperShift operator (hosted control planes) | Creates and runs hosted control planes; provides the `HostedCluster`/`NodePool` APIs | `oc get pods -n hypershift` |
-| OpenShift Virtualization | Runs the worker VMs as KubeVirt `VirtualMachine`s | `oc get csv -n openshift-cnv` |
+| Hosted control planes (HyperShift) | Creates and runs hosted control planes; provides the `HostedCluster` and `NodePool` APIs | `oc get pods -n hypershift` |
+| Red Hat OpenShift Virtualization | Runs worker nodes as KubeVirt virtual machines | `oc get csv -n openshift-cnv` |
 | Multus (built-in) | Attaches oooi pods and worker VMs to the secondary VLAN via `NetworkAttachmentDefinition` | `oc auth can-i get net-attach-def` |
-| MetalLB operator access | Allocates LoadBalancer VIPs for apps ingress and the external proxy Service | `oc auth can-i create ipaddresspool.metallb.io` |
-| OLM | Installs MetalLB into the hosted cluster during apps-ingress automation | `oc get csv -n operators` |
+| Operator Lifecycle Manager (OLM) | Installs the Red Hat MetalLB Operator in the hosted cluster when apps ingress is enabled | `oc get packagemanifest -n openshift-marketplace metallb-operator` |
 
 A management cluster with at least one worker node is sufficient for lab use.
 Size production clusters per your HCP density targets.
+
+When apps ingress is enabled, oooi uses the HostedCluster admin kubeconfig to
+create the MetalLB resources in the *hosted cluster*. The package manifest must
+therefore be available to that cluster. This is not validated by a
+management-cluster `oc auth can-i` command.
 
 ## Secondary network (VLAN)
 
@@ -63,7 +67,7 @@ kubectl get net-attach-def -n default vlan100
 !!! note "Bridge name"
 
     The bridge/CNI details are node-environment specific (Linux bridge, OVS,
-    SR-IOV). What oooi requires is simply a working `NetworkAttachmentDefinition`
+    SR-IOV). oooi requires a working `NetworkAttachmentDefinition`
     that puts pods/VMs on the target L2 segment with no conflicting IPAM.
 
 ## Hosted cluster namespace secrets

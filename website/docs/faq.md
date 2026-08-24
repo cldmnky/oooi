@@ -18,7 +18,7 @@ own manifests, then apply `Infra`.
 Never. The Envoy proxy routes by SNI and forwards encrypted bytes. Certificates
 stay inside the hosted cluster.
 
-### Why not just use hosting-cluster Routes for everything?
+### Why not use hosting-cluster Routes for everything?
 
 You can — but tenant traffic then traverses hosting-cluster ingress, breaking
 the isolation that motivated isolated VLANs in the first place. oooi keeps the
@@ -43,8 +43,9 @@ are untested with this flow; validate separately before relying on them.
 
 ### Can OAuth use LoadBalancer publishing directly?
 
-On KubeVirt, no — HyperShift rejects it at admission (`spec.services` is also
-immutable). Use the supported pattern instead:
+For the KubeVirt configuration documented here, use the `Route` publishing
+strategy and expose OAuth through the proxy external Service when public access
+is required. `spec.services` is immutable after HostedCluster creation. See:
 [Public DNS and OAuth publishing](guides/public-dns-oauth.md).
 
 ## Operations
