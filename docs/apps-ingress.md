@@ -10,7 +10,7 @@ When `spec.appsIngress.enabled: true`, the operator:
 2. Builds a kubeconfig client for the hosted cluster.
 3. Ensures MetalLB operator (`operators.coreos.com/Subscription` `metallb-operator` `redhat-operators` → `metallb.io/MetalLB` + `IPAddressPool` + `L2Advertisement`) in `openshift-operators`.
 4. Creates/updates `Service` `spec.appsIngress.service.{name,namespace}` (default `oooi-ingress`/`openshift-ingress`) type `LoadBalancer` with `metallb.universe.tf/address-pool` annotation, ports `spec.appsIngress.ports.{http,https}` (80/443).
-5. Polls `.status.loadBalancer.ingress[0].{ip,hostname}` → `status.appsIngressStatus.externalIP`.
+5. Polls `.status.loadBalancer.ingress[0].{ip,hostname}` → `status.appsIngressStatus.externalIP` (for IP) or `status.appsIngressStatus.externalHostname` (for hostname).
 6. DNS: adds `*.apps.<cluster>.<tld>` (derived from `spec.infraComponents.dns.{clusterName,baseDomain}` or `spec.appsIngress.baseDomain`) to `DNSServer` static entries. Split-horizon: VLAN view → MetalLB external IP, pod-network view → internal proxy IP.
 7. Proxy: adds backends `apps-http`/`apps-https` (wildcard SNI) on 80/443 targeting external IP via Envoy STATIC/LOGICAL_DNS clusters. Port 80 uses plain TCP (no TLS inspector), 443 uses SNI.
 
