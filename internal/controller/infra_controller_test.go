@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -35,6 +36,16 @@ import (
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
+
+func readyHostedNode() *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{
+			Type:   corev1.NodeReady,
+			Status: corev1.ConditionTrue,
+		}}},
+	}
+}
 
 var _ = Describe("Infra Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -665,7 +676,7 @@ var _ = Describe("Infra Controller", func() {
 			scheme := runtime.NewScheme()
 			Expect(hostedclusterv1alpha1.AddToScheme(scheme)).To(Succeed())
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
-			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(readyHostedNode()).Build()
 
 			By("creating an Infra with appsIngress MetalLB configuration")
 			infra := &hostedclusterv1alpha1.Infra{
@@ -743,12 +754,36 @@ var _ = Describe("Infra Controller", func() {
 			Expect(service.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "lab-network"))
 		})
 
+		It("should wait for a ready hosted node before installing MetalLB", func() {
+			scheme := runtime.NewScheme()
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			infra := &hostedclusterv1alpha1.Infra{
+				Spec: hostedclusterv1alpha1.InfraSpec{
+					AppsIngress: hostedclusterv1alpha1.AppsIngressConfig{Enabled: true},
+				},
+			}
+			controllerReconciler := &InfraReconciler{
+				HostedClusterClientFactory: func(context.Context, *hostedclusterv1alpha1.Infra) (client.Client, error) {
+					return hostedClient, nil
+				},
+			}
+
+			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+			Expect(infra.Status.AppsIngressStatus.Reason).To(Equal("WaitingForHostedClusterNodes"))
+
+			subscription := &unstructured.Unstructured{}
+			subscription.SetGroupVersionKind(schema.GroupVersionKind{Group: "operators.coreos.com", Version: "v1alpha1", Kind: "Subscription"})
+			Expect(hostedClient.Get(ctx, types.NamespacedName{Name: "metallb-operator", Namespace: "openshift-operators"}, subscription)).To(MatchError(ContainSubstring("not found")))
+		})
+
 		It("should merge service labels and annotations onto the ingress LoadBalancer service", func() {
 			By("building a fake hosted cluster client")
 			scheme := runtime.NewScheme()
 			Expect(hostedclusterv1alpha1.AddToScheme(scheme)).To(Succeed())
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
-			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(readyHostedNode()).Build()
 
 			By("creating an Infra with appsIngress ExternalDNS metadata")
 			infra := &hostedclusterv1alpha1.Infra{
@@ -821,7 +856,7 @@ var _ = Describe("Infra Controller", func() {
 			scheme := runtime.NewScheme()
 			Expect(hostedclusterv1alpha1.AddToScheme(scheme)).To(Succeed())
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
-			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(readyHostedNode()).Build()
 
 			By("creating an Infra with appsIngress")
 			infra := &hostedclusterv1alpha1.Infra{
@@ -963,7 +998,7 @@ var _ = Describe("Infra Controller", func() {
 			scheme := runtime.NewScheme()
 			Expect(hostedclusterv1alpha1.AddToScheme(scheme)).To(Succeed())
 			Expect(corev1.AddToScheme(scheme)).To(Succeed())
-			hostedClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			hostedClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(readyHostedNode()).Build()
 
 			externalHostname := "my-lb.cloud.example.com"
 			svc := &corev1.Service{

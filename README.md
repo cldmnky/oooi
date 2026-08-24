@@ -55,7 +55,7 @@ The lab manifest targets OpenShift 4.22 and creates `species-8472` in namespace 
 
 ### Apply Infra
 
-Apply the declarative sample after the HostedCluster object exists. Do not wait for the HostedCluster to become Available before applying `Infra`; the apps ingress and HCP operators may need the infrastructure services while the control plane finishes bootstrapping.
+Apply the declarative sample after the HostedCluster object exists. Do not wait for the HostedCluster to become Available before applying `Infra`; DHCP, DNS, and proxy services are needed while the data plane bootstraps. When apps ingress is enabled, oooi waits for a Ready hosted worker before installing MetalLB, so OLM can schedule the operator bundle unpack Job.
 
 ```bash
 kubectl apply -f config/samples/species-8472-infra.yaml

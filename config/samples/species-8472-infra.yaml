@@ -17,20 +17,20 @@ spec:
   infraComponents:
     dhcp:
       enabled: true
-      image: quay.io/cldmnky/oooi@sha256:6b34bd4a8d598fbd7ec21c24284fbc7b232c3bfd761f95f851e6061515b114e0
+      image: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
       serverIP: 10.202.64.2
       rangeStart: 10.202.64.200
       rangeEnd: 10.202.64.254
       leaseTime: 1h
     dns:
       enabled: true
-      image: quay.io/cldmnky/oooi@sha256:6b34bd4a8d598fbd7ec21c24284fbc7b232c3bfd761f95f851e6061515b114e0
+      image: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
       serverIP: 10.202.64.3
       baseDomain: clusters.blahonga.me
       clusterName: species-8472
     proxy:
       enabled: true
-      managerImage: quay.io/cldmnky/oooi@sha256:6b34bd4a8d598fbd7ec21c24284fbc7b232c3bfd761f95f851e6061515b114e0
+      managerImage: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
       proxyImage: envoyproxy/envoy:v1.36.4
       serverIP: 10.202.64.4
       controlPlaneNamespace: clusters-species-8472

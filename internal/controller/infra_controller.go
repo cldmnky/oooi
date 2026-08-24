@@ -307,6 +307,26 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 		return ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
 
+	nodes := &corev1.NodeList{}
+	if err := hostedClient.List(ctx, nodes); err != nil {
+		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
+		infra.Status.AppsIngressStatus.Reason = "HostedClusterNodeListFailed"
+		infra.Status.AppsIngressStatus.Message = err.Error()
+		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
+		infra.Status.AppsIngressStatus.ExternalIP = ""
+		infra.Status.AppsIngressStatus.ExternalHostname = ""
+		return ctrl.Result{RequeueAfter: 30 * time.Second}
+	}
+	if !hasReadyNode(nodes.Items) {
+		infra.Status.AppsIngressStatus.Phase = PhasePending
+		infra.Status.AppsIngressStatus.Reason = "WaitingForHostedClusterNodes"
+		infra.Status.AppsIngressStatus.Message = "waiting for a Ready hosted cluster node before installing MetalLB"
+		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
+		infra.Status.AppsIngressStatus.ExternalIP = ""
+		infra.Status.AppsIngressStatus.ExternalHostname = ""
+		return ctrl.Result{RequeueAfter: 30 * time.Second}
+	}
+
 	if err := r.ensureMetalLBInstalled(ctx, hostedClient, infra); err != nil {
 		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
 		infra.Status.AppsIngressStatus.Reason = "MetalLBInstallFailed"
@@ -363,6 +383,17 @@ func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hoste
 	infra.Status.AppsIngressStatus.Message = "Apps ingress ready with external endpoint " + endpoint
 	setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
 	return ctrl.Result{}
+}
+
+func hasReadyNode(nodes []corev1.Node) bool {
+	for _, node := range nodes {
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func setAppsIngressLastSyncTime(status *hostedclusterv1alpha1.AppsIngressStatus, previous hostedclusterv1alpha1.AppsIngressStatus) {

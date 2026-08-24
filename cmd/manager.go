@@ -241,8 +241,9 @@ func runManager(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 	if err := (&controller.ProxyServerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		EnableOpenShift: enableOpenShift,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ProxyServer")
 		os.Exit(1)
