@@ -48,6 +48,20 @@ strategy and expose OAuth through the proxy external Service when public access
 is required. `spec.services` is immutable after HostedCluster creation. See:
 [Public DNS and OAuth publishing](guides/public-dns-oauth.md).
 
+### Can multiple hosted clusters share one VLAN?
+
+Yes. Create one `Infra` for the network and one
+`InfraClusterAttachment` per hosted cluster; oooi aggregates every
+attachment's DNS records and SNI backends onto a single DHCP/DNS/proxy stack.
+See [Multiple hosted clusters on one VLAN](guides/multi-cluster.md).
+
+### Why does my single-cluster proxy answer kubernetes.default.svc but my shared one does not?
+
+Unqualified Kubernetes service names are ambiguous when several clusters share
+a proxy: they cannot be routed to one cluster safely. They are generated only
+for the implicit single-cluster binding. Worker bootstrap uses fully qualified
+names such as `api.<cluster>.<domain>` and does not need them.
+
 ## Operations
 
 ### How do I know everything is healthy?

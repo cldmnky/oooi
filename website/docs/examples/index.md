@@ -30,6 +30,14 @@ with your environment's values.
 
     [View](#public-oauth-vip)
 
+-   :material-hub-outline: __Multi-cluster VLAN__
+
+    ---
+
+    One shared Infra serving several hosted clusters via attachments.
+
+    [Read the guide](../guides/multi-cluster.md)
+
 </div>
 
 ## Minimal VLAN infrastructure

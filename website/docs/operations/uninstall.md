@@ -8,14 +8,29 @@ require a manual check.
 
 ```mermaid
 flowchart TB
-    A["1. Delete Infra resources<br/>(GC removes DHCP/DNS/proxy children<br/>and their namespaced workloads)"]
-    --> B["2. Clean unowned resources<br/>(NetworkPolicy and DHCP cluster RBAC)"]
-    --> C["3. Delete NodePool + HostedCluster<br/>(HyperShift tears down control-plane<br/>namespace, VMs, PVCs)"]
-    --> D["4. Remove ExternalDNS resources<br/>and public DNS records"]
-    --> E["5. make undeploy + make uninstall<br/>(operator, RBAC, CRDs)"]
+    A["1. Delete InfraClusterAttachments<br/>(finalizer removes hosted ingress Service,<br/>MetalLB resources, control-plane NetworkPolicy)"]
+    --> B["2. Delete Infra resources<br/>(GC removes DHCP/DNS/proxy children<br/>and their namespaced workloads)"]
+    --> C["3. Clean unowned resources<br/>(legacy NetworkPolicy and DHCP cluster RBAC)"]
+    --> D["4. Delete NodePool + HostedCluster<br/>(HyperShift tears down control-plane<br/>namespace, VMs, PVCs)"]
+    --> E["5. Remove ExternalDNS resources<br/>and public DNS records"]
+    --> F["6. make undeploy + make uninstall<br/>(operator, RBAC, CRDs)"]
 ```
 
-### 1. Delete `Infra` first
+### 1. Delete attachments first
+
+Each `InfraClusterAttachment` finalizer removes the hosted-cluster objects it
+created (ingress Service, IPAddressPool, L2Advertisement, MetalLB, and
+Subscription) plus its control-plane NetworkPolicy:
+
+```bash
+kubectl -n clusters get infraclusterattachment
+kubectl -n clusters delete infraclusterattachment <name>
+```
+
+Wait for each attachment to disappear before continuing; a stuck finalizer
+usually means the hosted cluster is unreachable.
+
+### 2. Delete `Infra` second
 
 Owner references cascade-delete every child object:
 
@@ -34,7 +49,7 @@ Check the hosted cluster for `oooi-ingress`, `metallb`, `IPAddressPool`, and
 `L2Advertisement`; remove resources that are no longer required before
 expecting the apps-ingress VIP to be released.
 
-### 2. Clean unowned resources
+### 3. Clean unowned resources
 
 The control-plane NetworkPolicy is cross-namespace and DHCP's KubeVirt reader
 RBAC is cluster-scoped, so Kubernetes cannot use `Infra` as their owner. Check
@@ -46,7 +61,7 @@ kubectl delete clusterrole <name>-dhcp-kubevirt-reader --ignore-not-found
 kubectl delete clusterrolebinding <name>-dhcp-kubevirt-reader --ignore-not-found
 ```
 
-### 3. Delete the hosted cluster
+### 4. Delete the hosted cluster
 
 ```bash
 kubectl -n clusters delete nodepool <name> --wait=false
@@ -65,7 +80,7 @@ kubectl get ns clusters-<name>            # Terminating → NotFound
     The shared `clusters` namespace is *not* deleted — only the per-cluster
     control-plane namespace is.
 
-### 4. Remove cluster-specific ExternalDNS instances
+### 5. Remove cluster-specific ExternalDNS instances
 
 If you followed [Public DNS and OAuth publishing](../guides/public-dns-oauth.md),
 each hosted cluster may have its own watcher. Delete it **before** relying on
@@ -78,7 +93,7 @@ kubectl -n external-dns-operator delete deploy <cluster>-external-dns \
   secret/<cluster>-external-dns-credentials --ignore-not-found=true
 ```
 
-### 5. Clean public DNS records
+### 6. Clean public DNS records
 
 - Records owned by an ExternalDNS running with `--policy=sync` are deleted when
   their Services disappear.
@@ -95,7 +110,7 @@ kubectl -n external-dns-operator delete deploy <cluster>-external-dns \
 
 Verify convergence (`INSYNC`) and that nothing resolves anymore.
 
-### 6. Uninstall the operator
+### 7. Uninstall the operator
 
 ```bash
 make undeploy ignore-not-found=true     # Deployment, RBAC, oooi-system namespace

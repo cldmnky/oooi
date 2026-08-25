@@ -137,6 +137,7 @@ nav:
       - Split-horizon DNS: guides/split-horizon-dns.md
       - Apps ingress and MetalLB: guides/apps-ingress.md
       - Public DNS and OAuth publishing: guides/public-dns-oauth.md
+      - Multiple hosted clusters on one VLAN: guides/multi-cluster.md
   - Examples:
       - examples/index.md
   - Operations:

@@ -214,6 +214,15 @@ type ProxyExternalService struct {
 	// integrations such as external-dns.alpha.kubernetes.io/hostname.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// PublishAttachmentOAuths appends the oauth.<cluster>.<baseDomain> name of
+	// every Ready InfraClusterAttachment on this Infra to this Service's
+	// external-dns.alpha.kubernetes.io/hostname annotation as a
+	// comma-separated list, merged with any value already configured. This
+	// publishes each attached cluster's OAuth endpoint through the shared
+	// proxy VIP. Only effective when Enabled is true.
+	// +optional
+	PublishAttachmentOAuths bool `json:"publishAttachmentOAuths,omitempty"`
 }
 
 // AppsIngressConfig defines optional configuration for hosted cluster *.apps domain ingress handling.

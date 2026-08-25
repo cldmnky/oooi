@@ -5,6 +5,13 @@ namespaced, short name `infra`). Fields marked **Required** are enforced by the
 API schema or runtime validation; everything else is optional with the listed
 default.
 
+!!! warning "Cluster-specific fields are deprecated"
+
+    `dns.clusterName`, `dns.baseDomain`, `proxy.controlPlaneNamespace`, and
+    `appsIngress` bind an `Infra` to a single hosted cluster. Use
+    [InfraClusterAttachment](../guides/multi-cluster.md) resources to attach
+    clusters instead; these fields remain supported for existing manifests.
+
 ## spec.networkConfig
 
 Defines the secondary network. **Required.**
@@ -84,6 +91,7 @@ selecting the same Envoy pod, exposing **only** the configured ingress port.
 | `addressPoolName` | string | *(empty)* | Set as annotation `metallb.universe.tf/address-pool` to pin a MetalLB pool. Empty = cluster default allocation. |
 | `labels` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. your ExternalDNS publish label. |
 | `annotations` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. `external-dns.alpha.kubernetes.io/hostname: oauth.<cluster>.<domain>.` |
+| `publishAttachmentOAuths` | bool | `false` | Append each Ready attachment's `oauth.<domain>` name to the hostname annotation as a comma-separated list. See [Multiple hosted clusters on one VLAN](../guides/multi-cluster.md). |
 
 Use this to put OAuth and other Route-published endpoints on a public VIP. See
 [Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
@@ -121,6 +129,8 @@ Behavior sequence and status phases are described in
 | `appsIngressStatus.message` | Human-readable detail when Degraded. |
 | `appsIngressStatus.externalIP` | VIP assigned by MetalLB (when reported as an IP). |
 | `appsIngressStatus.externalHostname` | Assigned hostname (cloud-style LBs). |
+| `attachments.total` / `.ready` | Count of `InfraClusterAttachment` resources targeting this Infra, and how many are Ready. |
+| `attachments.legacyFieldsIgnored` | True when deprecated cluster-specific fields are present but ignored because explicit attachments exist. |
 | `observedGeneration` | Generation last reconciled. |
 
 ## Immutability notes
@@ -130,3 +140,34 @@ Behavior sequence and status phases are described in
 - Infra fields are mutable. Setting a component's `enabled` field to `false`
   stops its reconciliation but does not delete an existing child resource;
   delete that child explicitly when retiring the component.
+
+## InfraClusterAttachment reference
+
+`InfraClusterAttachment` (`hostedcluster.densityops.com/v1alpha1`, short names
+`infraattachment`, `ica`) attaches one HostedCluster to a shared `Infra`.
+Create it in the same namespace as the referenced `Infra`.
+
+### spec
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `infraRef.name` | string | — (**Required**) | Shared `Infra` in the same namespace. |
+| `hostedClusterRef.name` / `.namespace` | string | namespace: `clusters` (**Required**) | HyperShift HostedCluster to attach. One attachment per HostedCluster. |
+| `dns.clusterName` / `dns.baseDomain` | string | — (**Required**) | Build the cluster's FQDNs on the shared DNS and proxy. |
+| `controlPlaneNamespace` | string | `<hc-namespace>-<hc-name>` | Management-cluster namespace hosting this control plane. Must exist; HyperShift creates it. |
+| `apiServerService` | string | `kube-apiserver` | Reserved API field. API traffic currently always targets the `kube-apiserver` Service. |
+| `appsIngress` | object | *(empty)* | Per-cluster apps ingress, same shape as the deprecated `Infra.spec.appsIngress`. MetalLB ranges must be disjoint across attachments sharing a VLAN. |
+
+### status
+
+| Field | Description |
+|---|---|
+| `conditions[]` | `Ready` reflects aggregation plus apps-ingress state. |
+| `domain` | Resolved `<clusterName>.<baseDomain>`. |
+| `controlPlaneNamespace` | Resolved control-plane namespace. |
+| `appsIngressStatus.*` | Same fields as the Infra-level block, scoped to this cluster. |
+
+Conflicts are visible rather than resolved silently: duplicate domains or
+duplicate HostedCluster references exclude both attachments from routing and
+set the referenced Infra's `Ready` condition to `False`. See
+[Multiple hosted clusters on one VLAN](../guides/multi-cluster.md).

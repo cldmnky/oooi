@@ -61,6 +61,24 @@ Check these details whenever related content changes:
 - `make run` does not forward arbitrary arguments. Use `go run ./main.go
   manager <flags>` for manager flags.
 
+## Multi-cluster ownership rules
+
+- `Infra` is network-scoped and is the only writer of the shared DHCPServer,
+  DNSServer, and ProxyServer. Never document attachments writing those children.
+- `dns.clusterName`, `dns.baseDomain`, `proxy.controlPlaneNamespace`, and
+  `appsIngress` on `Infra` are deprecated single-cluster fields; they synthesize
+  an implicit binding only when no attachments exist, and explicit attachments
+  take precedence (`attachments.legacyFieldsIgnored`).
+- One attachment per HostedCluster; duplicate domains or duplicate hosted
+  cluster references exclude both sides from routing with Degraded conditions —
+  never describe silent conflict resolution.
+- Unqualified Kubernetes SNI aliases exist only for the implicit single-cluster
+  binding; shared proxies answer fully qualified names only.
+- `proxy.externalService.publishAttachmentOAuths` merges Ready attachments'
+  oauth names into the hostname annotation (user names first, additions sorted).
+- New CRD files must be added to `config/crd/kustomization.yaml`; omissions
+  surface in E2E as an unsynced informer cache, not as a manifest error.
+
 ## Example policy
 
 - Use `example-hcp`, `clusters.example.com`, RFC 5737 addresses such as

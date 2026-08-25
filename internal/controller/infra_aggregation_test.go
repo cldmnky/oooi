@@ -382,3 +382,90 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	})
 })
+
+var _ = Describe("Shared external Service OAuth policy", func() {
+	makeView := func(name, domain, cpns string, explicit, ready bool) attachmentView {
+		return attachmentView{
+			name:                  name,
+			explicit:              explicit,
+			ready:                 ready,
+			hostedClusterRef:      hostedclusterv1alpha1.HostedClusterReference{Name: name, Namespace: "clusters"},
+			controlPlaneNamespace: cpns,
+			domain:                domain,
+		}
+	}
+
+	infraWithExternal := func(publish bool) *hostedclusterv1alpha1.Infra {
+		return &hostedclusterv1alpha1.Infra{
+			ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "default"},
+			Spec: hostedclusterv1alpha1.InfraSpec{
+				NetworkConfig: hostedclusterv1alpha1.NetworkConfig{NetworkAttachmentDefinition: "vlan"},
+				InfraComponents: hostedclusterv1alpha1.InfraComponents{
+					DNS: hostedclusterv1alpha1.DNSConfig{ClusterName: "legacy", BaseDomain: "example.com"},
+					Proxy: hostedclusterv1alpha1.ProxyConfig{
+						ServerIP: "192.0.2.4",
+						ExternalService: hostedclusterv1alpha1.ProxyExternalService{
+							Enabled:                 true,
+							AddressPoolName:         "public-pool",
+							PublishAttachmentOAuths: publish,
+							Annotations: map[string]string{
+								"external-dns.alpha.kubernetes.io/hostname": "legacy-oauth.example.com.",
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	It("appends Ready attachment oauth names to the shared VIP annotation", func() {
+		infra := infraWithExternal(true)
+		views := []attachmentView{
+			makeView("bravo", "bravo.example.com", "clusters-bravo", true, true),
+			makeView("alpha", "alpha.example.com", "clusters-alpha", true, false), // not Ready
+		}
+		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
+		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
+			To(Equal("legacy-oauth.example.com.,oauth.bravo.example.com"))
+	})
+
+	It("does not modify the annotation unless publishing is enabled", func() {
+		infra := infraWithExternal(false)
+		views := []attachmentView{makeView("a", "a.example.com", "clusters-a", true, true)}
+		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
+		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
+			To(Equal("legacy-oauth.example.com."))
+	})
+
+	It("deduplicates case-insensitively and preserves user ordering", func() {
+		out := mergeOAuthHostnames(map[string]string{
+			hostnameAnnotationKey: "OAuth.A.example.com, extra.example.com",
+		}, []string{"oauth.a.example.com", "oauth.b.example.com"})
+		Expect(out[hostnameAnnotationKey]).
+			To(Equal("OAuth.A.example.com,extra.example.com,oauth.b.example.com"))
+	})
+
+	It("keeps unqualified Kubernetes aliases only for the implicit binding", func() {
+		By("implicit single-cluster binding retains historical aliases")
+		infra := infraWithExternal(false)
+		implicit := legacyAttachmentView(infra)
+		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, []attachmentView{implicit})
+		foundAliases := false
+		for _, b := range proxy.Spec.Backends {
+			if b.Name == "kube-apiserver-kubernetes-hostname" {
+				foundAliases = len(b.AlternateHostnames) > 0
+			}
+		}
+		Expect(foundAliases).To(BeTrue())
+
+		By("multi-attachment aggregation excludes them")
+		views := []attachmentView{
+			makeView("a", "a.example.com", "clusters-a", true, true),
+			makeView("b", "b.example.com", "clusters-b", true, true),
+		}
+		proxy = (&InfraReconciler{}).proxyServerForInfra(infra, views)
+		for _, b := range proxy.Spec.Backends {
+			Expect(b.AlternateHostnames).To(BeEmpty())
+		}
+	})
+})
