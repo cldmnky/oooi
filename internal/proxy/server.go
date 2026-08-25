@@ -262,6 +262,9 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 						PrefixLen:     wrapperspb.UInt32(uint32(ones)),
 					})
 				}
+				if len(backend.SourcePrefixRanges) > 0 && len(srcRanges) == 0 {
+					return nil, nil, fmt.Errorf("backend %q has no valid source prefix ranges", backend.Name)
+				}
 
 				filterChain := &listener.FilterChain{
 					FilterChainMatch: &listener.FilterChainMatch{

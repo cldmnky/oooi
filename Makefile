@@ -212,13 +212,19 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
-	@rm -f "$(E2E_KUBECONFIG)"
+	@case "$(abspath $(E2E_KUBECONFIG))" in \
+		"$(E2E_KUBECONFIG_ROOT)"/*) rm -f "$(E2E_KUBECONFIG)" ;; \
+		*) echo "Leaving custom E2E_KUBECONFIG outside $(E2E_KUBECONFIG_ROOT): $(E2E_KUBECONFIG)" ;; \
+	esac
 
 .PHONY: cleanup-test-e2e-deep
 cleanup-test-e2e-deep: ## Deep cleanup including removal of cached images and volumes
 	@echo "Performing deep cleanup of e2e test environment..."
 	@$(KIND) delete cluster --name $(KIND_CLUSTER) || true
-	@rm -f "$(E2E_KUBECONFIG)"
+	@case "$(abspath $(E2E_KUBECONFIG))" in \
+		"$(E2E_KUBECONFIG_ROOT)"/*) rm -f "$(E2E_KUBECONFIG)" ;; \
+		*) echo "Leaving custom E2E_KUBECONFIG outside $(E2E_KUBECONFIG_ROOT): $(E2E_KUBECONFIG)" ;; \
+	esac
 	@docker system prune -f || true
 	@podman system prune -f || true
 	@echo "Deep cleanup completed"
@@ -327,6 +333,7 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 ## Location to install dependencies to
 LOCALBIN ?= $(shell pwd)/bin
+E2E_KUBECONFIG_ROOT := $(abspath $(LOCALBIN))
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
