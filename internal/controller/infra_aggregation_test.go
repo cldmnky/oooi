@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -269,7 +268,6 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 		dns := getDNS()
 		found := false
 		for _, e := range dns.Spec.StaticEntries {
-			fmt.Fprintf(GinkgoWriter, "entry %q -> %s\n", e.Hostname, e.IP)
 			if e.Hostname == "api.legacy.example.com" {
 				found = true
 			}

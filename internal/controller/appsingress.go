@@ -55,6 +55,11 @@ type appsIngressTarget struct {
 	Config                hostedclusterv1alpha1.AppsIngressConfig
 }
 
+const (
+	defaultIngressServiceName      = "oooi-ingress"
+	defaultIngressServiceNamespace = "openshift-ingress"
+)
+
 // defaultHostedClusterClient builds a client for the referenced HostedCluster.
 // The kubeconfig endpoint is intended for cluster clients on the VLAN; the
 // management controller must use the in-cluster API Service instead while
@@ -195,11 +200,11 @@ func ensureMetalLBInstalledFor(ctx context.Context, hostedClient client.Client, 
 func cleanupMetalLBInstallation(ctx context.Context, hostedClient client.Client, cfg hostedclusterv1alpha1.AppsIngressConfig) error {
 	serviceName := cfg.Service.Name
 	if serviceName == "" {
-		serviceName = "oooi-ingress"
+		serviceName = defaultIngressServiceName
 	}
 	serviceNamespace := cfg.Service.Namespace
 	if serviceNamespace == "" {
-		serviceNamespace = "openshift-ingress"
+		serviceNamespace = defaultIngressServiceNamespace
 	}
 	service := &corev1.Service{}
 	service.SetName(serviceName)
@@ -263,11 +268,11 @@ func cleanupMetalLBInstallation(ctx context.Context, hostedClient client.Client,
 func ensureAppsIngressServiceFor(ctx context.Context, hostedClient client.Client, cfg hostedclusterv1alpha1.AppsIngressConfig) error {
 	serviceName := cfg.Service.Name
 	if serviceName == "" {
-		serviceName = "oooi-ingress"
+		serviceName = defaultIngressServiceName
 	}
 	serviceNamespace := cfg.Service.Namespace
 	if serviceNamespace == "" {
-		serviceNamespace = "openshift-ingress"
+		serviceNamespace = defaultIngressServiceNamespace
 	}
 
 	httpPort := cfg.Ports.HTTP
@@ -349,11 +354,11 @@ func ensureAppsIngressServiceFor(ctx context.Context, hostedClient client.Client
 func discoverAppsIngressExternalIPFor(ctx context.Context, hostedClient client.Client, cfg hostedclusterv1alpha1.AppsIngressConfig) (ip, hostname string, err error) {
 	serviceName := cfg.Service.Name
 	if serviceName == "" {
-		serviceName = "oooi-ingress"
+		serviceName = defaultIngressServiceName
 	}
 	serviceNamespace := cfg.Service.Namespace
 	if serviceNamespace == "" {
-		serviceNamespace = "openshift-ingress"
+		serviceNamespace = defaultIngressServiceNamespace
 	}
 	svc := &corev1.Service{}
 	if err = hostedClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNamespace}, svc); err != nil {

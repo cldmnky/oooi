@@ -40,6 +40,7 @@ const (
 
 	reasonAttachmentInvalidConfig = "InvalidConfiguration"
 	reasonAttachmentInfraNotFound = "InfraNotFound"
+	defaultAPIServerServiceName   = "kube-apiserver"
 )
 
 // InfraClusterAttachmentReconciler reconciles an InfraClusterAttachment object.
@@ -115,7 +116,7 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	}
 	target.Domain = att.Spec.DNS.ClusterName + "." + att.Spec.DNS.BaseDomain
 	if target.APIServerService == "" {
-		target.APIServerService = "kube-apiserver"
+		target.APIServerService = defaultAPIServerServiceName
 	}
 
 	if att.Spec.AppsIngress.Enabled {
@@ -136,7 +137,7 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	}
 	att.Status.AppsIngressStatus = hostedclusterv1alpha1.AppsIngressStatus{}
 
-	if err := r.ensureControlPlaneNetworkPolicy(ctx, att, target); err != nil {
+	if err := r.ensureControlPlaneNetworkPolicy(ctx, target); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -156,7 +157,7 @@ func (r *InfraClusterAttachmentReconciler) hostedFactory(att *hostedclusterv1alp
 // in this attachment's control-plane namespace. The policy is cross-namespace
 // relative to the attachment and therefore cannot carry an owner reference;
 // its lifecycle is tracked through the finalizer instead.
-func (r *InfraClusterAttachmentReconciler) ensureControlPlaneNetworkPolicy(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, target appsIngressTarget) error {
+func (r *InfraClusterAttachmentReconciler) ensureControlPlaneNetworkPolicy(ctx context.Context, target appsIngressTarget) error {
 	if target.ControlPlaneNamespace == "" {
 		return nil
 	}
@@ -205,7 +206,7 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 		target.ControlPlaneNamespace = target.HostedClusterRef.Namespace + "-" + target.HostedClusterRef.Name
 	}
 	if target.APIServerService == "" {
-		target.APIServerService = "kube-apiserver"
+		target.APIServerService = defaultAPIServerServiceName
 	}
 
 	factory := r.hostedFactory(att, target)
