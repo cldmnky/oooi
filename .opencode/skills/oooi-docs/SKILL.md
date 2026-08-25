@@ -78,8 +78,9 @@ Check these details whenever related content changes:
   status contains worker addresses inside the shared Infra CIDR. Envoy scopes
   those alias chains to the discovered worker source `/32`s; never describe
   them as a global catch-all or as authentication.
-- `proxy.externalService.publishAttachmentOAuths` merges Ready attachments'
-  oauth names into the hostname annotation (user names first, additions sorted).
+- `InfraClusterAttachment.spec.externalService` creates one hosting-cluster
+  LoadBalancer per enabled attachment; its annotations are not merged across
+  attachments.
 - New CRD files must be added to `config/crd/kustomization.yaml`; omissions
   surface in E2E as an unsynced informer cache, not as a manifest error.
 

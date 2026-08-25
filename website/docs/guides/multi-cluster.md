@@ -8,8 +8,8 @@ The model has two resource types:
 
 | Resource | Scope | Owns |
 |---|---|---|
-| `Infra` | One VLAN | CIDR, NAD, gateway, DHCP pool, DNS server IP, proxy server IP, upstream resolvers, shared external Service |
-| `InfraClusterAttachment` | One hosted cluster | Cluster domain, control-plane namespace, optional apps ingress |
+| `Infra` | One VLAN | CIDR, NAD, gateway, DHCP pool, DNS server IP, proxy server IP, upstream resolvers |
+| `InfraClusterAttachment` | One hosted cluster | Cluster domain, control-plane namespace, optional external Service and apps ingress |
 
 Each attachment contributes its DNS records and SNI backends to the shared
 children. The `Infra` reconciler is the only writer of the shared
@@ -126,27 +126,29 @@ spec:
 Each attachment's wildcard VIP is reported on its own status, so one cluster's
 ingress can be Pending while another is Ready.
 
-## Public OAuth through the shared proxy VIP
+## Public OAuth per cluster
 
-When the shared proxy external Service is enabled on the `Infra`, set
-`publishAttachmentOAuths: true` to append each Ready attachment's
-`oauth.<clusterName>.<baseDomain>` name to the ExternalDNS hostname
-annotation as a comma-separated list:
+When an attachment needs public OAuth, enable its `externalService`. This
+creates one hosting-cluster LoadBalancer and one MetalLB allocation for that
+attachment; other attachments on the same shared proxy get independent
+Services and VIPs:
 
 ```yaml
-infraComponents:
-  proxy:
-    externalService:
-      enabled: true
-      publishAttachmentOAuths: true
-      addressPoolName: hosting-public-pool
-      annotations:
-        external-dns.alpha.kubernetes.io/hostname: "shared-endpoint.example.com."
+spec:
+  externalService:
+    enabled: true
+    addressPoolName: example-hcp-a-oauth
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: "oauth.example-hcp-a.clusters.example.com."
+    labels:
+      external-dns.example.com/publish: "yes"
 ```
 
-Names already configured keep their position; attachment names follow,
-sorted. Verify your ExternalDNS provider supports multiple hostnames on a
-single Service annotation before relying on this.
+The generated Service is named
+`<attachment>-proxy-external`, exposes port `443` only, and selects the
+shared Envoy pods. Configure ExternalDNS on the hosting cluster to watch these
+Services. The annotation above is per cluster, so no multi-hostname merge or
+shared OAuth VIP is required.
 
 ## Failure modes
 

@@ -727,9 +727,21 @@ var _ = Describe("helper coverage", func() {
 		Expect(validDomain(".")).To(BeFalse())
 		Expect(validDomain("alpha.example.com")).To(BeTrue())
 	})
-	It("checks hostnameKey and merge helpers via proxy status", func() {
-		Expect(mergeOAuthHostnames(nil, nil)).To(Not(BeNil()))
-		Expect(hostnameKey("  OAuth.Example.Com. ")).To(Equal("oauth.example.com"))
+	It("generates stable per-attachment external Service names", func() {
+		Expect(externalProxyServiceName("alpha")).To(Equal("alpha-proxy-external"))
+		longName := externalProxyServiceName(strings.Repeat("attachment", 20))
+		Expect(longName).To(HaveLen(63))
+		Expect(externalProxyServiceName(strings.Repeat("attachment", 20))).To(Equal(longName))
+	})
+
+	It("normalizes omitted HostedCluster namespaces for routing defaults", func() {
+		att := makeAttachment("defaulted", "shared-vlan", "defaulted", "example.com", "")
+		att.Spec.HostedClusterRef.Namespace = ""
+
+		view := attachmentFromAttachment(att)
+
+		Expect(view.hostedClusterRef.Namespace).To(Equal("clusters"))
+		Expect(view.controlPlaneNamespace).To(Equal("clusters-defaulted"))
 	})
 
 	It("generates backend names within MaxLength=63 for every suffix and name length", func() {

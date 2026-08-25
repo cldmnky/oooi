@@ -52,6 +52,12 @@ type InfraClusterAttachmentSpec struct {
 	// +optional
 	APIServerService string `json:"apiServerService,omitempty"`
 
+	// ExternalService configures an optional hosting-cluster LoadBalancer for
+	// this attachment's OAuth and other SNI endpoints. Each attachment gets its
+	// own Service when this is enabled.
+	// +optional
+	ExternalService ProxyExternalService `json:"externalService,omitempty"`
+
 	// AppsIngress configures optional per-cluster *.apps ingress automation.
 	// MetalLB ranges must not overlap between attachments sharing a VLAN.
 	// +optional

@@ -110,30 +110,28 @@ for the workload.
 
 ## Public hosting-cluster Service
 
-Set `infraComponents.proxy.externalService.enabled: true` to create
-`<infra>-proxy-external`, a hosting-cluster `LoadBalancer` Service selecting
-the same Envoy pod. It exposes only the configured proxy ingress port, not
-`9901`, xDS, or backend ports:
+Set `spec.externalService.enabled: true` on an `InfraClusterAttachment` to
+create `<attachment>-proxy-external`, a hosting-cluster `LoadBalancer`
+Service selecting the shared Envoy pod. Each attachment gets its own Service
+and VIP. It exposes only the configured proxy ingress port, not `9901`, xDS, or
+backend ports:
 
 ```yaml
-infraComponents:
-  proxy:
-    serverIP: 192.0.2.4
-    externalService:
-      enabled: true
-      addressPoolName: hosting-public-pool
-      annotations:
-        external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
-      labels:
-        external-dns.example.com/publish: "yes"
+spec:
+  externalService:
+    enabled: true
+    addressPoolName: hosting-public-pool
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
+    labels:
+      external-dns.example.com/publish: "yes"
 ```
 
 `addressPoolName` becomes the standard MetalLB Service annotation. Labels and
-annotations are reconciled by oooi. `publishAttachmentOAuths: true` appends
-the OAuth names of Ready attachments to the hostname annotation, preserving
-user-provided names first and sorting generated names. oooi does not write
-public DNS records; use an ExternalDNS instance that watches the hosting
-cluster Service.
+annotations are reconciled by oooi. The hostname annotation is configured on
+this attachment, so each cluster's OAuth record has its own Service and VIP.
+oooi does not write public DNS records; use an ExternalDNS instance that
+watches the hosting cluster Services.
 
 ## TLS and fallback behavior
 

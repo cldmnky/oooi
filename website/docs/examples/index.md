@@ -130,13 +130,6 @@ spec:
       enabled: true
       serverIP: 192.0.2.4
       internalProxyService: example-hcp-proxy.clusters.svc.cluster.local
-      externalService:
-        enabled: true
-        addressPoolName: hosting-public-pool
-        annotations:
-          external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
-        labels:
-          external-dns.example.com/publish: "yes"
 ---
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: InfraClusterAttachment
@@ -152,6 +145,13 @@ spec:
   dns:
     clusterName: example-hcp
     baseDomain: clusters.example.com
+  externalService:
+    enabled: true
+    addressPoolName: hosting-public-pool
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
+    labels:
+      external-dns.example.com/publish: "yes"
   appsIngress:
     enabled: true
     metallb:
@@ -180,7 +180,8 @@ Resulting addressing on the VLAN:
 192.0.2.100+  DHCP pool for worker VMs
 ```
 
-Plus one hosting-cluster MetalLB VIP for `<infra>-proxy-external` (OAuth).
+Plus one hosting-cluster MetalLB VIP for the attachment's generated OAuth
+Service `<attachment>-proxy-external`.
 
 When the KubeVirt worker Machines report addresses in `192.0.2.0/24`, the
 shared proxy also receives one source-scoped backend for the four
@@ -201,21 +202,20 @@ the `Route` OAuth publishing strategy (see
 [Public DNS and OAuth publishing](../guides/public-dns-oauth.md)):
 
 ```yaml
-infraComponents:
-  proxy:
-    externalService:
-      enabled: true
-      addressPoolName: hosting-public-pool
-      annotations:
-        external-dns.alpha.kubernetes.io/hostname: oauth.mycluster.example.com.
-      labels:
-        external-dns.example.com/publish: "yes"
+spec:
+  externalService:
+    enabled: true
+    addressPoolName: hosting-public-pool
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.mycluster.example.com.
+    labels:
+      external-dns.example.com/publish: "yes"
 ```
 
 Behavior notes:
 
-- Creates Service `mycluster-proxy-external`, type `LoadBalancer`, port 443
-  only — never Envoy admin `9901`.
+- Creates Service `<attachment>-proxy-external`, type `LoadBalancer`,
+  port 443 only — never Envoy admin `9901`.
 - `addressPoolName` becomes the `metallb.universe.tf/address-pool` annotation;
   omit it to use the cluster's default allocation policy.
 - Labels/annotations are reconciled on every sync; remove `enabled` (or set it

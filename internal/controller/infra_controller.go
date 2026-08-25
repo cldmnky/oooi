@@ -1026,11 +1026,6 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 		backends = append(backends, aliasBackendsForView(view, prefix)...)
 	}
 
-	externalService := proxySpec.ExternalService
-	if externalService.Enabled && externalService.PublishAttachmentOAuths {
-		externalService.Annotations = mergeOAuthHostnames(externalService.Annotations, readyAttachmentDomains(views))
-	}
-
 	return &hostedclusterv1alpha1.ProxyServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      infra.Name + "-proxy",
@@ -1042,74 +1037,14 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 				NetworkAttachmentName:      nadName,
 				NetworkAttachmentNamespace: nadNamespace,
 			},
-			Backends:        backends,
-			ProxyImage:      proxySpec.ProxyImage,
-			ManagerImage:    proxySpec.ManagerImage,
-			Port:            443,
-			XDSPort:         18000,
-			LogLevel:        "info",
-			ExternalService: externalService,
+			Backends:     backends,
+			ProxyImage:   proxySpec.ProxyImage,
+			ManagerImage: proxySpec.ManagerImage,
+			Port:         443,
+			XDSPort:      18000,
+			LogLevel:     "info",
 		},
 	}
-}
-
-// hostnameAnnotationKey is the annotation ExternalDNS consumes for explicit
-// hostnames. Multiple names are supported as a comma-separated list.
-const hostnameAnnotationKey = "external-dns.alpha.kubernetes.io/hostname"
-
-// readyAttachmentDomains returns sorted oauth FQDNs of attachments whose Ready
-// condition is True.
-func readyAttachmentDomains(views []attachmentView) []string {
-	domains := make([]string, 0, len(views))
-	for _, v := range views {
-		if v.ready && validDomain(v.domain) {
-			domains = append(domains, "oauth."+v.domain)
-		}
-	}
-	sort.Strings(domains)
-	return domains
-}
-
-// mergeOAuthHostnames returns a copy of annotations with the given hostnames
-// folded into the ExternalDNS hostname annotation as a comma-separated list,
-// preserving any names the user configured.
-func mergeOAuthHostnames(annotations map[string]string, hostnames []string) map[string]string {
-	out := make(map[string]string, len(annotations)+1)
-	for k, v := range annotations {
-		out[k] = v
-	}
-	if len(hostnames) == 0 {
-		return out
-	}
-	seen := map[string]bool{}
-	userParts := make([]string, 0, len(annotations[hostnameAnnotationKey]))
-	for _, p := range strings.Split(annotations[hostnameAnnotationKey], ",") {
-		p = strings.TrimSpace(p)
-		key := hostnameKey(p)
-		if key == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		userParts = append(userParts, p)
-	}
-	added := make([]string, 0, len(hostnames))
-	for _, h := range hostnames {
-		h = strings.TrimSpace(h)
-		key := hostnameKey(h)
-		if key == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		added = append(added, h)
-	}
-	sort.Strings(added)
-	all := append(userParts, added...)
-	out[hostnameAnnotationKey] = strings.Join(all, ",")
-	return out
-}
-
-func hostnameKey(hostname string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
 }
 
 // SetupWithManager sets up the controller with the Manager.

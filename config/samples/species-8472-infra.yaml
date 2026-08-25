@@ -32,15 +32,6 @@ spec:
       proxyImage: envoyproxy/envoy:v1.36.4
       serverIP: 10.202.64.4
       internalProxyService: species-8472-proxy.clusters.svc.cluster.local
-      # Expose the SNI proxy through the hosting cluster's MetalLB, not an HCP Route.
-      # ExternalDNS publishes the OAuth hostname from this Service's assigned VIP.
-      externalService:
-        enabled: true
-        addressPoolName: metallb-pool
-        annotations:
-          external-dns.alpha.kubernetes.io/hostname: oauth.species-8472.clusters.blahonga.me.
-        labels:
-          external-dns.blahonga.me/publish: "yes"
 ---
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: InfraClusterAttachment
@@ -56,6 +47,15 @@ spec:
   dns:
     clusterName: species-8472
     baseDomain: clusters.blahonga.me
+  # Expose this cluster's SNI proxy through the hosting cluster's MetalLB.
+  # ExternalDNS publishes the OAuth hostname from this Service's assigned VIP.
+  externalService:
+    enabled: true
+    addressPoolName: metallb-pool
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.species-8472.clusters.blahonga.me.
+    labels:
+      external-dns.blahonga.me/publish: "yes"
   appsIngress:
     enabled: true
     metallb:

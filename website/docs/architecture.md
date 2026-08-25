@@ -196,7 +196,7 @@ after the TCP connection reaches Envoy.
 |---|---|
 | TLS | Passthrough only; no keys or secrets on the proxy |
 | Exposed ports | VLAN: DHCP/67+68, DNS/53, proxy `443`+`6443`; Envoy admin `9901` stays ClusterIP-only |
-| External exposure | Optional `<infra>-proxy-external` LoadBalancer exposes **only** the configured ingress port — never admin or backend ports |
+| External exposure | Each enabled attachment gets a `<attachment>-proxy-external` LoadBalancer exposing **only** the configured ingress port — never admin or backend ports |
 | OpenShift SCC | With `--enable-openshift=true`, scoped SCC RoleBindings are created: `privileged` for DHCP and Proxy, and `anyuid` for DNS. Without the flag, grant equivalent permissions through cluster policy. |
 | Control-plane policy | An ingress-only `allow-infrastructure` NetworkPolicy selects all pods in the control-plane namespace and allows traffic from namespaces labeled `hostedcluster.densityops.com/network-policy-group=infrastructure` |
 | Network scope | No general tenant route into the management network; Envoy permits only configured control-plane and apps backends |

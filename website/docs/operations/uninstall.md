@@ -57,8 +57,9 @@ kubectl -n clusters get dhcpserver,dnsserver,proxyserver   # → No resources fo
 kubectl -n clusters get all -l app=proxy-server
 ```
 
-The external proxy Service is owned by the ProxyServer and is removed with it.
-Apps-ingress resources created in the hosted cluster are not owned by `Infra`.
+Each attachment-owned external proxy Service is removed when its attachment is
+deleted. Apps-ingress resources created in the hosted cluster are not owned by
+`Infra`.
 Check the hosted cluster for `oooi-ingress`, `metallb`, `IPAddressPool`, and
 `L2Advertisement`; remove resources that are no longer required before
 expecting the apps-ingress VIP to be released.
