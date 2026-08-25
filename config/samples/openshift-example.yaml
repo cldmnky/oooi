@@ -145,8 +145,6 @@ spec:
     dns:
       enabled: true
       serverIP: "192.168.100.3"
-      baseDomain: "example.com"
-      clusterName: "mycluster"
     
     # Envoy proxy for control plane access
     proxy:
@@ -154,3 +152,21 @@ spec:
       serverIP: "192.168.100.4"
       proxyImage: "envoyproxy/envoy:v1.36.4"
       managerImage: "quay.io/cldmnky/oooi:latest"
+
+---
+# Attach the hosted cluster to the shared Infra. Replace the HostedCluster
+# reference and DNS values with the cluster being served by this VLAN.
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: mycluster
+  namespace: hosted-clusters
+spec:
+  infraRef:
+    name: mycluster-infra
+  hostedClusterRef:
+    name: mycluster
+    namespace: clusters
+  dns:
+    clusterName: mycluster
+    baseDomain: example.com

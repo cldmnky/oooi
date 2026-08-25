@@ -76,30 +76,11 @@ spec:
                   AppsIngress configures optional per-cluster *.apps ingress automation.
                   MetalLB ranges must not overlap between attachments sharing a VLAN.
                 properties:
-                  baseDomain:
-                    description: |-
-                      BaseDomain is the base domain for the hosted cluster's apps ingress.
-                      Example: "apps.example.com" where *.apps.<cluster>.apps.example.com will be routable.
-                    type: string
                   enabled:
                     default: false
                     description: Enabled determines whether apps ingress automation
                       should be deployed.
                     type: boolean
-                  hostedClusterRef:
-                    description: HostedClusterRef references the HostedCluster for
-                      which apps ingress is being configured.
-                    properties:
-                      name:
-                        description: Name is the name of the HostedCluster.
-                        type: string
-                      namespace:
-                        default: clusters
-                        description: Namespace is the namespace of the HostedCluster.
-                        type: string
-                    required:
-                    - name
-                    type: object
                   metallb:
                     description: MetalLB contains configuration for the user-managed
                       MetalLB installation.

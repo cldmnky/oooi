@@ -1,6 +1,6 @@
 # Apps ingress and MetalLB
 
-With `spec.appsIngress.enabled: true`, oooi turns on wildcard
+With `InfraClusterAttachment.spec.appsIngress.enabled: true`, oooi turns on wildcard
 `*.apps.<cluster>.<domain>` routing for the hosted cluster: MetalLB is
 installed *inside the hosted cluster*, a LoadBalancer VIP fronts the default
 IngressController, and both DNS views plus Envoy are wired to it.
@@ -22,13 +22,14 @@ Envoy only provides reachability from both networks.
    `openshift-ingress/oooi-ingress`) with selector fixed to:
    `ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default`
 5. **Reads the allocated endpoint** from Service status and publishes it as
-   `.status.appsIngressStatus.externalIP` / `.externalHostname`.
+   `InfraClusterAttachment.status.appsIngressStatus.externalIP` /
+   `.externalHostname`.
 6. **Publishes DNS and Envoy backends** for `*.apps.<cluster>.<domain>` — only
    after a real external endpoint exists.
 
 ```mermaid
 sequenceDiagram
-    participant I as Infra controller
+    participant I as Attachment controller
     participant H as Hosted cluster
     participant M as MetalLB
     participant D as DNSServer/Envoy
@@ -45,11 +46,16 @@ sequenceDiagram
 
 ```yaml
 spec:
+  infraRef:
+    name: tenant-vlan100
+  hostedClusterRef:
+    name: example-hcp
+    namespace: clusters
+  dns:
+    clusterName: example-hcp
+    baseDomain: clusters.example.com
   appsIngress:
     enabled: true
-    hostedClusterRef:
-      name: example-hcp
-      namespace: clusters
     metallb:
       addressPoolName: apps-pool
       ipAddressPoolRange: 192.0.2.200-192.0.2.220   # unused L2 space
@@ -100,7 +106,7 @@ from a worker). Do not include:
 Query:
 
 ```bash
-kubectl -n clusters get infra example-hcp \
+kubectl -n clusters get infraattachment example-hcp \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 ```
 

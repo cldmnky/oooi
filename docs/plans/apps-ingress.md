@@ -1,147 +1,81 @@
-# Plan: Hosted Cluster *.apps Ingress Handling
+# Apps Ingress Design
 
 ## Summary
-Implement optional, user-managed MetalLB integration for hosted clusters and configure wildcard `*.apps.<cluster>.<tld>` resolution across VLAN and pod networks. The operator will create a dedicated LoadBalancer Service in the hosted cluster and route traffic through the existing proxy. DNS will be split-horizon: VLAN-side resolves to MetalLB external IP; pod-network-side resolves to the proxy Service IP. TLS remains passthrough.
+
+`InfraClusterAttachment` owns the per-hosted-cluster apps-ingress workflow.
+The shared `Infra` owns the VLAN services and aggregates each attachment's
+ready endpoint into the common DNS and Envoy configuration. TLS remains
+passthrough.
 
 ## Goals
-- Provide automated configuration for `*.apps.<cluster>.<tld>` based on hosted cluster lifecycle.
-- Ensure wildcard app traffic is routable from:
-  - VLAN network (via MetalLB external IP).
-  - Pod network (via internal proxy Service IP).
-- Ensure `api.<cluster>.<tld>` is resolvable on the pod network using the DNS setup.
-- Do not require operator-managed MetalLB installation.
-- Degrade gracefully if hosted cluster is unavailable or external IP not assigned yet.
 
-## Non-goals
-- Terminate TLS in the proxy (TLS passthrough only).
-- Auto-discover ingress endpoints from Route/Ingress objects (we will create a dedicated Service instead).
-- Manage or install MetalLB operator components (user-managed only).
+- Provide optional `*.apps.<cluster>.<domain>` routing for each attachment.
+- Make the wildcard reachable from the VLAN through the MetalLB VIP.
+- Make the wildcard reachable from the management network through the shared
+  proxy Service.
+- Degrade gracefully while the HostedCluster, workers, MetalLB, or VIP is not
+  ready.
+- Keep shared DHCP, DNS, and proxy child resources owned and reconciled by
+  `Infra` only.
 
-## Assumptions and Constraints
-- Hosted cluster provides kubeconfig in the secret referenced by `HostedCluster.Status.KubeConfig`.
-- MetalLB is already installed and configured by the user in the hosted cluster.
-- External IP is assigned by MetalLB to the dedicated LoadBalancer Service.
-- The operator manages infrastructure components on the management cluster only.
+## API
 
-## API Changes
-Add `AppsIngressConfig` to the Infra API spec to declare optional apps handling and MetalLB scope.
+`Infra` contains only shared network and component settings. Each hosted
+cluster requires an `InfraClusterAttachment` in the same namespace as its
+referenced `Infra`:
 
-### Proposed fields (InfraSpec)
-- `appsIngress.enabled` (bool, default false): Enable apps ingress automation.
-- `appsIngress.baseDomain` (string): Base domain for apps (e.g., `apps.<cluster>.<tld>` prefix is derived).
-- `appsIngress.hostedClusterRef`:
-  - `name` (string)
-  - `namespace` (string, default `clusters`)
-- `appsIngress.metallb` (object): User-managed MetalLB scope and external IP expectations.
-  - `addressPoolName` (string): Address pool name for annotations.
-  - `ipAddressPoolRange` (string or array): Optional for validation only (no enforcement).
-  - `l2AdvertisementName` (string, optional)
-- `appsIngress.service` (object): Service name and namespace in hosted cluster.
-  - `name` (string, default `<cluster>-apps`)
-  - `namespace` (string, default `clusters-<cluster>` or hosted cluster namespace)
-- `appsIngress.ports` (object):
-  - `http` (int, default 80)
-  - `https` (int, default 443)
+- `spec.infraRef.name`: shared VLAN infrastructure.
+- `spec.hostedClusterRef`: HyperShift HostedCluster used for hosted-cluster
+  API access.
+- `spec.dns.clusterName` and `spec.dns.baseDomain`: names used for DNS and SNI.
+- `spec.controlPlaneNamespace`: optional management-cluster control-plane
+  namespace; defaults to `<hostedClusterRef.namespace>-<name>`.
+- `spec.appsIngress`: optional MetalLB pool, hosted Service, and port settings.
 
-### Status additions (InfraStatus)
-- `appsIngress` status block:
-  - `phase` (Pending/Ready/Degraded)
-  - `externalIP` (string)
-  - `lastSyncTime` (timestamp)
-  - `reason/message`
+The attachment status reports the apps-ingress phase, endpoint, reason, and
+message. The parent Infra reports aggregate attachment counts.
 
 ## Controller Workflow
 
-### 1) InfraReconciler orchestration
-- When `appsIngress.enabled` is true:
-  - Fetch hosted cluster kubeconfig secret.
-  - Build client for hosted cluster.
-  - Create/patch LoadBalancer Service for ingress (hosted cluster).
-  - Discover external IP assigned by MetalLB.
-  - Update DNS and proxy component specs accordingly.
+### Attachment reconciliation
 
-### 2) Hosted Cluster kubeconfig access
-- Read HostedCluster via management cluster client.
-- Use `HostedCluster.Status.KubeConfig.Name` to get secret data (`kubeconfig` key).
-- Create controller-runtime client for hosted cluster.
-- Degrade with retry if kubeconfig is missing or access fails.
+1. Resolve the referenced `Infra` and derive control-plane defaults.
+2. Ensure the control-plane `allow-infrastructure` NetworkPolicy once its
+   namespace exists.
+3. When apps ingress is enabled, wait for a Ready hosted worker.
+4. Read the HostedCluster kubeconfig and connect to the hosted API through its
+   in-cluster API Service.
+5. Ensure the MetalLB Subscription, `MetalLB`, `IPAddressPool`, and
+   `L2Advertisement` resources.
+6. Ensure the hosted `LoadBalancer` Service for the default ingress controller.
+7. Store the assigned IP or hostname in attachment status and requeue while it
+   is pending.
 
-### 3) Dedicated LoadBalancer Service
-- Create Service in hosted cluster targeting the ingress controller (router NodePorts).
-- Selector should target ingress controller pods or service.
-- Annotate with MetalLB address pool if configured.
-- Ports 80/443 with `type: LoadBalancer`.
-- Persist Service name for DNS and proxy mapping.
+### Shared aggregation
 
-### 4) External IP discovery
-- Read `.status.loadBalancer.ingress[0].ip` from the hosted cluster Service.
-- If empty, mark apps ingress status as Pending and requeue.
-- When populated, store in InfraStatus.appsIngress.externalIP.
+On every attachment event, the Infra controller lists active attachments and
+rebuilds the shared child specs deterministically. Each valid attachment adds
+the five fully qualified HCP names and, when its apps status is Ready, the
+wildcard apps names. Duplicate HostedCluster references and duplicate domains
+exclude both conflicting attachments and set the Infra Ready condition false.
 
-### 5) DNS split-horizon updates
-- Extend DNS CRD generation to include wildcard:
-  - `*.apps.<cluster>.<tld>` -> MetalLB external IP (VLAN view).
-  - `*.apps.<cluster>.<tld>` -> proxy service IP (pod-network view).
-- Ensure `api.<cluster>.<tld>` resolves on pod network to proxy IP.
+There is no implicit single-cluster binding and no unqualified Kubernetes SNI
+alias. Removing an attachment removes its records and backends on the next
+Infra reconciliation.
 
-### 6) Proxy updates
-- Add proxy backend for apps wildcard:
-  - Listener on 80/443
-  - SNI wildcard routing for `*.apps.<cluster>.<tld>`
-  - Backend target is hosted cluster LB external IP
-  - TCP passthrough; no TLS termination
-- Allow connection to external IP over VLAN from proxy pod via policy-based routing.
+### Cleanup
 
-### 7) Degradation handling
-- If hosted cluster is unavailable, MetalLB IP missing, or LB Service creation fails:
-  - Set appsIngress status to Degraded with reason/message.
-  - Keep existing proxy and DNS config unchanged.
-  - Requeue with backoff.
+The attachment finalizer removes hosted apps-ingress resources and the
+cross-namespace control-plane NetworkPolicy before allowing deletion. If the
+hosted API or its CRDs are already gone, cleanup treats those resources as
+absent and still removes the finalizer.
 
-## RBAC and Permissions
-- Add RBAC for HostedCluster read access (management cluster).
-- No permissions required inside hosted cluster (access is via kubeconfig).
-- Ensure no new RBAC privileges are granted for MetalLB resources in management cluster.
+## Testing
 
-## Testing Strategy
-
-### Unit tests (envtest)
-- Test that when `appsIngress.enabled` is set:
-  - InfraReconciler attempts to read hosted cluster kubeconfig.
-  - DNS config includes wildcard records (both views).
-  - Proxy config includes SNI wildcard listeners.
-  - Degraded status when external IP is missing.
-
-### Integration tests (optional)
-- Simulate hosted cluster Service with external IP via fake client.
-- Verify status transitions Pending -> Ready.
-
-### E2E tests (kind)
-- Create a hosted cluster with MetalLB preinstalled.
-- Verify Service creation, external IP assignment, and DNS resolution.
-- Verify traffic to `*.apps` resolves on VLAN and pod network.
-
-## Rollout Plan
-1. Add API fields and regenerate CRDs.
-2. Implement controller logic behind `appsIngress.enabled`.
-3. Update DNS and proxy generation.
-4. Add tests.
-5. Document usage in existing setup docs (no new plan doc beyond this).
-
-## Risks and Mitigations
-- **Hosted cluster access fails**: Degrade and retry with backoff.
-- **MetalLB not installed**: Degrade with clear message.
-- **External IP not assigned**: Pending status and retry.
-- **Wildcard DNS misconfiguration**: Validate base domain format in API.
-
-## Open Questions
-- Should Service live in `clusters-<name>` or hosted cluster namespace?
-- How should selector target ingress controller pods in hosted cluster?
-- Should we support dual-stack external IPs for `*.apps`?
-
-## Acceptance Criteria
-- `*.apps.<cluster>.<tld>` resolves from VLAN to MetalLB external IP.
-- `*.apps.<cluster>.<tld>` resolves from pod network to proxy service IP.
-- `api.<cluster>.<tld>` resolves from pod network to proxy service IP.
-- Traffic to `*.apps` is routed through proxy to hosted cluster ingress LB.
-- Degraded status is set when MetalLB IP is not available.
+- Envtest covers deterministic multi-attachment aggregation, conflict
+  exclusion, status summaries, policy creation, and cleanup.
+- Apps-ingress unit tests cover waiting for a Ready hosted node and avoiding
+  cleanup when apps ingress was never enabled.
+- E2E covers shared Infra resources, attachment-driven DNS and SNI routing,
+  attachment cleanup, and the optional apps-ingress path where a HyperShift
+  HostedCluster is available.

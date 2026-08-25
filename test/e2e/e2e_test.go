@@ -287,14 +287,27 @@ spec:
     dns:
       enabled: true
       serverIP: "192.168.100.3"
-      baseDomain: "example.com"
-      clusterName: "testcluster"
     proxy:
       enabled: true
       serverIP: "192.168.100.4"
       proxyImage: "envoyproxy/envoy:v1.36.4"
       managerImage: "%s"
-`, namespace, projectImage)
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: test-infra-attachment
+  namespace: %s
+spec:
+  infraRef:
+    name: test-infra
+  hostedClusterRef:
+    name: testcluster
+    namespace: clusters
+  dns:
+    clusterName: testcluster
+    baseDomain: example.com
+`, namespace, projectImage, namespace)
 
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(infraYAML)
@@ -574,9 +587,15 @@ spec:
 		})
 
 		It("should verify Infra resource cleanup", func() {
-			By("deleting the test Infra resource")
-			cmd := exec.Command("kubectl", "delete", "infra", "test-infra", "-n", namespace, "--ignore-not-found=true")
+			By("deleting the test InfraClusterAttachment")
+			cmd := exec.Command("kubectl", "delete", "infraclusterattachment", "test-infra-attachment",
+				"-n", namespace, "--ignore-not-found=true")
 			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("deleting the test Infra resource")
+			cmd = exec.Command("kubectl", "delete", "infra", "test-infra", "-n", namespace, "--ignore-not-found=true")
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the Infra resource is deleted")
@@ -642,7 +661,7 @@ spec:
 		}
 
 		BeforeAll(func() {
-			By("creating a shared Infra without legacy cluster fields")
+			By("creating a shared Infra without cluster-specific fields")
 			kubectlApply(fmt.Sprintf(`
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: Infra
@@ -679,10 +698,12 @@ spec:
 				deleteResource("infraclusterattachment", name)
 				cmd := exec.Command("kubectl", "wait", "--for=delete",
 					"infraclusterattachment/"+name, "-n", namespace, "--timeout=5s")
-				_, _ = utils.RunWithTimeout(8*time.Second, cmd)
-				cmd = exec.Command("kubectl", "patch", "infraclusterattachment", name,
-					"-n", namespace, "--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
-				_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+				_, waitErr := utils.RunWithTimeout(8*time.Second, cmd)
+				if waitErr != nil {
+					cmd = exec.Command("kubectl", "patch", "infraclusterattachment", name,
+						"-n", namespace, "--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
+					_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+				}
 			}
 
 			By("deleting the shared Infra")

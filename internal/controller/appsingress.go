@@ -39,13 +39,11 @@ import (
 )
 
 // hostedClusterFactory builds a client for a hosted cluster's API server.
-// Callers close over whichever reference information they hold (legacy Infra
-// fields or a resolved InfraClusterAttachment).
+// Callers close over a resolved InfraClusterAttachment.
 type hostedClusterFactory func(ctx context.Context) (client.Client, error)
 
 // appsIngressTarget carries the per-cluster inputs required by the shared
-// apps-ingress automation. It is produced either from legacy Infra fields or
-// from an InfraClusterAttachment.
+// apps-ingress automation. It is produced from an InfraClusterAttachment.
 type appsIngressTarget struct {
 	AttachmentName        string
 	HostedClusterRef      hostedclusterv1alpha1.HostedClusterReference
@@ -129,9 +127,7 @@ func defaultHostedClusterClient(ctx context.Context, c client.Client, ref hosted
 }
 
 // ensureMetalLBInstalledFor installs MetalLB into the hosted cluster and
-// creates the IPAddressPool/L2Advertisement pair described by cfg. It is the
-// shared implementation used for both legacy Infra apps ingress and
-// InfraClusterAttachment apps ingress.
+// creates the IPAddressPool/L2Advertisement pair described by cfg.
 func ensureMetalLBInstalledFor(ctx context.Context, hostedClient client.Client, cfg hostedclusterv1alpha1.AppsIngressConfig) error {
 	addressPoolName := cfg.MetalLB.AddressPoolName
 	if addressPoolName == "" {
@@ -198,6 +194,9 @@ func ensureMetalLBInstalledFor(ctx context.Context, hostedClient client.Client, 
 // ensureMetalLBInstalledFor plus the ingress LoadBalancer Service. All deletes
 // ignore NotFound; callers decide whether failures are fatal to finalization.
 func cleanupMetalLBInstallation(ctx context.Context, hostedClient client.Client, cfg hostedclusterv1alpha1.AppsIngressConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
 	serviceName := cfg.Service.Name
 	if serviceName == "" {
 		serviceName = defaultIngressServiceName
@@ -209,7 +208,7 @@ func cleanupMetalLBInstallation(ctx context.Context, hostedClient client.Client,
 	service := &corev1.Service{}
 	service.SetName(serviceName)
 	service.SetNamespace(serviceNamespace)
-	if err := hostedClient.Delete(ctx, service); client.IgnoreNotFound(err) != nil && !errors.IsNotFound(err) {
+	if err := hostedClient.Delete(ctx, service); err != nil && !errors.IsNotFound(err) {
 		return err
 	}
 
@@ -285,7 +284,8 @@ func ensureAppsIngressServiceFor(ctx context.Context, hostedClient client.Client
 	}
 
 	service := &corev1.Service{}
-	if err := hostedClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNamespace}, service); err == nil {
+	err := hostedClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNamespace}, service)
+	if err == nil {
 		service.Spec.Type = corev1.ServiceTypeLoadBalancer
 		service.Spec.Selector = map[string]string{
 			"ingresscontroller.operator.openshift.io/deployment-ingresscontroller": "default",
@@ -315,6 +315,9 @@ func ensureAppsIngressServiceFor(ctx context.Context, hostedClient client.Client
 			service.Annotations["metallb.universe.tf/address-pool"] = cfg.MetalLB.AddressPoolName
 		}
 		return hostedClient.Update(ctx, service)
+	}
+	if !errors.IsNotFound(err) {
+		return err
 	}
 
 	labels := map[string]string{}

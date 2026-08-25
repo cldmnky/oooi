@@ -64,11 +64,23 @@ spec:
       rangeEnd: 192.0.2.199
     dns:
       serverIP: 192.0.2.3
-      clusterName: mycluster
-      baseDomain: example.com
     proxy:
       serverIP: 192.0.2.10
-      controlPlaneNamespace: clusters-mycluster
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: mycluster
+  namespace: clusters
+spec:
+  infraRef:
+    name: mycluster
+  hostedClusterRef:
+    name: mycluster
+    namespace: clusters
+  dns:
+    clusterName: mycluster
+    baseDomain: example.com
 ```
 
 What you get:
@@ -80,8 +92,8 @@ What you get:
 | `ProxyServer/mycluster-proxy` | `192.0.2.10` | SNI passthrough for `api` :6443 and HCP :443 |
 
 No `internalProxyService` → management pods get no static HCP answers.
-No `appsIngress` → no wildcard routing; consoles reachable only from the VLAN
-via explicit hostnames you add yourself.
+No attachment `appsIngress` → no wildcard routing; consoles reachable only from
+the VLAN via explicit hostnames you add yourself.
 
 ## Full hosted cluster stack
 
@@ -114,13 +126,9 @@ spec:
     dns:
       enabled: true
       serverIP: 192.0.2.3
-      clusterName: example-hcp
-      baseDomain: clusters.example.com
     proxy:
       enabled: true
       serverIP: 192.0.2.4
-      controlPlaneNamespace: clusters-example-hcp
-      apiServerService: kube-apiserver
       internalProxyService: example-hcp-proxy.clusters.svc.cluster.local
       externalService:
         enabled: true
@@ -129,11 +137,23 @@ spec:
           external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
         labels:
           external-dns.example.com/publish: "yes"
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: example-hcp
+  namespace: clusters
+spec:
+  infraRef:
+    name: example-hcp
+  hostedClusterRef:
+    name: example-hcp
+    namespace: clusters
+  dns:
+    clusterName: example-hcp
+    baseDomain: clusters.example.com
   appsIngress:
     enabled: true
-    hostedClusterRef:
-      name: example-hcp
-      namespace: clusters
     metallb:
       addressPoolName: apps-pool
       ipAddressPoolRange: 192.0.2.200-192.0.2.220

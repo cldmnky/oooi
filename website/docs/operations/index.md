@@ -40,8 +40,8 @@ kubectl -n clusters get infra
 kubectl -n clusters get infra <name> \
   -o jsonpath='{.status.componentStatus}{"\n"}'
 
-# Apps ingress state and VIP
-kubectl -n clusters get infra <name> \
+# Apps ingress state and VIP for one attachment
+kubectl -n clusters get infraattachment <name> \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 
 # Child workloads

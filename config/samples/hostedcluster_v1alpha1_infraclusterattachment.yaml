@@ -4,15 +4,15 @@
 # and proxy services.
 #
 # Prerequisites:
-# - An Infra named "tenant-vlan100" exists in the same namespace.
+# - An Infra named "infra-sample" exists in the same namespace.
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: InfraClusterAttachment
 metadata:
   name: example-hcp-a
-  namespace: clusters
+  namespace: default
 spec:
   infraRef:
-    name: tenant-vlan100
+    name: infra-sample
   hostedClusterRef:
     name: example-hcp-a
     namespace: clusters
@@ -37,10 +37,10 @@ apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: InfraClusterAttachment
 metadata:
   name: example-hcp-b
-  namespace: clusters
+  namespace: default
 spec:
   infraRef:
-    name: tenant-vlan100
+    name: infra-sample
   hostedClusterRef:
     name: example-hcp-b
     namespace: clusters

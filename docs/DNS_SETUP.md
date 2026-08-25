@@ -78,8 +78,6 @@ spec:
     dns:
       enabled: true
       serverIP: "192.168.100.3"
-      clusterName: "my-cluster"
-      baseDomain: "example.com"
       image: "quay.io/cldmnky/oooi:latest"
     
     # Proxy Configuration with both external and internal
@@ -87,7 +85,21 @@ spec:
       enabled: true
       serverIP: "192.168.100.10"  # External proxy on secondary network
       internalProxyService: "envoy-internal.clusters.svc.cluster.local"  # Internal proxy for pods
-      controlPlaneNamespace: "clusters-my-cluster"
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: my-cluster
+  namespace: clusters
+spec:
+  infraRef:
+    name: my-cluster
+  hostedClusterRef:
+    name: my-cluster
+    namespace: clusters
+  dns:
+    clusterName: my-cluster
+    baseDomain: example.com
 ```
 
 **Key Fields**:
@@ -366,7 +378,7 @@ oc get configmap my-cluster-dns-dns-config -n clusters -o jsonpath='{.data.Coref
    oc get dnsserver my-cluster-dns -n clusters -o jsonpath='{.spec.networkConfig.internalProxyIP}'
    ```
 
-2. If empty, update Infra CR with `proxy.internalProxyService`
+2. If empty, update the Infra CR with `proxy.internalProxyService`
 
 3. Check Corefile for default view hosts entries:
    ```bash
@@ -385,14 +397,14 @@ public DNS, so a stale record blocks ClusterVersion convergence even though the
 VLAN-side split-horizon view is correct.
 
 **Fix**:
-1. Compare: `status.appsIngressStatus.externalIP` vs.
+1. Compare the attachment's `status.appsIngressStatus.externalIP` with
    `dig +short console-openshift-console.apps.<cluster>.<domain> @<public-resolver>`.
 2. Update the record at your DNS provider (or let ExternalDNS inside the
    hosted cluster manage it — see `docs/apps-ingress.md` "Public DNS ownership").
 3. Allow for TTL (typically 60s) and re-check the ClusterOperator conditions.
 
 **Prevention**: publish the wildcard via ExternalDNS with the Service labels/
-annotations from `spec.appsIngress.service`, so VIP changes propagate
+annotations from the attachment's `spec.appsIngress.service`, so VIP changes propagate
 automatically.
 
 ## Advanced Configuration
@@ -482,9 +494,9 @@ Both proxies should route traffic to the actual HCP services in the control plan
 |-------|-------------|----------|---------|
 | `infraComponents.dns.enabled` | Enable DNS server | No | `false` |
 | `infraComponents.dns.serverIP` | Static IP for DNS on secondary network | Yes | - |
-| `infraComponents.dns.clusterName` | Hosted cluster name | Yes | - |
-| `infraComponents.dns.baseDomain` | Base domain for cluster | Yes | - |
 | `infraComponents.dns.image` | DNS container image | No | `quay.io/cldmnky/oooi:latest` |
+| `InfraClusterAttachment.spec.dns.clusterName` | Hosted cluster name | Yes | - |
+| `InfraClusterAttachment.spec.dns.baseDomain` | Base domain for cluster | Yes | - |
 | `infraComponents.proxy.serverIP` | External proxy IP | Yes | - |
 | `infraComponents.proxy.internalProxyService` | Internal proxy service | No | - |
 

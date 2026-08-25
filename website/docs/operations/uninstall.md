@@ -10,7 +10,7 @@ require a manual check.
 flowchart TB
     A["1. Delete InfraClusterAttachments<br/>(finalizer removes hosted ingress Service,<br/>MetalLB resources, control-plane NetworkPolicy)"]
     --> B["2. Delete Infra resources<br/>(GC removes DHCP/DNS/proxy children<br/>and their namespaced workloads)"]
-    --> C["3. Clean unowned resources<br/>(legacy NetworkPolicy and DHCP cluster RBAC)"]
+    --> C["3. Check unowned resources<br/>(NetworkPolicy and DHCP cluster RBAC)"]
     --> D["4. Delete NodePool + HostedCluster<br/>(HyperShift tears down control-plane<br/>namespace, VMs, PVCs)"]
     --> E["5. Remove ExternalDNS resources<br/>and public DNS records"]
     --> F["6. make undeploy + make uninstall<br/>(operator, RBAC, CRDs)"]

@@ -17,7 +17,7 @@ kubectl -n clusters get infra <name> \
   -o jsonpath='ready={.status.conditions[?(@.type=="Ready")].status}{"\n"}'
 kubectl -n clusters get infra <name> \
   -o jsonpath='{.status.componentStatus}{"\n"}'
-kubectl -n clusters get infra <name> \
+kubectl -n clusters get infraattachment <name> \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver
 kubectl -n clusters rollout status deployment/<name>-dhcp --timeout=5m
@@ -81,7 +81,7 @@ Once ExternalDNS has converged:
 
 ```bash
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
-# → current .status.appsIngressStatus.externalIP
+# → current InfraClusterAttachment.status.appsIngressStatus.externalIP
 
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 # → current <infra>-proxy-external EXTERNAL-IP

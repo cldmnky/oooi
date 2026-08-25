@@ -95,10 +95,6 @@ spec:
       ipAddressPoolRange: 192.0.2.200-192.0.2.209
 ```
 
-When apps ingress is enabled, the attachment's top-level
-`spec.hostedClusterRef` is canonical. Omit `spec.appsIngress.hostedClusterRef`;
-if supplied, it must match the top-level reference.
-
 Each attachment's wildcard VIP is reported on its own status, so one cluster's
 ingress can be Pending while another is Ready.
 
@@ -117,7 +113,7 @@ infraComponents:
       publishAttachmentOAuths: true
       addressPoolName: hosting-public-pool
       annotations:
-        external-dns.alpha.kubernetes.io/hostname: "legacy-endpoint.example.com."
+        external-dns.alpha.kubernetes.io/hostname: "shared-endpoint.example.com."
 ```
 
 Names already configured keep their position; attachment names follow,
@@ -131,29 +127,13 @@ single Service annotation before relying on this.
 | `Infra Ready=False`, reason `DuplicateHostname` | Two attachments declare the same domain | Remove or rename one attachment's `dns` values |
 | `Infra Ready=False`, reason `DuplicateHostedCluster` | Two attachments reference the same HostedCluster | Keep one attachment per HostedCluster |
 | Attachment stuck without `Ready` | Its control-plane namespace does not exist yet | Create the HostedCluster first; HyperShift creates `<ns>-<name>` |
-| ProxyServer unchanged after edits | A conflict excluded every attachment; last-known-good routing is kept | Fix the conflict listed in the Infra condition message |
+| ProxyServer has no routes after edits | A conflict excluded every attachment; stale shared routing is removed | Fix the conflict listed in the Infra condition message |
 
-## Unqualified Kubernetes SNI names
+## Fully qualified SNI names
 
-In single-cluster configurations the proxy also answers unqualified aliases
-such as `kubernetes.default.svc`. On a shared proxy those names cannot be
-routed to one cluster safely, so they are only generated for the implicit
-single-cluster binding described below. Worker bootstrap uses fully qualified
-names and does not need them.
+Every attachment contributes fully qualified SNI names such as
+`api.example-hcp-a.clusters.example.com`. Unqualified Kubernetes aliases are
+not generated because a shared proxy cannot safely route them to one cluster.
 
-## Migrating a single-cluster Infra
-
-Old-style `Infra` manifests keep working: when no attachments exist, oooi
-synthesizes an implicit binding from the legacy fields
-(`dns.clusterName`, `dns.baseDomain`, `proxy.controlPlaneNamespace`,
-`appsIngress`). Child resources are identical to previous releases.
-
-To migrate:
-
-1. Create an `InfraClusterAttachment` whose values match the legacy fields.
-2. Confirm the generated DNS entries and proxy backends are unchanged.
-3. Remove the legacy fields from the `Infra`.
-4. Reapply and confirm the children remain identical.
-
-While both are present, explicit attachments take precedence and the Infra
-reports `status.attachments.legacyFieldsIgnored=true`.
+There is no implicit single-cluster binding. To serve a cluster, create an
+`InfraClusterAttachment`, even when the `Infra` has only one attachment.

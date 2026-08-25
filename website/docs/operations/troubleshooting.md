@@ -71,7 +71,7 @@ A stale public wildcard record can cause this failure. The ingress Operator
 resolves `*.apps.<cluster>.<domain>` through public DNS. If the record points to
 an old VIP after reallocation, routes fail with `RouteHealth_FailedGet`.
 
-- Compare `.status.appsIngressStatus.externalIP` with a query to your public
+- Compare the attachment's `.status.appsIngressStatus.externalIP` with a query to your public
   resolver.
 - With ExternalDNS (`--policy=sync`) records self-heal; without it, update the
   A record manually.

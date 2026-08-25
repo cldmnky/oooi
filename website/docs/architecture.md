@@ -123,7 +123,7 @@ cluster and the proxy cannot inspect tenant traffic.
    cluster's `openshift-ingress` namespace, selector fixed to the default
    IngressController deployment.
 4. Reads the allocated IP from Service status and publishes it as
-   `.status.appsIngressStatus.externalIP`.
+   `InfraClusterAttachment.status.appsIngressStatus.externalIP`.
 5. Adds the `*.apps.<cluster>.<domain>` answers to both DNS views and adds
    wildcard SNI backends to Envoy pointing at the VIP.
 
@@ -168,6 +168,9 @@ child Deployments for runtime availability:
 status:
   conditions:              # Ready / ReconciliationSucceeded / Degraded ...
   componentStatus:         # dhcpReady, dnsReady, proxyReady
+
+# On the corresponding InfraClusterAttachment:
+status:
   appsIngressStatus:
     phase:                 # Pending | Ready | Degraded
     reason:                # WaitingForHostedClusterNodes, WaitingForExternalIP, ...

@@ -55,12 +55,11 @@ Yes. Create one `Infra` for the network and one
 attachment's DNS records and SNI backends onto a single DHCP/DNS/proxy stack.
 See [Multiple hosted clusters on one VLAN](guides/multi-cluster.md).
 
-### Why does my single-cluster proxy answer kubernetes.default.svc but my shared one does not?
+### Why does the proxy not answer kubernetes.default.svc?
 
 Unqualified Kubernetes service names are ambiguous when several clusters share
-a proxy: they cannot be routed to one cluster safely. They are generated only
-for the implicit single-cluster binding. Worker bootstrap uses fully qualified
-names such as `api.<cluster>.<domain>` and does not need them.
+a proxy: they cannot be routed to one cluster safely. oooi generates only fully
+qualified names such as `api.<cluster>.<domain>`, which worker bootstrap uses.
 
 ## Operations
 

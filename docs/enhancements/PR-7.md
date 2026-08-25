@@ -4,6 +4,10 @@
 **Status:** In Progress
 **Last Updated:** 2026-02-06
 
+> Historical record. The implementation now scopes apps-ingress configuration
+> and status to `InfraClusterAttachment`; see [Apps Ingress](../apps-ingress.md)
+> for the current API and workflow.
+
 ## Summary
 This PR introduces optional MetalLB-based ingress configuration for hosted clusters to enable `*.apps.<cluster>.<tld>` wildcard routing. The implementation adds API types, status tracking, and controller logic to automatically provision MetalLB infrastructure and LoadBalancer services in hosted clusters, with split-horizon DNS support for VLAN and pod network access.
 
@@ -24,7 +28,7 @@ This PR introduces optional MetalLB-based ingress configuration for hosted clust
 - [x] **Security Enhancement**: Updated manager deployment with non-root security context
 
 ### Missing/Pending Features
-- [x] **External IP Discovery**: Logic to read `.status.loadBalancer.ingress[0].ip` from hosted cluster Service and update `InfraStatus.appsIngressStatus.externalIP` (currently stops at "Pending" phase)
+- [x] **External IP Discovery**: Logic to read `.status.loadBalancer.ingress[0].ip` from hosted cluster Service and update `InfraClusterAttachment.status.appsIngressStatus.externalIP` (currently stops at "Pending" phase)
 - [x] **DNS Wildcard Records**: Integration with `dnsServerForInfra()` to add `*.apps.<cluster>.<tld>` entries for both VLAN (MetalLB IP) and pod network (proxy IP) views
 - [x] **Proxy Wildcard Backend**: Integration with `proxyServerForInfra()` to add SNI wildcard routing for `*.apps.<cluster>.<tld>` on ports 80/443 targeting MetalLB external IP
 - [x] **Ready Status Transition**: Logic to transition status from "Pending" → "Ready" when external IP is discovered
@@ -38,7 +42,8 @@ This PR introduces optional MetalLB-based ingress configuration for hosted clust
 3. **Question about service selector**: The current implementation uses hardcoded selector `ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default`—is this selector reliable across all HCP deployments, or should it be configurable?
 4. **Question about scope boundaries**: Is the current approach of installing MetalLB automatically (rather than just validating existence) the desired behavior? The plan states "user-managed MetalLB" but the implementation installs it.
 5. **Question about dual-stack support**: The plan mentions dual-stack as an open question—should IPv6 support be addressed in this PR or deferred to future work?
-6. **Question about baseDomain usage**: How should `AppsIngress.BaseDomain` be used to construct the wildcard domain? Should it be `*.apps.<baseDomain>` or `*.apps.<cluster>.<baseDomain>`?
+6. **Question about baseDomain usage**: The attachment's `spec.dns.baseDomain`
+   combines with `spec.dns.clusterName` to construct `*.apps.<cluster>.<baseDomain>`.
 7. **Question about external IP polling**: Should there be a watch on the hosted cluster Service, or is periodic reconciliation with requeue sufficient for external IP discovery?
 
 ## Code Quality Assessment

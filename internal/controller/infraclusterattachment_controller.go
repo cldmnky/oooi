@@ -142,24 +142,6 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 		policyResult = ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
 
-	if att.Spec.AppsIngress.Enabled && !appsIngressHostedClusterRefMatches(
-		att.Spec.AppsIngress.HostedClusterRef, target.HostedClusterRef,
-	) {
-		err := r.setAppsIngressStatusAndFinish(ctx, att, target,
-			hostedclusterv1alpha1.AppsIngressStatus{
-				Phase:   PhaseDegraded,
-				Reason:  reasonAttachmentInvalidConfig,
-				Message: "appsIngress.hostedClusterRef must be omitted or match spec.hostedClusterRef",
-			})
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if policyResult.RequeueAfter > 0 {
-			return policyResult, nil
-		}
-		return ctrl.Result{}, nil
-	}
-
 	if att.Spec.AppsIngress.Enabled {
 		if att.Spec.AppsIngress.MetalLB.AddressPoolName == "" ||
 			att.Spec.AppsIngress.MetalLB.IPAddressPoolRange == "" {
@@ -196,13 +178,6 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	return r.setStatusReady(ctx, att, target)
-}
-
-func appsIngressHostedClusterRefMatches(configRef, attachmentRef hostedclusterv1alpha1.HostedClusterReference) bool {
-	if configRef.Name == "" && configRef.Namespace == "" {
-		return true
-	}
-	return normalizeHostedClusterRef(configRef) == normalizeHostedClusterRef(attachmentRef)
 }
 
 func (r *InfraClusterAttachmentReconciler) hostedFactory(att *hostedclusterv1alpha1.InfraClusterAttachment, target appsIngressTarget) hostedClusterFactory {
@@ -281,21 +256,23 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 		target.APIServerService = defaultAPIServerServiceName
 	}
 
-	factory := r.hostedFactory(att, target)
-	hostedClient, err := factory(ctx)
-	if err != nil {
-		// The hosted cluster may already be gone — or its API may not exist at
-		// all (e.g. HyperShift removed with attachments left behind). Both mean
-		// there is nothing left to clean up.
-		if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
-			log.Info("Hosted cluster API unavailable during cleanup; skipping hosted cleanup", "ref", target.HostedClusterRef, "cause", err.Error())
-		} else {
-			log.Error(err, "Failed to build hosted-cluster client during cleanup; requeueing", "ref", target.HostedClusterRef)
+	if target.Config.Enabled {
+		factory := r.hostedFactory(att, target)
+		hostedClient, err := factory(ctx)
+		if err != nil {
+			// The hosted cluster may already be gone — or its API may not exist at
+			// all (e.g. HyperShift removed with attachments left behind). Both mean
+			// there is nothing left to clean up.
+			if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
+				log.Info("Hosted cluster API unavailable during cleanup; skipping hosted cleanup", "ref", target.HostedClusterRef, "cause", err.Error())
+			} else {
+				log.Error(err, "Failed to build hosted-cluster client during cleanup; requeueing", "ref", target.HostedClusterRef)
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+		} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
+			log.Error(err, "Failed hosted-cluster cleanup; requeueing")
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
-	} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
-		log.Error(err, "Failed hosted-cluster cleanup; requeueing")
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	policy := &networkingv1.NetworkPolicy{

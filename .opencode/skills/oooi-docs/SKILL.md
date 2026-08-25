@@ -52,8 +52,9 @@ Check these details whenever related content changes:
   `Infra`; explain their lifecycle separately.
 - If `networkAttachmentNamespace` is omitted, the reconciler uses the `Infra`
   namespace. It does not fall back to `default`.
-- `Infra` currently routes API traffic to `kube-apiserver` even though the API
-  exposes `apiServerService`.
+- `InfraClusterAttachment` supplies the per-cluster control-plane namespace and
+  optional API Service name; shared Infra configuration has no cluster-specific
+  routing fields.
 - The default DHCP and DNS component image is the oooi image. The proxy uses
   the Envoy image plus an oooi manager sidecar.
 - `make container-build` uses `IMAGE_TAG_BASE`, not a caller-provided
@@ -65,15 +66,13 @@ Check these details whenever related content changes:
 
 - `Infra` is network-scoped and is the only writer of the shared DHCPServer,
   DNSServer, and ProxyServer. Never document attachments writing those children.
-- `dns.clusterName`, `dns.baseDomain`, `proxy.controlPlaneNamespace`, and
-  `appsIngress` on `Infra` are deprecated single-cluster fields; they synthesize
-  an implicit binding only when no attachments exist, and explicit attachments
-  take precedence (`attachments.legacyFieldsIgnored`).
+- Cluster-specific DNS, control-plane, and apps-ingress settings belong on
+  `InfraClusterAttachment`; there is no implicit single-cluster binding.
 - One attachment per HostedCluster; duplicate domains or duplicate hosted
   cluster references exclude both sides from routing with Degraded conditions —
   never describe silent conflict resolution.
-- Unqualified Kubernetes SNI aliases exist only for the implicit single-cluster
-  binding; shared proxies answer fully qualified names only.
+- Shared proxies answer fully qualified SNI names only; unqualified Kubernetes
+  aliases are never generated.
 - `proxy.externalService.publishAttachmentOAuths` merges Ready attachments'
   oauth names into the hostname annotation (user names first, additions sorted).
 - New CRD files must be added to `config/crd/kustomization.yaml`; omissions

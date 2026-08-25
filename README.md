@@ -89,7 +89,7 @@ Expected results are API `200`, unauthenticated OAuth `401`, and console `200`. 
 
 ### Public DNS ownership
 
-The `Infra` controller manages the hosted `oooi-ingress` Service, MetalLB VIP, VLAN DNS records, and proxy backends. It does not write public DNS records. The sample adds ExternalDNS labels and annotations, but a Route53 writer must run where it can watch the hosted cluster Service. Management-cluster ExternalDNS cannot see that Service. Without a public DNS writer, VLAN clients still work through oooi DNS; publish `*.apps.species-8472.clusters.blahonga.me` to the apps VIP when public resolution is required.
+The `InfraClusterAttachment` controller manages the hosted `oooi-ingress` Service and MetalLB resources; the `Infra` controller aggregates its endpoint into shared VLAN DNS records and proxy backends. oooi does not write public DNS records. The sample adds ExternalDNS labels and annotations, but a Route53 writer must run where it can watch the hosted cluster Service. Management-cluster ExternalDNS cannot see that Service. Without a public DNS writer, VLAN clients still work through oooi DNS; publish `*.apps.species-8472.clusters.blahonga.me` to the apps VIP when public resolution is required.
 
 For this lab, the Route53 ExternalDNS operator watches the management cluster by default, so use a separate ExternalDNS Deployment with a hosted-cluster kubeconfig:
 
@@ -110,11 +110,17 @@ kubectl -n external-dns-operator rollout status deployment/species-8472-external
 rm -rf "$tmp"
 ```
 
-Use a read-only hosted-cluster ServiceAccount kubeconfig instead of the published admin kubeconfig in a shared environment. Verify convergence with `dig +short console-openshift-console.apps.species-8472.clusters.blahonga.me @1.1.1.1`; it should return the current `appsIngressStatus.externalIP`.
+Use a read-only hosted-cluster ServiceAccount kubeconfig instead of the published admin kubeconfig in a shared environment. Verify convergence with `dig +short console-openshift-console.apps.species-8472.clusters.blahonga.me @1.1.1.1`; it should return the current `InfraClusterAttachment.status.appsIngressStatus.externalIP`.
 
 ## How oooi works
 
-`Infra` is the user-facing API. It describes one isolated worker network and one hosted cluster. oooi reconciles it into `DHCPServer`, `DNSServer`, and `ProxyServer` resources in the management cluster. Each child creates a Deployment with a default pod-network interface and a static Multus interface on the VLAN. The child resources, their workloads, Services, ConfigMaps, ServiceAccounts, SCC RoleBindings, and the HCP namespace NetworkPolicy are owned by `Infra`; deleting `Infra` removes them.
+`Infra` describes one isolated worker network. One or more
+`InfraClusterAttachment` resources attach hosted clusters to it. oooi
+reconciles the shared resource into `DHCPServer`, `DNSServer`, and `ProxyServer`
+resources in the management cluster. Each child creates a Deployment with a
+default pod-network interface and a static Multus interface on the VLAN. The
+shared child resources are owned by `Infra`; attachment finalizers manage
+per-cluster hosted ingress resources and control-plane NetworkPolicies.
 
 ```
 Isolated VLAN                                      Management cluster pod network
@@ -153,7 +159,7 @@ infraComponents:
 
 ### Apps ingress and MetalLB
 
-Set `spec.appsIngress.enabled: true` to expose the default hosted-cluster `IngressController` on the VLAN. The feature is intentionally separate from the HCP proxy endpoints: the app wildcard terminates at the hosted ingress router, while Envoy makes it reachable from both DNS views.
+Set `InfraClusterAttachment.spec.appsIngress.enabled: true` to expose the default hosted-cluster `IngressController` on the VLAN. The feature is intentionally separate from the HCP proxy endpoints: the app wildcard terminates at the hosted ingress router, while Envoy makes it reachable from both DNS views.
 
 oooi performs this sequence using the HostedCluster admin kubeconfig reported in `.status.kubeconfig.name`:
 
@@ -162,7 +168,7 @@ oooi performs this sequence using the HostedCluster admin kubeconfig reported in
 3. Waits for the MetalLB CRDs, then ensures `MetalLB/metallb`, an `IPAddressPool`, and an `L2Advertisement` in `openshift-operators`.
 4. Creates or updates a `LoadBalancer` Service, `oooi-ingress` by default, in the hosted cluster's `openshift-ingress` namespace. Its selector is fixed to the default ingress controller:
    `ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default`.
-5. Reads the allocated LoadBalancer IP or hostname from the Service status. The value is exposed as `.status.appsIngressStatus.externalIP` or `.externalHostname`.
+5. Reads the allocated LoadBalancer IP or hostname from the Service status. The value is exposed on the attachment as `.status.appsIngressStatus.externalIP` or `.externalHostname`.
 6. Adds the `*.apps.<cluster>.<domain>` DNS answer and Envoy wildcard backends only after an external endpoint exists.
 
 MetalLB L2 mode advertises the allocated VIP from a hosted worker. The `ipAddressPoolRange` must therefore be an unused, routable range on the same L2 network as the hosted worker interfaces. Do not include the gateway, DHCP/DNS/proxy static addresses, VM allocations, or another load balancer's addresses. `l2AdvertisementName` defaults to `advertise-<addressPoolName>`.
@@ -171,35 +177,36 @@ For the validated `species-8472` example, MetalLB owns `10.202.64.180-10.202.64.
 
 ### Service labels and annotations
 
-`appsIngress.service.labels` and `.annotations` are copied to the hosted `LoadBalancer` Service and reconciled on every `Infra` update. They are intended for integrations such as ExternalDNS. Existing unrelated metadata is preserved.
+`appsIngress.service.labels` and `.annotations` are copied to the hosted `LoadBalancer` Service and reconciled on every attachment update. They are intended for integrations such as ExternalDNS. Existing unrelated metadata is preserved.
 
 oooi owns `metallb.universe.tf/address-pool` and sets it from `appsIngress.metallb.addressPoolName`. Do not put that annotation in `appsIngress.service.annotations`; it is controlled by the MetalLB configuration and may be overwritten on reconciliation.
 
 The following metadata makes a Service visible to the supplied ExternalDNS sample:
 
 ```yaml
-appsIngress:
-  service:
-    annotations:
-      external-dns.alpha.kubernetes.io/hostname: '*.apps.mycluster.example.com.'
-    labels:
-      external-dns.blahonga.me/publish: "yes"
+spec:
+  appsIngress:
+    service:
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: '*.apps.mycluster.example.com.'
+      labels:
+        external-dns.blahonga.me/publish: "yes"
 ```
 
-The trailing dot marks the hostname as fully qualified. The sample ExternalDNS Deployment watches only `LoadBalancer` Services carrying `external-dns.blahonga.me/publish=yes`, uses the `service` source, and stores ownership in Route53 TXT records. Changing the label filter, hostname annotation, zone, or TXT owner ID requires making the corresponding change in both the `Infra` metadata and the ExternalDNS Deployment.
+The trailing dot marks the hostname as fully qualified. The sample ExternalDNS Deployment watches only `LoadBalancer` Services carrying `external-dns.blahonga.me/publish=yes`, uses the `service` source, and stores ownership in Route53 TXT records. Changing the label filter, hostname annotation, zone, or TXT owner ID requires making the corresponding change in both the attachment and the ExternalDNS Deployment.
 
 ### Status, validation, and recovery
 
-Use the `Infra` condition for overall readiness and `appsIngressStatus` for the ingress-specific state:
+Use the `Infra` condition for shared-stack readiness and the attachment's `appsIngressStatus` for ingress-specific state:
 
 ```bash
 kubectl -n clusters get infra species-8472
-kubectl -n clusters get infra species-8472 \
+kubectl -n clusters get infraattachment species-8472 \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" endpoint="}{.status.appsIngressStatus.externalIP}{"\n"}'
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver
 ```
 
-Common apps ingress states are `WaitingForHostedClusterNodes`, `WaitingForMetalLBCRDs`, `WaitingForExternalIP`, `Ready`, and `Degraded`. For a degraded state, read `.status.appsIngressStatus.message`, then inspect the hosted cluster through its kubeconfig:
+Common apps ingress states are `WaitingForHostedClusterNodes`, `WaitingForMetalLBCRDs`, `WaitingForExternalIP`, `Ready`, and `Degraded`. For a degraded state, read the attachment's `.status.appsIngressStatus.message`, then inspect the hosted cluster through its kubeconfig:
 
 ```bash
 kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-operators get subscription,csv,metallb,ipaddresspool,l2advertisement
@@ -212,7 +219,7 @@ An allocated VIP alone is not sufficient. Confirm all three paths: VLAN DNS to t
 
 - oooi manages only the default hosted `IngressController`; a custom ingress-controller selector is not currently configurable.
 - oooi installs and configures MetalLB resources in the hosted cluster but does not configure upstream L2 switches, VLAN routing, firewall rules, or a public DNS provider.
-- oooi does not publish Route53 or other public DNS records. Use ExternalDNS or update the wildcard record yourself whenever `.status.appsIngressStatus.externalIP` changes.
+- oooi does not publish Route53 or other public DNS records. Use ExternalDNS or update the wildcard record yourself whenever the attachment's `.status.appsIngressStatus.externalIP` changes.
 - The current apps-ingress path is IPv4 and L2-advertisement based. Validate dual-stack, BGP, and non-L2 network designs separately before relying on them.
 - Keep exactly one DHCP authority on the VLAN. Competing DHCP services cause non-deterministic worker bootstrapping.
 
@@ -333,17 +340,29 @@ spec:
     dns:
       enabled: true
       serverIP: "192.168.100.3"
-      baseDomain: "example.com"
-      clusterName: "my-cluster"
     
     # Proxy Server Configuration
     proxy:
       enabled: true
       serverIP: "192.168.100.10"
-      controlPlaneNamespace: "clusters-my-cluster"
       # Optional: pod-network view — management pods resolve HCP names to the
       # in-cluster proxy instead of public DNS. Leave unset to hide HCP from pods.
       internalProxyService: "example-infra-proxy.clusters.svc.cluster.local"
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: my-cluster
+  namespace: clusters
+spec:
+  infraRef:
+    name: example-infra
+  hostedClusterRef:
+    name: my-cluster
+    namespace: clusters
+  dns:
+    clusterName: my-cluster
+    baseDomain: example.com
 ```
 
 **Key Configuration Points**:
@@ -355,18 +374,23 @@ spec:
 
 ### Apps Ingress (wildcard `*.apps.*`)
 
-With `appsIngress.enabled`, the operator installs MetalLB in the hosted
+With `InfraClusterAttachment.spec.appsIngress.enabled`, the operator installs MetalLB in the hosted
 cluster, creates a wildcard LoadBalancer VIP for the default IngressController,
 adds SNI wildcard backends to Envoy, and publishes `*.apps.<cluster>.<domain>`
 in both DNS views:
 
 ```yaml
 spec:
+  infraRef:
+    name: example-infra
+  hostedClusterRef:
+    name: my-cluster
+    namespace: clusters
+  dns:
+    clusterName: my-cluster
+    baseDomain: example.com
   appsIngress:
     enabled: true
-    hostedClusterRef:
-      name: "my-cluster"
-      namespace: "clusters"
     metallb:
       addressPoolName: "vlan203-apps"
       ipAddressPoolRange: "192.168.100.200-192.168.100.220"
@@ -384,8 +408,8 @@ spec:
       https: 443
 ```
 
-Progress is reported via `.status.appsIngressStatus` (`Pending` → `Ready` /
-`Degraded`) with the assigned VIP in `.externalIP`.
+Progress is reported via the attachment's `.status.appsIngressStatus` (`Pending`
+→ `Ready` / `Degraded`) with the assigned VIP in `.externalIP`.
 
 See [apps-ingress.md](docs/apps-ingress.md) for public-DNS ownership patterns
 and [DNS_SETUP.md](docs/DNS_SETUP.md) / [PROXY_SETUP.md](docs/PROXY_SETUP.md)

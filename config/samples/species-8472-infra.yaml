@@ -26,15 +26,11 @@ spec:
       enabled: true
       image: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
       serverIP: 10.202.64.3
-      baseDomain: clusters.blahonga.me
-      clusterName: species-8472
     proxy:
       enabled: true
       managerImage: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
       proxyImage: envoyproxy/envoy:v1.36.4
       serverIP: 10.202.64.4
-      controlPlaneNamespace: clusters-species-8472
-      apiServerService: kube-apiserver
       internalProxyService: species-8472-proxy.clusters.svc.cluster.local
       # Expose the SNI proxy through the hosting cluster's MetalLB, not an HCP Route.
       # ExternalDNS publishes the OAuth hostname from this Service's assigned VIP.
@@ -45,23 +41,30 @@ spec:
           external-dns.alpha.kubernetes.io/hostname: oauth.species-8472.clusters.blahonga.me.
         labels:
           external-dns.blahonga.me/publish: "yes"
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: species-8472
+  namespace: clusters
+spec:
+  infraRef:
+    name: species-8472
+  hostedClusterRef:
+    name: species-8472
+    namespace: clusters
+  dns:
+    clusterName: species-8472
+    baseDomain: clusters.blahonga.me
   appsIngress:
     enabled: true
-    hostedClusterRef:
-      name: species-8472
-      namespace: clusters
     metallb:
       addressPoolName: vlan203-apps
       ipAddressPoolRange: 10.202.64.180-10.202.64.190
     service:
       name: oooi-ingress
       namespace: openshift-ingress
-      # These are consumed by ExternalDNS when it watches the hosted cluster.
-      # Public DNS must otherwise be updated from appsIngressStatus.externalIP.
       annotations:
         external-dns.alpha.kubernetes.io/hostname: '*.apps.species-8472.clusters.blahonga.me.'
       labels:
         external-dns.blahonga.me/publish: "yes"
-    ports:
-      http: 80
-      https: 443

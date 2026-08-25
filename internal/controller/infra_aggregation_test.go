@@ -66,7 +66,7 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 	const infraName = "shared-vlan"
 	infraKey := types.NamespacedName{Name: infraName, Namespace: "default"}
 
-	createSharedInfra := func(withLegacyFields bool) {
+	createSharedInfra := func() {
 		spec := hostedclusterv1alpha1.InfraSpec{
 			NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
 				CIDR:                        "192.168.100.0/24",
@@ -89,12 +89,6 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 					ServerIP: "192.168.100.4",
 				},
 			},
-		}
-		if withLegacyFields {
-			spec.InfraComponents.DNS.ClusterName = "legacy"
-			spec.InfraComponents.DNS.BaseDomain = "example.com"
-			spec.InfraComponents.Proxy.ControlPlaneNamespace = "clusters-legacy"
-			ensureNamespace(ctx, "clusters-legacy")
 		}
 		Expect(k8sClient.Create(ctx, &hostedclusterv1alpha1.Infra{
 			ObjectMeta: metav1.ObjectMeta{Name: infraName, Namespace: "default"},
@@ -152,7 +146,7 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 	})
 
 	It("aggregates two attachments into one shared child set regardless of creation order", func() {
-		createSharedInfra(false)
+		createSharedInfra()
 		// Deliberately out of alphabetical order to prove deterministic output.
 		Expect(k8sClient.Create(ctx, makeAttachment("bravo", infraName, "bravo", "example.com", "clusters-bravo"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("alpha", infraName, "alpha", "example.com", "clusters-alpha"))).To(Succeed())
@@ -227,12 +221,11 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 		Expect(summary).NotTo(BeNil())
 		Expect(summary.Total).To(Equal(int32(2)))
 		Expect(summary.Ready).To(Equal(int32(0)))
-		Expect(summary.LegacyFieldsIgnored).To(BeFalse())
 		Expect(getInfra().Status.ComponentStatus.ProxyReady).To(BeTrue())
 	})
 
 	It("marks conflicting domains Degraded and excludes both", func() {
-		createSharedInfra(false)
+		createSharedInfra()
 		Expect(k8sClient.Create(ctx, makeAttachment("first", infraName, "dupe", "collide.example.com", "clusters-first"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("second", infraName, "dupe", "collide.example.com", "clusters-second"))).To(Succeed())
 
@@ -246,13 +239,16 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 		Expect(cond.Message).To(ContainSubstring("second"))
 		Expect(getInfra().Status.ComponentStatus.ProxyReady).To(BeFalse())
 
-		for _, e := range getDNS().Spec.StaticEntries {
-			Expect(e.Hostname).NotTo(ContainSubstring("collide.example.com"))
-		}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: infraName + "-dns", Namespace: "default",
+		}, &hostedclusterv1alpha1.DNSServer{})).To(MatchError(ContainSubstring("not found")))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: infraName + "-proxy", Namespace: "default",
+		}, &hostedclusterv1alpha1.ProxyServer{})).To(MatchError(ContainSubstring("not found")))
 	})
 
 	It("excludes terminating attachments from desired records", func() {
-		createSharedInfra(false)
+		createSharedInfra()
 		Expect(k8sClient.Create(ctx, makeAttachment("active", infraName, "active", "example.com", "clusters-active"))).To(Succeed())
 		terminating := makeAttachment("terminating", infraName, "terminating", "example.com", "clusters-terminating")
 		terminating.Finalizers = []string{"test.finalizer"}
@@ -274,34 +270,6 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 		Expect(k8sClient.Update(ctx, terminating)).To(Succeed())
 	})
 
-	It("ignores legacy cluster fields when explicit attachments exist", func() {
-		createSharedInfra(true)
-		Expect(k8sClient.Create(ctx, makeAttachment("only", infraName, "only", "example.com", "clusters-only"))).To(Succeed())
-
-		reconcileInfra()
-
-		Expect(getInfra().Status.Attachments.LegacyFieldsIgnored).To(BeTrue())
-		for _, e := range getDNS().Spec.StaticEntries {
-			Expect(e.Hostname).NotTo(ContainSubstring("legacy.example.com"))
-		}
-		Expect(getProxy().Spec.Backends[0].Hostname).To(HaveSuffix("only.example.com"))
-	})
-
-	It("keeps the historical single-cluster behavior with no attachments", func() {
-		createSharedInfra(true)
-		reconcileInfra()
-		Expect(getInfra().Status.Attachments).To(BeNil())
-
-		dns := getDNS()
-		found := false
-		for _, e := range dns.Spec.StaticEntries {
-			if e.Hostname == "api.legacy.example.com" {
-				found = true
-			}
-		}
-		Expect(found).To(BeTrue(), "implicit binding must preserve legacy records")
-		Expect(dns.Spec.HostedClusterDomain).To(Equal("legacy.example.com"))
-	})
 })
 
 var _ = Describe("InfraClusterAttachment Controller", func() {
@@ -379,7 +347,7 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 
 		Expect(k8sClient.Delete(ctx, &got)).To(Succeed())
 		reconcileAttachment(r, "defaults") // cleanup pass removes finalizer
-		Expect(factoryCalled).To(BeTrue(), "attachment cleanup must contact the HostedCluster API even when apps ingress is disabled")
+		Expect(factoryCalled).To(BeFalse(), "attachment cleanup must not contact the HostedCluster API when apps ingress is disabled")
 
 		Eventually(func() bool {
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: "defaults", Namespace: "default"}, &hostedclusterv1alpha1.InfraClusterAttachment{})
@@ -424,33 +392,6 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		}, &policy)).To(Succeed())
 	})
 
-	It("rejects an apps ingress HostedClusterRef that differs from the attachment", func() {
-		createInfraForAttachment()
-		ensureNamespace(ctx, "clusters-attached")
-		att := makeAttachment("ref-mismatch", infraName, "attached", "example.com", "")
-		att.Spec.AppsIngress = hostedclusterv1alpha1.AppsIngressConfig{
-			Enabled: true,
-			HostedClusterRef: hostedclusterv1alpha1.HostedClusterReference{
-				Name:      "different",
-				Namespace: "clusters",
-			},
-			MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
-				AddressPoolName:    "apps-pool",
-				IPAddressPoolRange: "192.0.2.10-192.0.2.20",
-			},
-		}
-		Expect(k8sClient.Create(ctx, att)).To(Succeed())
-
-		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		reconcileAttachment(r, "ref-mismatch")
-		reconcileAttachment(r, "ref-mismatch")
-
-		got := getAttachment("ref-mismatch")
-		Expect(got.Status.AppsIngressStatus.Phase).To(Equal(PhaseDegraded))
-		Expect(got.Status.AppsIngressStatus.Reason).To(Equal(reasonAttachmentInvalidConfig))
-		Expect(got.Status.AppsIngressStatus.Message).To(ContainSubstring("must be omitted or match"))
-	})
-
 	It("reconciles the control-plane policy alongside apps ingress", func() {
 		createInfraForAttachment()
 		ensureNamespace(ctx, "clusters-apps")
@@ -486,7 +427,6 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 	makeView := func(name, domain, cpns string, ready bool) attachmentView {
 		return attachmentView{
 			name:                  name,
-			explicit:              true,
 			ready:                 ready,
 			hostedClusterRef:      hostedclusterv1alpha1.HostedClusterReference{Name: name, Namespace: "clusters"},
 			controlPlaneNamespace: cpns,
@@ -500,7 +440,6 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 			Spec: hostedclusterv1alpha1.InfraSpec{
 				NetworkConfig: hostedclusterv1alpha1.NetworkConfig{NetworkAttachmentDefinition: "vlan"},
 				InfraComponents: hostedclusterv1alpha1.InfraComponents{
-					DNS: hostedclusterv1alpha1.DNSConfig{ClusterName: "legacy", BaseDomain: "example.com"},
 					Proxy: hostedclusterv1alpha1.ProxyConfig{
 						ServerIP: "192.0.2.4",
 						ExternalService: hostedclusterv1alpha1.ProxyExternalService{
@@ -508,7 +447,7 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 							AddressPoolName:         "public-pool",
 							PublishAttachmentOAuths: publish,
 							Annotations: map[string]string{
-								"external-dns.alpha.kubernetes.io/hostname": "legacy-oauth.example.com.",
+								"external-dns.alpha.kubernetes.io/hostname": "custom-oauth.example.com.",
 							},
 						},
 					},
@@ -525,7 +464,7 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 		}
 		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
 		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
-			To(Equal("legacy-oauth.example.com.,oauth.bravo.example.com"))
+			To(Equal("custom-oauth.example.com.,oauth.bravo.example.com"))
 	})
 
 	It("does not modify the annotation unless publishing is enabled", func() {
@@ -533,7 +472,7 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 		views := []attachmentView{makeView("a", "a.example.com", "clusters-a", true)}
 		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
 		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
-			To(Equal("legacy-oauth.example.com."))
+			To(Equal("custom-oauth.example.com."))
 	})
 
 	It("deduplicates case-insensitively and preserves user ordering", func() {
@@ -554,27 +493,4 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 		Expect(view.controlPlaneNamespace).To(Equal("clusters-defaulted"))
 	})
 
-	It("keeps unqualified Kubernetes aliases only for the implicit binding", func() {
-		By("implicit single-cluster binding retains historical aliases")
-		infra := infraWithExternal(false)
-		implicit := legacyAttachmentView(infra)
-		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, []attachmentView{implicit})
-		foundAliases := false
-		for _, b := range proxy.Spec.Backends {
-			if b.Name == "kube-apiserver-kubernetes-hostname" {
-				foundAliases = len(b.AlternateHostnames) > 0
-			}
-		}
-		Expect(foundAliases).To(BeTrue())
-
-		By("multi-attachment aggregation excludes them")
-		views := []attachmentView{
-			makeView("a", "a.example.com", "clusters-a", true),
-			makeView("b", "b.example.com", "clusters-b", true),
-		}
-		proxy = (&InfraReconciler{}).proxyServerForInfra(infra, views)
-		for _, b := range proxy.Spec.Backends {
-			Expect(b.AlternateHostnames).To(BeEmpty())
-		}
-	})
 })
