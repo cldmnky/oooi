@@ -301,6 +301,14 @@ const (
 	reasonDuplicateSourceIP    = "DuplicateSourceIP"
 )
 
+// Suffixes appended to the per-attachment prefix to form backend names.
+// backendNamePrefix budgets for the longest one, so a new suffix must not
+// exceed its length or generated names will break the 63-char limit.
+const (
+	suffixKubeAPIServerInternal = "kube-apiserver-internal" // longest suffix
+	suffixKubernetesHostname    = "kubernetes-hostname"
+)
+
 // aggregation is the resolved per-cluster view set for one reconcile pass,
 // plus observability about how it was built.
 type aggregation struct {
@@ -352,6 +360,10 @@ func attachmentFromAttachment(att *hostedclusterv1alpha1.InfraClusterAttachment)
 	return view
 }
 
+// maxAliasSourcePrefixRanges matches kubebuilder MaxItems on
+// ProxyBackend.sourcePrefixRanges so generated specs always pass admission.
+const maxAliasSourcePrefixRanges = 256
+
 // resolveAttachmentSourceCIDRs discovers VM IPs in the attachment's
 // control-plane namespace that lie within infraCIDR and returns them as /32
 // CIDRs. Empty infraCIDR or no matching VMIs returns nil.
@@ -395,6 +407,12 @@ func (r *InfraReconciler) resolveAttachmentSourceCIDRs(ctx context.Context, att 
 		}
 	}
 	sort.Strings(cidrs)
+	if len(cidrs) > maxAliasSourcePrefixRanges {
+		log := logf.FromContext(ctx)
+		log.Info("truncating source CIDRs to the ProxyBackend limit; VMs beyond the cap will not match kubernetes.* alias chains",
+			"attachment", att.Name, "namespace", cpns, "found", len(cidrs), "kept", maxAliasSourcePrefixRanges)
+		cidrs = cidrs[:maxAliasSourcePrefixRanges]
+	}
 	return cidrs
 }
 
@@ -405,7 +423,7 @@ func aliasBackendsForView(view attachmentView, prefix string) []hostedclusterv1a
 		return nil
 	}
 	return []hostedclusterv1alpha1.ProxyBackend{{
-		Name:               prefix + "kube-apiserver-kubernetes-hostname",
+		Name:               prefix + suffixKubernetesHostname,
 		Hostname:           "kubernetes",
 		AlternateHostnames: []string{"kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local", "kubernetes." + view.domain},
 		SourcePrefixRanges: view.sourceCIDRs,
@@ -473,9 +491,12 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 		seenHC[hcKey] = att.Name
 		seenDomain[domain] = att.Name
 	}
-	// Resolve source CIDRs for remaining attachments and detect duplicate source IPs.
-	cidrsByAttachment := map[string][]string{}
-	seenSourceCIDR := map[string]string{}
+	// Resolve VM source CIDRs per attachment. A source IP claimed by more than
+	// one attachment makes only the kubernetes.* alias chains ambiguous, so the
+	// conflicting CIDRs are dropped from every claimant; the attachments keep
+	// their fully qualified SNI/DNS routing.
+	cidrsByAttachment := make(map[string][]string, len(mine))
+	claims := map[string][]string{}
 	for i := range mine {
 		att := &mine[i]
 		if excluded[att.Name] {
@@ -484,17 +505,35 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 		cidrs := r.resolveAttachmentSourceCIDRs(ctx, att, infra.Spec.NetworkConfig.CIDR)
 		cidrsByAttachment[att.Name] = cidrs
 		for _, cidr := range cidrs {
-			if owner, ok := seenSourceCIDR[cidr]; ok {
-				if !excluded[att.Name] || !excluded[owner] {
-					excluded[att.Name] = true
-					excluded[owner] = true
-					agg.conflicts = append(agg.conflicts,
-						fmt.Sprintf("attachments %q and %q share source CIDR %q", owner, att.Name, cidr))
-					agg.degradedReason = reasonDuplicateSourceIP
+			// resolveAttachmentSourceCIDRs deduplicates within one attachment,
+			// so a second entry here always means a different attachment.
+			claims[cidr] = append(claims[cidr], att.Name)
+		}
+	}
+	conflictingCIDRs := map[string]bool{}
+	for cidr, names := range claims {
+		if len(names) < 2 {
+			continue
+		}
+		sort.Strings(names)
+		conflictingCIDRs[cidr] = true
+		quotedNames := make([]string, len(names))
+		for i, name := range names {
+			quotedNames[i] = fmt.Sprintf("%q", name)
+		}
+		agg.conflicts = append(agg.conflicts,
+			fmt.Sprintf("attachments %s share source CIDR %q", strings.Join(quotedNames, ", "), cidr))
+		agg.degradedReason = reasonDuplicateSourceIP
+	}
+	if len(conflictingCIDRs) > 0 {
+		for name, cidrs := range cidrsByAttachment {
+			filtered := make([]string, 0, len(cidrs))
+			for _, cidr := range cidrs {
+				if !conflictingCIDRs[cidr] {
+					filtered = append(filtered, cidr)
 				}
-			} else {
-				seenSourceCIDR[cidr] = att.Name
 			}
+			cidrsByAttachment[name] = filtered
 		}
 	}
 	for i := range mine {
@@ -773,7 +812,7 @@ func backendNamePrefix(view attachmentView) string {
 			return '-'
 		}
 	}, view.name)
-	const maxBase = len("kube-apiserver-internal")
+	const maxBase = len(suffixKubeAPIServerInternal) // must stay the longest suffix
 	const maxPrefix = 63 - maxBase - 1
 	if len(prefix) > maxPrefix {
 		prefix = strings.TrimRight(prefix[:maxPrefix], "-")
@@ -798,7 +837,7 @@ func hcpBackendsForView(view attachmentView, prefix string) []hostedclusterv1alp
 			TimeoutSeconds:  30,
 		},
 		{
-			Name:            prefix + "kube-apiserver-internal",
+			Name:            prefix + suffixKubeAPIServerInternal,
 			Hostname:        "api-int." + domain,
 			Port:            6443,
 			TargetService:   "kube-apiserver",

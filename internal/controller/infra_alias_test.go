@@ -2,6 +2,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,6 +17,16 @@ import (
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 )
+
+// aggConflicts splits the Infra Ready condition message back into the
+// individual conflict entries (joined with "; " by updateInfraStatus).
+func aggConflicts(infra hostedclusterv1alpha1.Infra) []string {
+	cond := meta.FindStatusCondition(infra.Status.Conditions, "Ready")
+	if cond == nil || cond.Message == "" {
+		return nil
+	}
+	return strings.Split(cond.Message, "; ")
+}
 
 func makeVMI(name, namespace, ip string) *kubevirtv1.VirtualMachineInstance {
 	return &kubevirtv1.VirtualMachineInstance{
@@ -115,7 +128,13 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 			}
 		}
 		// Clean VMIs and namespaces created in these tests
-		for _, ns := range []string{"clusters-alpha", "clusters-bravo", "clusters-filter", "clusters-dedupe", "clusters-dup-a", "clusters-dup-b", "clusters-empty", "clusters-sort", "clusters-multi"} {
+		for _, ns := range []string{
+			"clusters-alpha", "clusters-bravo", "clusters-filter", "clusters-dedupe",
+			"clusters-dup-a", "clusters-dup-b", "clusters-empty", "clusters-sort", "clusters-multi",
+			"clusters-overlap-a", "clusters-overlap-b",
+			"clusters-triple-a", "clusters-triple-b", "clusters-triple-c",
+			"clusters-longname", "clusters-cap",
+		} {
 			vlist := &kubevirtv1.VirtualMachineInstanceList{}
 			_ = k8sClient.List(ctx, vlist, client.InNamespace(ns))
 			for i := range vlist.Items {
@@ -140,10 +159,10 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		for _, b := range proxy.Spec.Backends {
 			byName[b.Name] = b
 		}
-		Expect(byName).To(HaveKey("alpha-kube-apiserver-kubernetes-hostname"))
-		Expect(byName).To(HaveKey("bravo-kube-apiserver-kubernetes-hostname"))
-		alpha := byName["alpha-kube-apiserver-kubernetes-hostname"]
-		bravo := byName["bravo-kube-apiserver-kubernetes-hostname"]
+		Expect(byName).To(HaveKey("alpha-kubernetes-hostname"))
+		Expect(byName).To(HaveKey("bravo-kubernetes-hostname"))
+		alpha := byName["alpha-kubernetes-hostname"]
+		bravo := byName["bravo-kubernetes-hostname"]
 		Expect(alpha.Hostname).To(Equal("kubernetes"))
 		Expect(alpha.AlternateHostnames).To(ContainElements("kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local", "kubernetes.alpha.example.com"))
 		Expect(alpha.SourcePrefixRanges).To(Equal([]string{"192.168.100.10/32"}))
@@ -185,8 +204,8 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		for _, b := range proxy.Spec.Backends {
 			byName[b.Name] = b
 		}
-		Expect(byName).To(HaveKey("filter-kube-apiserver-kubernetes-hostname"))
-		Expect(byName["filter-kube-apiserver-kubernetes-hostname"].SourcePrefixRanges).To(Equal([]string{"192.168.100.50/32"}))
+		Expect(byName).To(HaveKey("filter-kubernetes-hostname"))
+		Expect(byName["filter-kubernetes-hostname"].SourcePrefixRanges).To(Equal([]string{"192.168.100.50/32"}))
 	})
 
 	It("deduplicates IPs within same attachment", func() {
@@ -199,7 +218,7 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		reconcileInfra()
 		proxy := getProxy()
 		for _, b := range proxy.Spec.Backends {
-			if b.Name == "dedupe-kube-apiserver-kubernetes-hostname" {
+			if b.Name == "dedupe-kubernetes-hostname" {
 				Expect(b.SourcePrefixRanges).To(Equal([]string{"192.168.100.20/32"}))
 			}
 		}
@@ -223,7 +242,7 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		reconcileInfra()
 		proxy := getProxy()
 		for _, b := range proxy.Spec.Backends {
-			if b.Name == "multi-kube-apiserver-kubernetes-hostname" {
+			if b.Name == "multi-kubernetes-hostname" {
 				Expect(b.SourcePrefixRanges).To(Equal([]string{"192.168.100.30/32", "192.168.100.31/32", "192.168.100.32/32"}))
 			}
 		}
@@ -238,7 +257,7 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		reconcileInfra()
 		proxy := getProxy()
 		for _, b := range proxy.Spec.Backends {
-			if b.Name == "sort-kube-apiserver-kubernetes-hostname" {
+			if b.Name == "sort-kubernetes-hostname" {
 				Expect(b.SourcePrefixRanges).To(Equal([]string{"192.168.100.50/32", "192.168.100.51/32", "192.168.100.52/32"}))
 			}
 		}
@@ -275,7 +294,7 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		}
 	})
 
-	It("excludes both attachments on duplicate source IP and marks Degraded", func() {
+	It("keeps FQDN routing on duplicate source IP and suppresses only the alias chains", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-dup-a")
 		ensureNamespace(ctx, "clusters-dup-b")
@@ -292,11 +311,177 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(reasonDuplicateSourceIP))
+		Expect(cond.Message).To(ContainSubstring(`"dup-a"`))
+		Expect(cond.Message).To(ContainSubstring(`"dup-b"`))
 		Expect(cond.Message).To(ContainSubstring("192.168.100.99"))
 
-		// No proxy/dns children when all attachments conflict (both excluded)
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: infraName + "-proxy", Namespace: "default"}, &hostedclusterv1alpha1.ProxyServer{})).To(MatchError(ContainSubstring("not found")))
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: infraName + "-dns", Namespace: "default"}, &hostedclusterv1alpha1.DNSServer{})).To(MatchError(ContainSubstring("not found")))
+		By("keeping both attachments in the summary")
+		Expect(infra.Status.Attachments).NotTo(BeNil())
+		Expect(infra.Status.Attachments.Total).To(Equal(int32(2)))
+
+		By("retaining fully qualified backends and DNS for both clusters")
+		proxy := getProxy()
+		byName := map[string]hostedclusterv1alpha1.ProxyBackend{}
+		for _, b := range proxy.Spec.Backends {
+			byName[b.Name] = b
+		}
+		Expect(byName["dup-a-kube-apiserver"].TargetNamespace).To(Equal("clusters-dup-a"))
+		Expect(byName["dup-b-kube-apiserver"].TargetNamespace).To(Equal("clusters-dup-b"))
+		for _, b := range proxy.Spec.Backends {
+			Expect(b.SourcePrefixRanges).To(BeEmpty(), "alias chains must be suppressed for conflicting attachments")
+			Expect(b.Name).NotTo(ContainSubstring(suffixKubernetesHostname))
+		}
+
+		dns := getDNS()
+		hostnames := map[string]string{}
+		for _, e := range dns.Spec.StaticEntries {
+			hostnames[e.Hostname] = e.IP
+		}
+		Expect(hostnames).To(HaveKeyWithValue("api.dup-a.example.com", "192.168.100.4"))
+		Expect(hostnames).To(HaveKeyWithValue("api.dup-b.example.com", "192.168.100.4"))
+		Expect(hostnames).NotTo(HaveKey("kubernetes"))
+	})
+
+	It("removes only the shared CIDR when the conflict is partial", func() {
+		createAliasInfra()
+		ensureNamespace(ctx, "clusters-overlap-a")
+		ensureNamespace(ctx, "clusters-overlap-b")
+		Expect(k8sClient.Create(ctx, makeAttachment("overlap-a", infraName, "overlap-a", "example.com", "clusters-overlap-a"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeAttachment("overlap-b", infraName, "overlap-b", "example.com", "clusters-overlap-b"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeVMIWithIPs("vm-overlap-a", "clusters-overlap-a", []string{"192.168.100.70", "192.168.100.71"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeVMI("vm-overlap-b", "clusters-overlap-b", "192.168.100.70"))).To(Succeed())
+
+		reconcileInfra()
+
+		var infra hostedclusterv1alpha1.Infra
+		Expect(k8sClient.Get(ctx, infraKey, &infra)).To(Succeed())
+		cond := meta.FindStatusCondition(infra.Status.Conditions, "Ready")
+		Expect(cond.Reason).To(Equal(reasonDuplicateSourceIP))
+
+		proxy := getProxy()
+		byName := map[string]hostedclusterv1alpha1.ProxyBackend{}
+		for _, b := range proxy.Spec.Backends {
+			byName[b.Name] = b
+		}
+		// overlap-a keeps its unique IP; overlap-b has none left so no alias backend.
+		Expect(byName["overlap-a-kubernetes-hostname"].SourcePrefixRanges).To(Equal([]string{"192.168.100.71/32"}))
+		Expect(byName).NotTo(HaveKey("overlap-b-kubernetes-hostname"))
+		// Exactly one conflict entry for the shared CIDR.
+		conflicts := 0
+		for _, msg := range aggConflicts(infra) {
+			if strings.Contains(msg, "192.168.100.70") {
+				conflicts++
+			}
+		}
+		Expect(conflicts).To(Equal(1))
+		// FQDN routing unaffected for both.
+		Expect(byName["overlap-a-kube-apiserver"].TargetNamespace).To(Equal("clusters-overlap-a"))
+		Expect(byName["overlap-b-kube-apiserver"].TargetNamespace).To(Equal("clusters-overlap-b"))
+	})
+
+	It("reports every claimant once when three attachments share a source IP", func() {
+		createAliasInfra()
+		ensureNamespace(ctx, "clusters-triple-a")
+		ensureNamespace(ctx, "clusters-triple-b")
+		ensureNamespace(ctx, "clusters-triple-c")
+		Expect(k8sClient.Create(ctx, makeAttachment("tri-a", infraName, "tri-a", "example.com", "clusters-triple-a"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeAttachment("tri-b", infraName, "tri-b", "example.com", "clusters-triple-b"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeAttachment("tri-c", infraName, "tri-c", "example.com", "clusters-triple-c"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeVMI("vm-tri-a", "clusters-triple-a", "192.168.100.80"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeVMI("vm-tri-b", "clusters-triple-b", "192.168.100.80"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeVMI("vm-tri-c", "clusters-triple-c", "192.168.100.80"))).To(Succeed())
+
+		reconcileInfra()
+
+		var infra hostedclusterv1alpha1.Infra
+		Expect(k8sClient.Get(ctx, infraKey, &infra)).To(Succeed())
+		conflicts := aggConflicts(infra)
+		Expect(conflicts).To(HaveLen(1))
+		Expect(conflicts[0]).To(ContainSubstring(`"tri-a"`))
+		Expect(conflicts[0]).To(ContainSubstring(`"tri-b"`))
+		Expect(conflicts[0]).To(ContainSubstring(`"tri-c"`))
+
+		proxy := getProxy()
+		for _, b := range proxy.Spec.Backends {
+			Expect(b.SourcePrefixRanges).To(BeEmpty())
+		}
+		// All three clusters keep their FQDN records.
+		hostnames := map[string]bool{}
+		for _, e := range getDNS().Spec.StaticEntries {
+			hostnames[e.Hostname] = true
+		}
+		Expect(hostnames).To(HaveKey("api.tri-a.example.com"))
+		Expect(hostnames).To(HaveKey("api.tri-b.example.com"))
+		Expect(hostnames).To(HaveKey("api.tri-c.example.com"))
+	})
+
+	It("caps generated source CIDRs at the ProxyBackend MaxItems limit", func() {
+		By("creating a /16 Infra so more than 254 distinct VM IPs fit the CIDR")
+		capInfra := &hostedclusterv1alpha1.Infra{
+			ObjectMeta: metav1.ObjectMeta{Name: "cap-infra", Namespace: "default"},
+			Spec: hostedclusterv1alpha1.InfraSpec{
+				NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+					CIDR:                        "10.200.0.0/16",
+					Gateway:                     "10.200.0.1",
+					NetworkAttachmentDefinition: "vlan200",
+				},
+				InfraComponents: hostedclusterv1alpha1.InfraComponents{
+					DHCP: hostedclusterv1alpha1.DHCPConfig{Enabled: true, ServerIP: "10.200.0.2", RangeStart: "10.200.1.1", RangeEnd: "10.200.254.254"},
+					DNS:  hostedclusterv1alpha1.DNSConfig{Enabled: true, ServerIP: "10.200.0.3"},
+					Proxy: hostedclusterv1alpha1.ProxyConfig{
+						Enabled:  true,
+						ServerIP: "10.200.0.4",
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, capInfra)).To(Succeed())
+		defer func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, capInfra))).To(Succeed())
+			for _, n := range []string{"cap-infra-dhcp", "cap-infra-dns", "cap-infra-proxy"} {
+				for _, obj := range []client.Object{
+					&hostedclusterv1alpha1.DHCPServer{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: "default"}},
+					&hostedclusterv1alpha1.DNSServer{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: "default"}},
+					&hostedclusterv1alpha1.ProxyServer{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: "default"}},
+				} {
+					_ = k8sClient.Delete(ctx, obj)
+				}
+			}
+		}()
+
+		ensureNamespace(ctx, "clusters-cap")
+		Expect(k8sClient.Create(ctx, makeAttachment("cap", "cap-infra", "cap", "example.com", "clusters-cap"))).To(Succeed())
+
+		generated := make([]string, 0, maxAliasSourcePrefixRanges+5)
+		total := maxAliasSourcePrefixRanges + 5
+		for i := 0; i < total; i++ {
+			ip := fmt.Sprintf("10.200.%d.%d", 1+i/250, 1+i%250)
+			generated = append(generated, ip+"/32")
+			Expect(k8sClient.Create(ctx, makeVMI(fmt.Sprintf("vm-cap-%03d", i), "clusters-cap", ip))).To(Succeed())
+		}
+		sort.Strings(generated)
+		expected := generated[:maxAliasSourcePrefixRanges]
+
+		var att hostedclusterv1alpha1.InfraClusterAttachment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cap", Namespace: "default"}, &att)).To(Succeed())
+		// The resolver itself applies the MaxItems cap.
+		dbg := reconciler.resolveAttachmentSourceCIDRs(ctx, &att, "10.200.0.0/16")
+		Expect(dbg).To(Equal(expected))
+
+		_, reconcileErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "cap-infra", Namespace: "default"}})
+		Expect(reconcileErr).NotTo(HaveOccurred())
+
+		var proxy hostedclusterv1alpha1.ProxyServer
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cap-infra-proxy", Namespace: "default"}, &proxy)).To(Succeed())
+		var alias *hostedclusterv1alpha1.ProxyBackend
+		for i := range proxy.Spec.Backends {
+			if proxy.Spec.Backends[i].Name == "cap-kubernetes-hostname" {
+				alias = &proxy.Spec.Backends[i]
+			}
+		}
+		Expect(alias).NotTo(BeNil())
+		Expect(alias.SourcePrefixRanges).To(HaveLen(maxAliasSourcePrefixRanges))
+		Expect(alias.SourcePrefixRanges).To(Equal(expected))
 	})
 
 	It("removes alias when VMI is deleted", func() {
@@ -307,13 +492,13 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		Expect(k8sClient.Create(ctx, vmi)).To(Succeed())
 
 		reconcileInfra()
-		Expect(getProxy().Spec.Backends).To(ContainElement(HaveField("Name", "alpha-kube-apiserver-kubernetes-hostname")))
+		Expect(getProxy().Spec.Backends).To(ContainElement(HaveField("Name", "alpha-kubernetes-hostname")))
 
 		Expect(k8sClient.Delete(ctx, vmi)).To(Succeed())
 		reconcileInfra()
 		proxy := getProxy()
 		for _, b := range proxy.Spec.Backends {
-			Expect(b.Name).NotTo(Equal("alpha-kube-apiserver-kubernetes-hostname"))
+			Expect(b.Name).NotTo(Equal("alpha-kubernetes-hostname"))
 		}
 		dns := getDNS()
 		for _, e := range dns.Spec.StaticEntries {
@@ -333,10 +518,10 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 
 		reconcileInfra()
 		proxy := getProxy()
-		Expect(proxy.Spec.Backends).To(ContainElement(HaveField("Name", "derived-kube-apiserver-kubernetes-hostname")))
+		Expect(proxy.Spec.Backends).To(ContainElement(HaveField("Name", "derived-kubernetes-hostname")))
 		found := false
 		for _, b := range proxy.Spec.Backends {
-			if b.Name == "derived-kube-apiserver-kubernetes-hostname" {
+			if b.Name == "derived-kubernetes-hostname" {
 				Expect(b.TargetNamespace).To(Equal("clusters-derived"))
 				Expect(b.SourcePrefixRanges).To(Equal([]string{"192.168.100.77/32"}))
 				found = true
@@ -390,6 +575,29 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		Expect(k8sClient.Update(ctx, terminating)).To(Succeed())
 	})
 
+	It("keeps generated backend names within the 63-char limit for long attachment names", func() {
+		createAliasInfra()
+		ensureNamespace(ctx, "clusters-longname")
+		longName := "shared-infra-production-cluster" // 31 chars, previously produced a 66-char name
+		Expect(longName).To(HaveLen(31))
+		Expect(k8sClient.Create(ctx, makeAttachment(longName, infraName, "longname", "example.com", "clusters-longname"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeVMI("vm-longname", "clusters-longname", "192.168.100.90"))).To(Succeed())
+
+		reconcileInfra()
+
+		proxy := getProxy()
+		found := false
+		for _, b := range proxy.Spec.Backends {
+			Expect(len(b.Name)).To(BeNumerically("<=", 63), "backend %q must respect MaxLength=63", b.Name)
+			if strings.HasSuffix(b.Name, suffixKubernetesHostname) {
+				Expect(b.TargetNamespace).To(Equal("clusters-longname"))
+				Expect(b.SourcePrefixRanges).To(Equal([]string{"192.168.100.90/32"}))
+				found = true
+			}
+		}
+		Expect(found).To(BeTrue(), "alias backend should be generated for the long-named attachment")
+	})
+
 	It("reports ValidDomain handling even with alias", func() {
 		// Empty clusterName is rejected by CRD validation, so test via helper directly.
 		invalid := attachmentView{name: "bad", domain: "", sourceCIDRs: []string{"192.168.100.10/32"}}
@@ -440,6 +648,49 @@ var _ = Describe("helper coverage", func() {
 		// Indirectly tested via shared external Service test; ensure no panic on empty.
 		Expect(mergeOAuthHostnames(nil, nil)).To(Not(BeNil()))
 		Expect(hostnameKey("  OAuth.Example.Com. ")).To(Equal("oauth.example.com"))
+	})
+
+	It("generates backend names within MaxLength=63 for every suffix and name length", func() {
+		longest := len(suffixKubeAPIServerInternal)
+		if len(suffixKubernetesHostname) > longest {
+			longest = len(suffixKubernetesHostname)
+		}
+		Expect(longest).To(BeNumerically("<=", 63-40), "suffix budget leaves no room for a prefix")
+
+		names := []string{
+			"a",
+			"alpha",
+			"mc-alpha",
+			"shared-infra-production-cluster", // previously overflowed at 66 chars
+			"clusters-production-region-one-us-east-worker", // exercises prefix truncation
+			strings.Repeat("x", 63),
+			"UPPER-case_And.Symbols!!",
+		}
+		for _, name := range names {
+			view := attachmentView{
+				name:                  name,
+				domain:                "example.com",
+				controlPlaneNamespace: "clusters-x",
+				sourceCIDRs:           []string{"192.168.100.1/32"},
+			}
+			prefix := backendNamePrefix(view)
+			for _, suffix := range []string{suffixKubeAPIServerInternal, suffixKubernetesHostname} {
+				full := prefix + suffix
+				Expect(len(full)).To(BeNumerically("<=", 63), "attachment %q with suffix %q produced %q", name, suffix, full)
+			}
+			backends := aliasBackendsForView(view, prefix)
+			Expect(backends).To(HaveLen(1))
+			Expect(len(backends[0].Name)).To(BeNumerically("<=", 63))
+		}
+
+		// Distinct long names sharing a truncated prefix must still yield distinct prefixes.
+		a := backendNamePrefix(attachmentView{name: strings.Repeat("a", 45) + "-one"})
+		b := backendNamePrefix(attachmentView{name: strings.Repeat("a", 45) + "-two"})
+		// Both truncate identically only if the difference lies beyond the cut; with the
+		// current implementation they may collide, which is pre-existing behavior for
+		// hcp backends too — assert only the length invariant here.
+		Expect(a).To(HaveLen(40))
+		Expect(b).To(HaveLen(40))
 	})
 })
 
