@@ -355,6 +355,27 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		}).Should(BeTrue())
 	})
 
+	It("removes the finalizer when the derived control-plane namespace is absent", func() {
+		createInfraForAttachment()
+		att := makeAttachment("missing-namespace", infraName, "example-hcp", "example.com", "")
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileAttachment(r, "missing-namespace") // finalizer add pass
+		reconcileAttachment(r, "missing-namespace") // namespace-pending pass
+
+		got := getAttachment("missing-namespace")
+		Expect(k8sClient.Delete(ctx, &got)).To(Succeed())
+		reconcileAttachment(r, "missing-namespace")
+
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: "missing-namespace", Namespace: "default",
+			}, &hostedclusterv1alpha1.InfraClusterAttachment{})
+			return errors.IsNotFound(err)
+		}).Should(BeTrue())
+	})
+
 	It("reports InfraNotFound when the referenced Infra is missing", func() {
 		att := makeAttachment("orphan", "missing-infra", "orphan", "example.com", "")
 		Expect(k8sClient.Create(ctx, att)).To(Succeed())

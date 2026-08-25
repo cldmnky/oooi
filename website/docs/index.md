@@ -45,9 +45,10 @@ SNI passthrough traffic needed for the configured control-plane Services.
 
     ---
 
-    One `Infra` custom resource describes the VLAN and the hosted cluster. The
-    operator reconciles `DHCPServer`, `DNSServer`, and `ProxyServer` resources
-    and keeps them converged — with automatic garbage collection on delete.
+    One `Infra` custom resource describes the shared VLAN stack. Create an
+    `InfraClusterAttachment` for each hosted cluster that uses it. The operator
+    reconciles `DHCPServer`, `DNSServer`, and `ProxyServer` resources and keeps
+    them converged — with automatic garbage collection on delete.
 
 -   :material-ip-network-outline: __Static IPAM with KubeVirt awareness__
 

@@ -225,8 +225,6 @@ spec:
     dns:
       enabled: true
       serverIP: "192.168.100.3"
-      baseDomain: "example.com"
-      clusterName: "mycluster"
     
     proxy:
       enabled: true
@@ -234,7 +232,29 @@ spec:
       proxyImage: "envoyproxy/envoy:v1.36.4"
 ```
 
-The Infra controller will automatically create the ProxyServer resource with proper configuration.
+Create one attachment for each hosted cluster that should use the shared
+stack. The attachment carries the cluster DNS identity and control-plane
+reference used to generate the DNS records and SNI routes:
+
+```yaml
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: mycluster
+  namespace: hosted-clusters
+spec:
+  infraRef:
+    name: mycluster-infra
+  hostedClusterRef:
+    name: mycluster
+    namespace: clusters
+  dns:
+    clusterName: mycluster
+    baseDomain: example.com
+```
+
+The Infra controller automatically creates the shared ProxyServer and
+aggregates every attachment's routes into it.
 
 ## OpenShift Deployment
 

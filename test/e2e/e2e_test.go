@@ -589,13 +589,19 @@ spec:
 		It("should verify Infra resource cleanup", func() {
 			By("deleting the test InfraClusterAttachment")
 			cmd := exec.Command("kubectl", "delete", "infraclusterattachment", "test-infra-attachment",
-				"-n", namespace, "--ignore-not-found=true")
-			_, err := utils.Run(cmd)
+				"-n", namespace, "--ignore-not-found=true", "--wait=false")
+			_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "infraclusterattachment", "test-infra-attachment", "-n", namespace)
+				_, err := utils.RunWithTimeout(diagnosticCommandTimeout, cmd)
+				g.Expect(err).To(HaveOccurred(), "InfraClusterAttachment should be deleted")
+			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			By("deleting the test Infra resource")
-			cmd = exec.Command("kubectl", "delete", "infra", "test-infra", "-n", namespace, "--ignore-not-found=true")
-			_, err = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "infra", "test-infra", "-n", namespace,
+				"--ignore-not-found=true", "--wait=false")
+			_, err = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the Infra resource is deleted")

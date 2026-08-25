@@ -32,8 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -878,6 +880,32 @@ func hostnameKey(hostname string) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	enqueueInfra := func(queue workqueue.TypedRateLimitingInterface[reconcile.Request], object client.Object) {
+		att, ok := object.(*hostedclusterv1alpha1.InfraClusterAttachment)
+		if !ok || att.Spec.InfraRef.Name == "" {
+			return
+		}
+		queue.Add(reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: att.Spec.InfraRef.Name, Namespace: att.Namespace},
+		})
+	}
+	attachmentHandler := handler.Funcs{
+		CreateFunc: func(_ context.Context, e event.CreateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueInfra(queue, e.Object)
+		},
+		UpdateFunc: func(_ context.Context, e event.UpdateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			// Reconcile both sides of an InfraRef change so the old shared
+			// resource drops routes and the new one gains them.
+			enqueueInfra(queue, e.ObjectOld)
+			enqueueInfra(queue, e.ObjectNew)
+		},
+		DeleteFunc: func(_ context.Context, e event.DeleteEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueInfra(queue, e.Object)
+		},
+		GenericFunc: func(_ context.Context, e event.GenericEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueInfra(queue, e.Object)
+		},
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.Infra{}).
 		Owns(&hostedclusterv1alpha1.DHCPServer{}).
@@ -885,15 +913,7 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&hostedclusterv1alpha1.ProxyServer{}).
 		Watches(
 			&hostedclusterv1alpha1.InfraClusterAttachment{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
-				att, ok := o.(*hostedclusterv1alpha1.InfraClusterAttachment)
-				if !ok || att.Spec.InfraRef.Name == "" {
-					return nil
-				}
-				return []reconcile.Request{{
-					NamespacedName: types.NamespacedName{Name: att.Spec.InfraRef.Name, Namespace: att.Namespace},
-				}}
-			}),
+			attachmentHandler,
 		).
 		Named("infra").
 		Complete(r)

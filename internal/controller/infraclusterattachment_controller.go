@@ -71,7 +71,7 @@ type InfraClusterAttachmentReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras,verbs=get;list;watch
 // +kubebuilder:rbac:groups=hypershift.openshift.io,resources=hostedclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;create;update;patch;delete
 
 // Reconcile moves the current state of the cluster closer to the desired state
@@ -145,12 +145,17 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	if att.Spec.AppsIngress.Enabled {
 		if att.Spec.AppsIngress.MetalLB.AddressPoolName == "" ||
 			att.Spec.AppsIngress.MetalLB.IPAddressPoolRange == "" {
+			status := hostedclusterv1alpha1.AppsIngressStatus{
+				Phase:                      PhaseDegraded,
+				Reason:                     reasonAttachmentInvalidConfig,
+				Message:                    "appsIngress requires metallb.addressPoolName and metallb.ipAddressPoolRange",
+				AppliedServiceName:         att.Status.AppsIngressStatus.AppliedServiceName,
+				AppliedServiceNamespace:    att.Status.AppsIngressStatus.AppliedServiceNamespace,
+				AppliedAddressPoolName:     att.Status.AppsIngressStatus.AppliedAddressPoolName,
+				AppliedL2AdvertisementName: att.Status.AppsIngressStatus.AppliedL2AdvertisementName,
+			}
 			err := r.setAppsIngressStatusAndFinish(ctx, att, target,
-				hostedclusterv1alpha1.AppsIngressStatus{
-					Phase:   PhaseDegraded,
-					Reason:  reasonAttachmentInvalidConfig,
-					Message: "appsIngress requires metallb.addressPoolName and metallb.ipAddressPoolRange",
-				})
+				status)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -167,6 +172,14 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 			return ctrl.Result{}, err
 		}
 		return result, nil
+	}
+	previousAppsIngressStatus := att.Status.AppsIngressStatus
+	if hasAppliedAppsIngress(previousAppsIngressStatus) {
+		cleanupConfig := appliedAppsIngressConfig(att.Spec.AppsIngress, previousAppsIngressStatus)
+		if err := r.cleanupHostedAppsIngress(ctx, att, target, cleanupConfig); err != nil {
+			log.Error(err, "Failed to clean up disabled apps ingress", "attachment", att.Name)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 	}
 	att.Status.AppsIngressStatus = hostedclusterv1alpha1.AppsIngressStatus{}
 
@@ -187,6 +200,17 @@ func (r *InfraClusterAttachmentReconciler) hostedFactory(att *hostedclusterv1alp
 		}
 		return defaultHostedClusterClient(ctx, r.Client, target.HostedClusterRef, target.APIServerService, target.ControlPlaneNamespace)
 	}
+}
+
+func (r *InfraClusterAttachmentReconciler) cleanupHostedAppsIngress(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, target appsIngressTarget, cfg hostedclusterv1alpha1.AppsIngressConfig) error {
+	hostedClient, err := r.hostedFactory(att, target)(ctx)
+	if err != nil {
+		if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return nil
+		}
+		return err
+	}
+	return cleanupMetalLBInstallation(ctx, hostedClient, cfg)
 }
 
 // ensureControlPlaneNetworkPolicy reconciles the allow-infrastructure policy
@@ -256,7 +280,8 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 		target.APIServerService = defaultAPIServerServiceName
 	}
 
-	if target.Config.Enabled {
+	cleanupConfig := appliedAppsIngressConfig(target.Config, att.Status.AppsIngressStatus)
+	if target.Config.Enabled || hasAppliedAppsIngress(att.Status.AppsIngressStatus) {
 		factory := r.hostedFactory(att, target)
 		hostedClient, err := factory(ctx)
 		if err != nil {
@@ -269,27 +294,40 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 				log.Error(err, "Failed to build hosted-cluster client during cleanup; requeueing", "ref", target.HostedClusterRef)
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
-		} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
+		} else if err := cleanupMetalLBInstallation(ctx, hostedClient, cleanupConfig); err != nil {
 			log.Error(err, "Failed hosted-cluster cleanup; requeueing")
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 	}
 
-	policy := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "allow-infrastructure",
-			Namespace: target.ControlPlaneNamespace,
-		},
-	}
-	if err := r.Delete(ctx, policy); err != nil && !errors.IsNotFound(err) {
-		return ctrl.Result{}, err
+	if target.ControlPlaneNamespace != "" {
+		namespace := &corev1.Namespace{}
+		err := r.Get(ctx, types.NamespacedName{Name: target.ControlPlaneNamespace}, namespace)
+		if err != nil && !errors.IsNotFound(err) {
+			log.Error(err, "Failed to check control-plane namespace during cleanup", "namespace", target.ControlPlaneNamespace)
+			return ctrl.Result{}, err
+		}
+		if err == nil {
+			policy := &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "allow-infrastructure",
+					Namespace: target.ControlPlaneNamespace,
+				},
+			}
+			if err := r.Delete(ctx, policy); err != nil && !errors.IsNotFound(err) {
+				log.Error(err, "Failed to remove control-plane NetworkPolicy", "namespace", target.ControlPlaneNamespace)
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
 	if controllerutil.ContainsFinalizer(att, infraClusterAttachmentFinalizer) {
 		controllerutil.RemoveFinalizer(att, infraClusterAttachmentFinalizer)
 		if err := r.Update(ctx, att); err != nil {
+			log.Error(err, "Failed to remove InfraClusterAttachment finalizer")
 			return ctrl.Result{}, err
 		}
+		log.Info("Removed InfraClusterAttachment finalizer")
 	}
 	return ctrl.Result{}, nil
 }

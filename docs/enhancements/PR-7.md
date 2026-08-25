@@ -65,6 +65,8 @@ This PR introduces optional MetalLB-based ingress configuration for hosted clust
 8. **Document MetalLB prerequisites**: Add clear documentation about MetalLB version compatibility, required OLM catalogs, and network configuration prerequisites.
 
 ## Next Steps
+These items are retained as the historical PR-7 checklist; the current
+attachment-scoped implementation is documented in `docs/apps-ingress.md`.
 - [ ] Implement external IP discovery and status update
 - [ ] Integrate wildcard DNS entries into DNSServer generation
 - [ ] Integrate wildcard proxy backend into ProxyServer generation
@@ -72,7 +74,8 @@ This PR introduces optional MetalLB-based ingress configuration for hosted clust
 - [ ] Create E2E test validating full apps ingress flow
 - [ ] Document feature usage in QUICKSTART_E2E.md or create dedicated apps-ingress guide
 - [ ] Clarify scope: should MetalLB installation be automatic or validation-only?
-- [ ] Resolve open question: how to construct wildcard domain from baseDomain?
+- [x] Resolve open question: use `spec.dns.clusterName` plus
+  `spec.dns.baseDomain` to construct the wildcard domain.
 
 
 ## Completed 2026-08-23

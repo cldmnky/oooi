@@ -294,10 +294,13 @@ make deploy IMG=your-registry/oooi:dev
 ### Creating Infrastructure
 
 Create a HostedCluster (e.g. with `hcp create cluster kubevirt ...`), then
-declare the VLAN infrastructure with an `Infra` custom resource. The operator
+declare the shared VLAN infrastructure with an `Infra` custom resource and
+create an `InfraClusterAttachment` for each HostedCluster using it. The operator
 provisions a `DHCPServer`, `DNSServer`, and `ProxyServer` — each pinned to its
 static IP on the secondary network via a Multus network-attachment — and keeps
-them reconciled. Deleting the `Infra` resource garbage-collects everything.
+them reconciled. Delete attachments before the shared `Infra` so their
+control-plane and hosted-cluster resources are cleaned up before shared child
+resources are garbage-collected.
 
 ```
 KubeVirt VMs (isolated VLAN, 192.168.100.0/24)   Management cluster pod network

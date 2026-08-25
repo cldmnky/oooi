@@ -75,7 +75,9 @@ plus the three-path verification in [Verification](operations/verify.md).
 
 Everything it owns is garbage-collected: child CRs, Deployments, Services,
 ConfigMaps, ServiceAccounts, SCC RoleBindings, and the namespace NetworkPolicy.
-The HostedCluster itself is untouched until you delete it separately.
+Delete each `InfraClusterAttachment` first to remove its hosted-cluster
+apps-ingress resources and control-plane NetworkPolicy. The HostedCluster
+itself is untouched until you delete it separately.
 
 ### Where do public DNS records come from?
 

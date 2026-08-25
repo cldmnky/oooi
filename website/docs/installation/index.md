@@ -49,6 +49,7 @@ kubectl get crd | grep hostedcluster.densityops.com
 # dhcpservers.hostedcluster.densityops.com
 # dnsservers.hostedcluster.densityops.com
 # infras.hostedcluster.densityops.com
+# infraclusterattachments.hostedcluster.densityops.com
 # proxyservers.hostedcluster.densityops.com
 
 kubectl -n oooi-system get deploy,pods
@@ -67,6 +68,7 @@ migration is required.
 
 ## Uninstall
 
-Follow [Uninstall and cleanup](../operations/uninstall.md) — delete `Infra`
-resources first so garbage collection removes children, then remove the
-operator and CRDs.
+Follow [Uninstall and cleanup](../operations/uninstall.md) — delete
+`InfraClusterAttachment` resources first so hosted-cluster resources and
+cross-namespace policies are cleaned up, then delete `Infra` resources and
+remove the operator and CRDs.

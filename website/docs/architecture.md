@@ -68,18 +68,21 @@ narrowly scoped:
 
 ## Components
 
-The user-facing API is the `Infra` custom resource. oooi reconciles it into
-child custom resources in the same namespace; each child manages its own
-Deployment, Services, ConfigMap, ServiceAccount, SCC RoleBinding, and Multus
-attachment.
+The user-facing API has two scopes. `Infra` describes the shared VLAN stack;
+`InfraClusterAttachment` binds one HostedCluster to that stack and carries its
+DNS, control-plane, and optional apps-ingress settings. oooi reconciles the
+shared child custom resources in the Infra namespace; each child manages its
+own Deployment, Services, ConfigMap, ServiceAccount, SCC RoleBinding, and
+Multus attachment.
 
 | Component | Child CR | Image | Role |
 |---|---|---|---|
-| `InfraReconciler` | — | `registry.example.com/oooi` | Validates input, creates children, drives apps-ingress automation, aggregates status |
+| `InfraReconciler` | — | `registry.example.com/oooi` | Creates shared children, aggregates attachment routes, and reports shared status |
+| `InfraClusterAttachmentReconciler` | — | `registry.example.com/oooi` | Binds one HostedCluster, manages its control-plane policy, and drives optional apps ingress |
 | DHCP | `DHCPServer` | oooi image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
 | DNS | `DNSServer` | oooi image (CoreDNS component) | Split-horizon views; static HCP answers; upstream forwarding |
 | Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
-| Apps ingress | (part of Infra) | MetalLB operator | Installs MetalLB into the hosted cluster, allocates and advertises the wildcard VIP |
+| Apps ingress | `InfraClusterAttachment` | MetalLB operator | Installs MetalLB into the attached hosted cluster, allocates and advertises its wildcard VIP |
 
 ### Ownership and garbage collection
 
@@ -114,6 +117,8 @@ Because Envoy never terminates TLS, certificates remain inside the hosted
 cluster and the proxy cannot inspect tenant traffic.
 
 ### Apps ingress (wildcard `*.apps`)
+
+For an attachment with `spec.appsIngress.enabled: true`:
 
 1. oooi waits for a Ready hosted worker (OLM's MetalLB bundle-unpack Job needs
    schedulable capacity).

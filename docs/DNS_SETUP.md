@@ -488,7 +488,7 @@ Both proxies should route traffic to the actual HCP services in the control plan
 
 ## Reference
 
-### Infra CR DNS Fields
+### DNS-related Infra fields
 
 | Field | Description | Required | Default |
 |-------|-------------|----------|---------|

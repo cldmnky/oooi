@@ -132,7 +132,7 @@ Create it in the same namespace as the referenced `Infra`.
 | `conditions[]` | `Ready` reflects aggregation plus apps-ingress state. |
 | `domain` | Resolved `<clusterName>.<baseDomain>`. |
 | `controlPlaneNamespace` | Resolved control-plane namespace. |
-| `appsIngressStatus.*` | Apps-ingress phase, endpoint, and last-sync fields scoped to this cluster. |
+| `appsIngressStatus.*` | Apps-ingress phase, endpoint, last-sync, and applied-resource identity fields scoped to this cluster; applied identities let cleanup remove resources after a configuration change or disable. |
 
 Conflicts are visible rather than resolved silently: duplicate domains or
 duplicate HostedCluster references exclude both attachments from routing and

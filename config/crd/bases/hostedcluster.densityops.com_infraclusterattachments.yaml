@@ -227,6 +227,26 @@ spec:
                   AppsIngressStatus tracks the per-cluster apps ingress state in the
                   hosted cluster.
                 properties:
+                  appliedAddressPoolName:
+                    description: |-
+                      AppliedAddressPoolName records the last MetalLB IPAddressPool managed by
+                      oooi.
+                    type: string
+                  appliedL2AdvertisementName:
+                    description: |-
+                      AppliedL2AdvertisementName records the last MetalLB L2Advertisement
+                      managed by oooi.
+                    type: string
+                  appliedServiceName:
+                    description: |-
+                      AppliedServiceName records the last hosted ingress Service name managed
+                      by oooi so disabling or changing apps ingress can clean it up.
+                    type: string
+                  appliedServiceNamespace:
+                    description: |-
+                      AppliedServiceNamespace records the namespace of the last hosted ingress
+                      Service managed by oooi.
+                    type: string
                   externalHostname:
                     description: |-
                       ExternalHostname is the external hostname assigned to the hosted cluster's LoadBalancer service.

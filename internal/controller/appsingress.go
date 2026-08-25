@@ -58,6 +58,65 @@ const (
 	defaultIngressServiceNamespace = "openshift-ingress"
 )
 
+func appsIngressServiceName(cfg hostedclusterv1alpha1.AppsIngressConfig) string {
+	if cfg.Service.Name == "" {
+		return defaultIngressServiceName
+	}
+	return cfg.Service.Name
+}
+
+func appsIngressServiceNamespace(cfg hostedclusterv1alpha1.AppsIngressConfig) string {
+	if cfg.Service.Namespace == "" {
+		return defaultIngressServiceNamespace
+	}
+	return cfg.Service.Namespace
+}
+
+func appsIngressAdvertisementName(cfg hostedclusterv1alpha1.AppsIngressConfig) string {
+	if cfg.MetalLB.L2AdvertisementName == "" {
+		return "advertise-" + cfg.MetalLB.AddressPoolName
+	}
+	return cfg.MetalLB.L2AdvertisementName
+}
+
+func hasAppliedAppsIngress(status hostedclusterv1alpha1.AppsIngressStatus) bool {
+	return status.AppliedServiceName != "" ||
+		status.AppliedServiceNamespace != "" ||
+		status.AppliedAddressPoolName != "" ||
+		status.AppliedL2AdvertisementName != ""
+}
+
+func appliedAppsIngressConfig(cfg hostedclusterv1alpha1.AppsIngressConfig, status hostedclusterv1alpha1.AppsIngressStatus) hostedclusterv1alpha1.AppsIngressConfig {
+	cfg.Enabled = true
+	if status.AppliedServiceName != "" {
+		cfg.Service.Name = status.AppliedServiceName
+	}
+	if status.AppliedServiceNamespace != "" {
+		cfg.Service.Namespace = status.AppliedServiceNamespace
+	}
+	if status.AppliedAddressPoolName != "" {
+		cfg.MetalLB.AddressPoolName = status.AppliedAddressPoolName
+	}
+	if status.AppliedL2AdvertisementName != "" {
+		cfg.MetalLB.L2AdvertisementName = status.AppliedL2AdvertisementName
+	}
+	return cfg
+}
+
+func appsIngressResourceIdentityMatches(cfg hostedclusterv1alpha1.AppsIngressConfig, status hostedclusterv1alpha1.AppsIngressStatus) bool {
+	return status.AppliedServiceName == appsIngressServiceName(cfg) &&
+		status.AppliedServiceNamespace == appsIngressServiceNamespace(cfg) &&
+		status.AppliedAddressPoolName == cfg.MetalLB.AddressPoolName &&
+		status.AppliedL2AdvertisementName == appsIngressAdvertisementName(cfg)
+}
+
+func recordAppliedAppsIngress(status *hostedclusterv1alpha1.AppsIngressStatus, cfg hostedclusterv1alpha1.AppsIngressConfig) {
+	status.AppliedServiceName = appsIngressServiceName(cfg)
+	status.AppliedServiceNamespace = appsIngressServiceNamespace(cfg)
+	status.AppliedAddressPoolName = cfg.MetalLB.AddressPoolName
+	status.AppliedL2AdvertisementName = appsIngressAdvertisementName(cfg)
+}
+
 // defaultHostedClusterClient builds a client for the referenced HostedCluster.
 // The kubeconfig endpoint is intended for cluster clients on the VLAN; the
 // management controller must use the in-cluster API Service instead while
@@ -197,14 +256,8 @@ func cleanupMetalLBInstallation(ctx context.Context, hostedClient client.Client,
 	if !cfg.Enabled {
 		return nil
 	}
-	serviceName := cfg.Service.Name
-	if serviceName == "" {
-		serviceName = defaultIngressServiceName
-	}
-	serviceNamespace := cfg.Service.Namespace
-	if serviceNamespace == "" {
-		serviceNamespace = defaultIngressServiceNamespace
-	}
+	serviceName := appsIngressServiceName(cfg)
+	serviceNamespace := appsIngressServiceNamespace(cfg)
 	service := &corev1.Service{}
 	service.SetName(serviceName)
 	service.SetNamespace(serviceNamespace)
@@ -216,10 +269,7 @@ func cleanupMetalLBInstallation(ctx context.Context, hostedClient client.Client,
 	if poolName == "" {
 		return nil
 	}
-	advertisementName := cfg.MetalLB.L2AdvertisementName
-	if advertisementName == "" {
-		advertisementName = "advertise-" + poolName
-	}
+	advertisementName := appsIngressAdvertisementName(cfg)
 	operatorNamespace := "openshift-operators"
 	for _, obj := range []client.Object{
 		func() client.Object {
@@ -265,14 +315,8 @@ func cleanupMetalLBInstallation(ctx context.Context, hostedClient client.Client,
 // ensureAppsIngressServiceFor creates or updates the wildcard ingress
 // LoadBalancer Service in the hosted cluster as described by cfg.
 func ensureAppsIngressServiceFor(ctx context.Context, hostedClient client.Client, cfg hostedclusterv1alpha1.AppsIngressConfig) error {
-	serviceName := cfg.Service.Name
-	if serviceName == "" {
-		serviceName = defaultIngressServiceName
-	}
-	serviceNamespace := cfg.Service.Namespace
-	if serviceNamespace == "" {
-		serviceNamespace = defaultIngressServiceNamespace
-	}
+	serviceName := appsIngressServiceName(cfg)
+	serviceNamespace := appsIngressServiceNamespace(cfg)
 
 	httpPort := cfg.Ports.HTTP
 	if httpPort == 0 {
@@ -360,14 +404,8 @@ func ensureAppsIngressServiceFor(ctx context.Context, hostedClient client.Client
 // the hosted cluster. Exactly one of ip or hostname is non-empty once assigned;
 // both are empty while the endpoint is pending.
 func discoverAppsIngressExternalIPFor(ctx context.Context, hostedClient client.Client, cfg hostedclusterv1alpha1.AppsIngressConfig) (ip, hostname string, err error) {
-	serviceName := cfg.Service.Name
-	if serviceName == "" {
-		serviceName = defaultIngressServiceName
-	}
-	serviceNamespace := cfg.Service.Namespace
-	if serviceNamespace == "" {
-		serviceNamespace = defaultIngressServiceNamespace
-	}
+	serviceName := appsIngressServiceName(cfg)
+	serviceNamespace := appsIngressServiceNamespace(cfg)
 	svc := &corev1.Service{}
 	if err = hostedClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNamespace}, svc); err != nil {
 		return "", "", err
@@ -407,6 +445,19 @@ func reconcileAppsIngressCore(ctx context.Context, factory hostedClusterFactory,
 		status.ExternalHostname = ""
 		return ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
+
+	if hasAppliedAppsIngress(previousStatus) &&
+		!appsIngressResourceIdentityMatches(target.Config, previousStatus) {
+		oldConfig := appliedAppsIngressConfig(target.Config, previousStatus)
+		if err := cleanupMetalLBInstallation(ctx, hostedClient, oldConfig); err != nil {
+			status.Phase = PhaseDegraded
+			status.Reason = "AppsIngressCleanupFailed"
+			status.Message = err.Error()
+			setAppsIngressLastSyncTime(status, previousStatus)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}
+		}
+	}
+	recordAppliedAppsIngress(status, target.Config)
 
 	nodes := &corev1.NodeList{}
 	if err := hostedClient.List(ctx, nodes); err != nil {

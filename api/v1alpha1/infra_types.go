@@ -376,6 +376,26 @@ type AppsIngressStatus struct {
 	// Message provides a human-readable message explaining the current status.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// AppliedServiceName records the last hosted ingress Service name managed
+	// by oooi so disabling or changing apps ingress can clean it up.
+	// +optional
+	AppliedServiceName string `json:"appliedServiceName,omitempty"`
+
+	// AppliedServiceNamespace records the namespace of the last hosted ingress
+	// Service managed by oooi.
+	// +optional
+	AppliedServiceNamespace string `json:"appliedServiceNamespace,omitempty"`
+
+	// AppliedAddressPoolName records the last MetalLB IPAddressPool managed by
+	// oooi.
+	// +optional
+	AppliedAddressPoolName string `json:"appliedAddressPoolName,omitempty"`
+
+	// AppliedL2AdvertisementName records the last MetalLB L2Advertisement
+	// managed by oooi.
+	// +optional
+	AppliedL2AdvertisementName string `json:"appliedL2AdvertisementName,omitempty"`
 }
 
 // +kubebuilder:object:root=true
