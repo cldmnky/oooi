@@ -647,6 +647,16 @@ spec:
 		}
 
 		attachmentYAML := func(name, infraRef, clusterName, baseDomain, cpns string) string {
+			externalService := ""
+			if name == mcAlpha || name == mcBeta {
+				externalService = fmt.Sprintf(`
+  externalService:
+    enabled: true
+    addressPoolName: %[1]s-pool
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.%[2]s.%[3]s.
+`, name, clusterName, baseDomain)
+			}
 			return fmt.Sprintf(`
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: InfraClusterAttachment
@@ -663,7 +673,7 @@ spec:
     clusterName: %[3]s
     baseDomain: %[4]s
   controlPlaneNamespace: %[6]s
-`, name, infraRef, clusterName, baseDomain, namespace, cpns)
+%[7]s`, name, infraRef, clusterName, baseDomain, namespace, cpns, externalService)
 		}
 
 		BeforeAll(func() {
@@ -751,6 +761,34 @@ spec:
 			Expect(targets).To(ContainSubstring("clusters-mc-alpha"))
 			Expect(targets).To(ContainSubstring("clusters-mc-beta"))
 
+			By("creating one attachment-owned external Service per cluster")
+			for name, hostname := range map[string]string{
+				mcAlpha: "oauth.mc-alpha.clusters.example.com.",
+				mcBeta:  "oauth.mc-beta.clusters.example.com.",
+			} {
+				serviceName := name + "-proxy-external"
+				Eventually(func(g Gomega) {
+					cmd := exec.Command("kubectl", "get", "service", serviceName, "-n", namespace)
+					_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+					g.Expect(err).NotTo(HaveOccurred(), "external Service %s should exist", serviceName)
+				}, multiClusterWait, 2*time.Second).Should(Succeed())
+
+				Expect(getJSONPath("service", serviceName, `{.spec.type}`)).To(Equal("LoadBalancer"))
+				Expect(getJSONPath("service", serviceName, `{.spec.ports[0].port}`)).To(Equal("443"))
+				Expect(getJSONPath("service", serviceName, `{.spec.selector.app}`)).To(Equal("proxy-server"))
+				Expect(getJSONPath("service", serviceName, `{.spec.selector.hostedcluster\.densityops\.com}`)).
+					To(Equal(mcInfraName + "-proxy"))
+				Expect(getJSONPath("service", serviceName, `{.metadata.ownerReferences[0].kind}`)).
+					To(Equal("InfraClusterAttachment"))
+				Expect(getJSONPath("service", serviceName, `{.metadata.ownerReferences[0].name}`)).To(Equal(name))
+
+				cmd := exec.Command("kubectl", "get", "service", serviceName, "-n", namespace, "-o", "yaml")
+				serviceYAML, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(serviceYAML).To(ContainSubstring(hostname))
+				Expect(serviceYAML).To(ContainSubstring("metallb.universe.tf/address-pool: " + name + "-pool"))
+			}
+
 			By("summarizing both attachments on the Infra status")
 			Expect(getJSONPath("infra", mcInfraName, `{.status.attachments.total}`)).To(Equal("2"))
 		})
@@ -793,6 +831,14 @@ spec:
 				`{.spec.backends[*].targetNamespace}`)
 			Expect(backends).NotTo(ContainSubstring("clusters-mc-alpha"))
 			Expect(backends).To(ContainSubstring("clusters-mc-beta"))
+
+			By("removing only the deleted attachment's external Service")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", mcAlpha+"-proxy-external", "-n", namespace)
+				_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+				g.Expect(err).To(HaveOccurred(), "deleted attachment Service should be removed")
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+			Expect(getJSONPath("service", mcBeta+"-proxy-external", `{.spec.type}`)).To(Equal("LoadBalancer"))
 
 			Expect(getJSONPath("infra", mcInfraName, `{.status.attachments.total}`)).To(Equal("1"))
 		})
