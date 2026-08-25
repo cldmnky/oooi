@@ -24,6 +24,8 @@ Subscription) plus its control-plane NetworkPolicy:
 
 ```bash
 kubectl -n clusters get infraclusterattachment
+kubectl -n clusters get infraclusterattachment <name> \
+  -o jsonpath='{.status.controlPlaneNamespace}{"\n"}'
 kubectl -n clusters delete infraclusterattachment <name>
 ```
 
@@ -59,12 +61,13 @@ expecting the apps-ingress VIP to be released.
 
 ### 3. Clean unowned resources
 
-The control-plane NetworkPolicy is cross-namespace and DHCP's KubeVirt reader
+Record each attachment's resolved `status.controlPlaneNamespace` before deleting
+it. The control-plane NetworkPolicy is cross-namespace and DHCP's KubeVirt reader
 RBAC is cluster-scoped, so Kubernetes cannot use `Infra` as their owner. Check
 and remove those resources after deleting the `Infra` resource:
 
 ```bash
-kubectl -n clusters-<name> delete networkpolicy allow-infrastructure --ignore-not-found
+kubectl -n <control-plane-namespace> delete networkpolicy allow-infrastructure --ignore-not-found
 kubectl delete clusterrole <name>-dhcp-kubevirt-reader --ignore-not-found
 kubectl delete clusterrolebinding <name>-dhcp-kubevirt-reader --ignore-not-found
 ```
@@ -76,11 +79,11 @@ kubectl -n clusters delete nodepool <name> --wait=false
 kubectl -n clusters delete hostedcluster <name>
 ```
 
-HyperShift's finalizer then removes the control-plane namespace
-(`clusters-<name>`), KubeVirt VMs, and PVCs. This can take several minutes:
+HyperShift's finalizer then removes the resolved control-plane namespace,
+KubeVirt VMs, and PVCs. This can take several minutes:
 
 ```bash
-kubectl get ns clusters-<name>            # Terminating → NotFound
+kubectl get ns <control-plane-namespace>  # Terminating → NotFound
 ```
 
 !!! note

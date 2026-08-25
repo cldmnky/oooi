@@ -81,8 +81,13 @@ kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-ingress get svc oooi-ingre
 ```
 
 If `ipAddressPoolRange` overlaps the gateway, static addresses, or DHCP pool,
-allocation can fail or the VIP can be unreachable. Edit the `Infra` resource to
-use a disjoint range.
+allocation can fail or the VIP can be unreachable. Edit the relevant
+`InfraClusterAttachment.spec.appsIngress.metallb.ipAddressPoolRange` to use a
+disjoint range:
+
+```bash
+kubectl -n <infra-namespace> edit infraattachment <attachment>
+```
 
 ## Console / canary route health fails after working
 

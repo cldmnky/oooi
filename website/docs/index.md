@@ -48,7 +48,9 @@ SNI passthrough traffic needed for the configured control-plane Services.
     One `Infra` custom resource describes the shared VLAN stack. Create an
     `InfraClusterAttachment` for each hosted cluster that uses it. The operator
     reconciles `DHCPServer`, `DNSServer`, and `ProxyServer` resources and keeps
-    them converged — with automatic garbage collection on delete.
+    them converged. Namespaced children are garbage-collected on delete;
+    attachment finalizers and cleanup checks handle hosted, cross-namespace,
+    and cluster-scoped resources.
 
 -   :material-ip-network-outline: __Static IPAM with KubeVirt awareness__
 
@@ -63,10 +65,11 @@ SNI passthrough traffic needed for the configured control-plane Services.
     ---
 
     Dual-view CoreDNS: VMs on the VLAN resolve `api.*`, `oauth.*`, and
-    `*.apps.*` names to VLAN addresses; management-cluster pods resolve the same
-    names to internal ClusterIPs. KubeVirt worker aliases are published to the
-    shared proxy only when source addresses are known. Everything else is
-    forwarded upstream.
+    `*.apps.*` names to VLAN addresses. When `internalProxyService` is
+    configured, management-cluster pods resolve the same names to an internal
+    ClusterIP; otherwise static HCP answers are omitted from the default view.
+    KubeVirt worker aliases are published to the shared proxy only when source
+    addresses are known. Everything else is forwarded upstream.
 
 -   :material-security-network: __TLS passthrough SNI proxy__
 
@@ -82,7 +85,8 @@ SNI passthrough traffic needed for the configured control-plane Services.
 
     Installs MetalLB into the hosted cluster, creates the `*.apps.*`
     LoadBalancer VIP for the default IngressController, wires wildcard SNI
-    backends, and publishes both DNS views.
+    backends, and publishes VLAN DNS. The pod-network DNS answer is added only
+    when `internalProxyService` is configured.
 
 -   :label: __ExternalDNS integration__
 

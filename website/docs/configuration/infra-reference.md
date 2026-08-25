@@ -49,11 +49,15 @@ Split-horizon CoreDNS. `enabled` defaults to `true`.
 
 Static answers generated per view:
 
+The pod-network column applies only when `internalProxyService` is configured.
+Without it, static HCP answers, including apps and alias names, are omitted
+from the default view and queries are forwarded upstream.
+
 | Name(s) | VLAN view answers | Pod-network view answers |
 |---|---|---|
 | `api.<cluster>.<domain>` | `proxy.serverIP` | `proxy.internalProxyService` ClusterIP |
-| `api-int.<cluster>.<domain>` | `proxy.serverIP` | `internalProxyService` |
-| `oauth.*`, `ignition.*`, `konnectivity.*` | `proxy.serverIP` | `internalProxyService` |
+| `api-int.<cluster>.<domain>` | `proxy.serverIP` | `internalProxyService` ClusterIP |
+| `oauth.*`, `ignition.*`, `konnectivity.*` | `proxy.serverIP` | `internalProxyService` ClusterIP |
 | `*.apps.<cluster>.<domain>` (when apps ingress is Ready) | MetalLB external IP | proxy ClusterIP |
 | `kubernetes`, `kubernetes.default`, `kubernetes.default.svc`, `kubernetes.default.svc.cluster.local` (when a KubeVirt worker source range is known) | `proxy.serverIP` | `proxy.internalProxyService` ClusterIP |
 

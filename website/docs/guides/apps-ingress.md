@@ -3,7 +3,9 @@
 With `InfraClusterAttachment.spec.appsIngress.enabled: true`, oooi turns on wildcard
 `*.apps.<cluster>.<domain>` routing for the hosted cluster: MetalLB is
 installed *inside the hosted cluster*, a LoadBalancer VIP fronts the default
-IngressController, and both DNS views plus Envoy are wired to it.
+IngressController, and VLAN DNS plus Envoy are wired to it. The pod-network DNS
+answer is also wired when `infraComponents.proxy.internalProxyService` is
+configured.
 
 The feature is intentionally separate from the control-plane proxy endpoints:
 app traffic terminates at the hosted ingress router (TLS by Routes), while
@@ -38,7 +40,7 @@ sequenceDiagram
     I->>M: MetalLB + IPAddressPool + L2Advertisement
     I->>H: Service oooi-ingress (LoadBalancer)
     M-->>I: VIP assigned (.status → appsIngressStatus.externalIP)
-    I->>D: *.apps answers (VLAN view → VIP, pod view → proxy ClusterIP)
+    I->>D: *.apps answers (VLAN view → VIP; pod view → ClusterIP if configured)
     I->>D: Envoy wildcard SNI backends :80/:443 → VIP
 ```
 
@@ -100,7 +102,7 @@ from a worker). Do not include:
 | `Pending` | `WaitingForHostedClusterNodes` | No Ready hosted worker yet |
 | `Pending` | `WaitingForMetalLBCRDs` | Subscription installing |
 | `Pending` | `WaitingForExternalIP` | MetalLB has not assigned the VIP yet (re-checks every 15s) |
-| `Ready` | `ReconciliationSucceeded` | VIP known, DNS + Envoy wired |
+| `Ready` | `ReconciliationSucceeded` | VIP known, VLAN DNS + Envoy wired; pod view is conditional |
 | `Degraded` | `HostedClusterAccessFailed`, `MetalLBInstallFailed`, `IngressServiceFailed`, `ExternalIPDiscoveryFailed` | See `.message`; requeued |
 
 Query:
@@ -120,12 +122,15 @@ kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-ingress get svc oooi-ingre
 
 ## Verification
 
-An allocated VIP alone proves little — confirm all three paths:
+An allocated VIP alone proves little. Always verify the VLAN path; verify the
+other paths only when they are configured:
 
 1. **VLAN → VIP**: `dig @<dns.serverIP> foo.apps.<cluster>.<domain>` returns
    the VIP; a request to a hosted application route returns its expected response.
-2. **Pod network → proxy ClusterIP**: same query against the DNS ClusterIP.
-3. **Public → VIP** (if ExternalDNS is used): query your public resolver.
+2. **Pod network → proxy ClusterIP**: when `internalProxyService` is configured,
+   the same query against the DNS ClusterIP returns the proxy ClusterIP.
+3. **Public → VIP**: when an ExternalDNS/provider path is configured, query your
+   public resolver.
 
 Details and expected values: [Verification](../operations/verify.md).
 

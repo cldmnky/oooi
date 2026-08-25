@@ -46,6 +46,6 @@ make build          # produces bin/oooi
 ## Verifying a build
 
 ```bash
-podman run --rm "$OOOI_IMAGE" version 2>/dev/null || true
+podman run --rm "$OOOI_IMAGE" --help >/dev/null
 docker manifest inspect "registry.example.com/oooi@sha256:<digest>" | head -30
 ```

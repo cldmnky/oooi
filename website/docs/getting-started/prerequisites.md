@@ -13,7 +13,7 @@ oooi runs on an **OpenShift Container Platform management cluster** (the
 | Hosted control planes (HyperShift) | Creates and runs hosted control planes; provides the `HostedCluster` and `NodePool` APIs | `oc get pods -n hypershift` |
 | Red Hat OpenShift Virtualization | Runs worker nodes as KubeVirt virtual machines | `oc get csv -n openshift-cnv` |
 | Multus (built-in) | Attaches oooi pods and worker VMs to the secondary VLAN via `NetworkAttachmentDefinition` | `oc auth can-i get net-attach-def` |
-| Operator Lifecycle Manager (OLM) | Installs the Red Hat MetalLB Operator in the hosted cluster when apps ingress is enabled | `oc get packagemanifest -n openshift-marketplace metallb-operator` |
+| Operator Lifecycle Manager (hosted cluster) | Installs the Red Hat MetalLB Operator in the hosted cluster when apps ingress is enabled | `oc --kubeconfig=<hosted-kubeconfig> get packagemanifest -n openshift-marketplace metallb-operator` |
 
 The management cluster must also expose the CAPI `Machine` API used for
 KubeVirt source-IP alias discovery. On a real HyperShift installation, CAPK
@@ -24,10 +24,12 @@ plane names do not wait for that data.
 A management cluster with at least one worker node is sufficient for lab use.
 Size production clusters per your HCP density targets.
 
-When apps ingress is enabled, oooi uses the HostedCluster admin kubeconfig to
-create the MetalLB resources in the *hosted cluster*. The package manifest must
-therefore be available to that cluster. This is not validated by a
-management-cluster `oc auth can-i` command.
+The HyperShift, OpenShift Virtualization, Multus, and CAPI checks above target
+the management cluster. When apps ingress is enabled, oooi uses the
+HostedCluster admin kubeconfig to create MetalLB resources in the *hosted
+cluster*. The package manifest must therefore be available there; verify it
+with the hosted kubeconfig shown in the table rather than a management-cluster
+`oc auth can-i` command.
 
 ## Secondary network (VLAN)
 
@@ -62,7 +64,9 @@ spec:
       "type": "bridge",
       "bridge": "br-vlan100",
       "vlan": 100,
-      "ipam": {}
+     "ipam": {
+       "type": "static"
+     }
     }
 ```
 
@@ -75,6 +79,11 @@ kubectl get net-attach-def -n default vlan100
     The bridge/CNI details are node-environment specific (Linux bridge, OVS,
     SR-IOV). oooi requires a working `NetworkAttachmentDefinition`
     that puts pods/VMs on the target L2 segment with no conflicting IPAM.
+
+oooi supplies fixed addresses for its DHCP, DNS, and proxy pods, so the NAD
+must provide the static CNI IPAM plugin. See the repository's
+[static IPAM guide](https://github.com/cldmnky/oooi/blob/main/docs/STATIC_IPAM.md)
+for the generated annotation and IP planning details.
 
 ## Hosted cluster namespace secrets
 

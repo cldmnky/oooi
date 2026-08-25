@@ -8,7 +8,7 @@ Day-2 guidance for running oooi-managed hosted clusters.
 
     ---
 
-    Ready-made checks for all three paths: VLAN, pod network, public DNS.
+    Ready-made checks for the VLAN path and the optional pod-network and public-DNS paths.
 
     [Verify a deployment](verify.md)
 
@@ -50,8 +50,9 @@ kubectl -n clusters get proxyserver <infra>-proxy \
 
 # Child workloads
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver
-kubectl -n clusters get pods -l app.kubernetes.io/managed-by 2>/dev/null || \
-  kubectl -n clusters get pods | grep -E 'dhcp|dns|proxy'
+kubectl -n clusters get pods -l app=dhcp-server
+kubectl -n clusters get pods -l app=dns-server
+kubectl -n clusters get pods -l app=proxy-server
 ```
 
 ## Useful log locations

@@ -90,8 +90,8 @@ func init() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	managerCmd.Flags().BoolVar(&enableOpenShift, "enable-openshift", false,
 		"Enable OpenShift-specific features such as Security Context Constraints (SCC) management. "+
-			"When enabled, the operator will create RoleBindings to grant anyuid SCC to service accounts "+
-			"for DHCP, DNS, and Proxy components that need to bind to privileged ports.")
+			"When enabled, the operator creates RoleBindings granting privileged SCC to DHCP and Proxy "+
+			"service accounts and anyuid SCC to DNS service accounts.")
 }
 
 var managerCmd = &cobra.Command{

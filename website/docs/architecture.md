@@ -72,8 +72,10 @@ The user-facing API has two scopes. `Infra` describes the shared VLAN stack;
 `InfraClusterAttachment` binds one HostedCluster to that stack and carries its
 DNS, control-plane, and optional apps-ingress settings. oooi reconciles the
 shared child custom resources in the Infra namespace; each child manages its
-own Deployment, Services, ConfigMap, ServiceAccount, SCC RoleBinding, and
-Multus attachment.
+own Deployment, Services, ConfigMap, and ServiceAccount. When OpenShift
+integration is enabled, the relevant child also manages its component-scoped
+SCC RoleBinding. Pods reference the configured NetworkAttachmentDefinition
+through Multus annotations; oooi does not create the NAD.
 
 | Component | Child CR | Image | Role |
 |---|---|---|---|
@@ -159,7 +161,8 @@ For an attachment with `spec.appsIngress.enabled: true`:
    IngressController deployment.
 4. Reads the allocated IP from Service status and publishes it as
    `InfraClusterAttachment.status.appsIngressStatus.externalIP`.
-5. Adds the `*.apps.<cluster>.<domain>` answers to both DNS views and adds
+5. Adds the `*.apps.<cluster>.<domain>` answer to the VLAN DNS view and, when
+   `internalProxyService` is configured, to the pod-network view; it also adds
    wildcard SNI backends to Envoy pointing at the VIP.
 
 MetalLB **L2 mode** advertises the VIP from a hosted worker itself, so the
@@ -176,7 +179,7 @@ flowchart LR
     end
     Q --> C
     V1 -->|"static: proxy.serverIP<br/>192.0.2.4"| A1[/"A record"/]
-    V2 -->|"internalProxyService ClusterIP"| A2[/"A record"/]
+    V2 -->|"internalProxyService ClusterIP (if configured)"| A2[/"A record"/]
     Q -.->|"non-HCP names"| UP["Upstream resolvers<br/>networkConfig.dnsServers"]
 ```
 
@@ -192,7 +195,7 @@ after the TCP connection reaches Envoy.
 | TLS | Passthrough only; no keys or secrets on the proxy |
 | Exposed ports | VLAN: DHCP/67+68, DNS/53, proxy `443`+`6443`; Envoy admin `9901` stays ClusterIP-only |
 | External exposure | Optional `<infra>-proxy-external` LoadBalancer exposes **only** the configured ingress port — never admin or backend ports |
-| OpenShift SCC | With `--enable-openshift=true`, a scoped `privileged` SCC RoleBinding is created for the proxy ServiceAccount (privileged ports <1024) |
+| OpenShift SCC | With `--enable-openshift=true`, scoped SCC RoleBindings are created: `privileged` for DHCP and Proxy, and `anyuid` for DNS. Without the flag, grant equivalent permissions through cluster policy. |
 | Control-plane policy | An ingress-only `allow-infrastructure` NetworkPolicy selects all pods in the control-plane namespace and allows traffic from namespaces labeled `hostedcluster.densityops.com/network-policy-group=infrastructure` |
 | Network scope | No general tenant route into the management network; Envoy permits only configured control-plane and apps backends |
 
