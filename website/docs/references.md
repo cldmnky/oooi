@@ -8,10 +8,10 @@ Platform release before applying the examples in this site.
 
 | Topic | Reference |
 |---|---|
-| Hosted control planes and HyperShift | [Hosted control planes, OpenShift Container Platform 4.22](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html-single/hosted_control_planes/index) |
-| Red Hat OpenShift Virtualization | [Virtualization, OpenShift Container Platform 4.22](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/virtualization/index) |
-| Red Hat MetalLB Operator and External DNS Operator | [Networking Operators, OpenShift Container Platform 4.22](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html-single/networking_operators/index) |
-| OpenShift CLI reference | [CLI tools, OpenShift Container Platform 4.22](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/cli_tools/index) |
+| Hosted control planes and HyperShift | [Hosted control planes, OpenShift Container Platform](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html-single/hosted_control_planes/index) |
+| Red Hat OpenShift Virtualization | [Virtualization, OpenShift Container Platform](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/virtualization/index) |
+| Red Hat MetalLB Operator and External DNS Operator | [Networking Operators, OpenShift Container Platform](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html-single/networking_operators/index) |
+| OpenShift CLI reference | [CLI tools, OpenShift Container Platform](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/cli_tools/index) |
 
 ## oooi resources
 

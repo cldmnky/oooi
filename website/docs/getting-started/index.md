@@ -9,7 +9,8 @@ place, and while you create a hosted cluster. The recommended flow is:
 3. Create the `HostedCluster` (and `NodePool`) for your KubeVirt workers.
 4. Apply an [`Infra`](../configuration/infra-reference.md) resource describing
    the VLAN and an `InfraClusterAttachment` for each hosted cluster using it.
-5. [Verify](../operations/verify.md) from the VLAN, the pod network, and public DNS.
+5. [Verify](../operations/verify.md) the VLAN path, plus the optional pod-network
+   and public-DNS paths when those integrations are configured.
 
 !!! tip "Order matters"
 

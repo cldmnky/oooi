@@ -268,6 +268,36 @@ func TestXDSServer_buildEnvoyResources_SourceIP_InvalidCIDR_Skipped(t *testing.T
 	assert.Equal(t, "192.168.100.10", fc.FilterChainMatch.SourcePrefixRanges[0].AddressPrefix)
 }
 
+func TestXDSServer_buildEnvoyResources_SourceIP_AllInvalidCIDRsFailClosed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, hostedclusterv1alpha1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	xs := &XDSServer{client: k8sClient, proxies: make(map[string]*hostedclusterv1alpha1.ProxyServer)}
+
+	proxy := &hostedclusterv1alpha1.ProxyServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
+		Spec: hostedclusterv1alpha1.ProxyServerSpec{
+			Backends: []hostedclusterv1alpha1.ProxyBackend{
+				{
+					Name:               "alpha-alias",
+					Hostname:           "kubernetes",
+					SourcePrefixRanges: []string{"not-a-cidr"},
+					Port:               443,
+					TargetService:      "kube-apiserver",
+					TargetPort:         6443,
+					TargetNamespace:    "clusters-alpha",
+					Protocol:           "TCP",
+					TimeoutSeconds:     30,
+				},
+			},
+		},
+	}
+
+	_, _, err := xs.buildEnvoyResources(proxy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `backend "alpha-alias" has no valid source prefix ranges`)
+}
+
 func TestXDSServer_buildEnvoyResources_SourceIPAliases_WithKonnectivityFallback(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, hostedclusterv1alpha1.AddToScheme(scheme))

@@ -81,8 +81,13 @@ kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-ingress get svc oooi-ingre
 ```
 
 If `ipAddressPoolRange` overlaps the gateway, static addresses, or DHCP pool,
-allocation can fail or the VIP can be unreachable. Edit the `Infra` resource to
-use a disjoint range.
+allocation can fail or the VIP can be unreachable. Edit the relevant
+`InfraClusterAttachment.spec.appsIngress.metallb.ipAddressPoolRange` to use a
+disjoint range:
+
+```bash
+kubectl -n <infra-namespace> edit infraattachment <attachment>
+```
 
 ## Console / canary route health fails after working
 
@@ -91,7 +96,8 @@ resolves `*.apps.<cluster>.<domain>` through public DNS. If the record points to
 an old VIP after reallocation, routes fail with `RouteHealth_FailedGet`.
 
 - Compare the attachment's `.status.appsIngressStatus.externalIP` with a query to your public
-  resolver.
+  resolver. If only `.externalHostname` is populated, verify the hostname and
+  provider record instead; oooi does not generate a VLAN A record for it.
 - With ExternalDNS (`--policy=sync`) records self-heal; without it, update the
   A record manually.
 

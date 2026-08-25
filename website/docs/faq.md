@@ -78,7 +78,7 @@ anti-spoofing is still required for tenant isolation.
 kubectl -n clusters get infra <name>
 ```
 
-plus the three-path verification in [Verification](operations/verify.md).
+plus the applicable-path checks in [Verification](operations/verify.md).
 
 ### What happens when I delete Infra?
 

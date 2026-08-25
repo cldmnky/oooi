@@ -86,9 +86,10 @@ konnectivity.<cluster>.<baseDomain>
 
 From the VLAN these records point to `proxy.serverIP`. From the pod-network
 view they point to the resolved ClusterIP named by `internalProxyService`.
-When apps ingress is Ready, `*.apps.<cluster>.<baseDomain>` points to the
-attachment's MetalLB endpoint in the VLAN view and to the proxy ClusterIP in
-the pod-network view.
+When apps ingress is Ready and reports an `externalIP`,
+`*.apps.<cluster>.<baseDomain>` points to that MetalLB address in the VLAN view
+and to the proxy ClusterIP in the pod-network view. A hostname-only endpoint can
+be used by Envoy, but does not produce an oooi-generated wildcard A record.
 
 ### Kubernetes service aliases
 
@@ -215,4 +216,5 @@ diagnostics.
 - Forwarded names fail when `dnsServers` are unreachable; use explicit resolver
   IPs or `resolv.conf` as appropriate.
 - A stale public `*.apps` record is an ExternalDNS/provider issue, not a
-  DNSServer issue. Compare it with `appsIngressStatus.externalIP`.
+  DNSServer issue. Compare it with `appsIngressStatus.externalIP`, or verify
+  `externalHostname` when the endpoint is hostname-based.

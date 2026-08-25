@@ -31,6 +31,7 @@ spec:
     cidr: 192.0.2.0/24
     gateway: 192.0.2.1
     networkAttachmentDefinition: vlan100
+    networkAttachmentNamespace: default
     dnsServers:
       - 198.51.100.53
   infraComponents:
@@ -54,6 +55,7 @@ spec:
     name: tenant-vlan100
   hostedClusterRef:
     name: example-hcp-a
+    namespace: clusters
   dns:
     clusterName: example-hcp-a
     baseDomain: clusters.example.com
@@ -68,6 +70,7 @@ spec:
     name: tenant-vlan100
   hostedClusterRef:
     name: example-hcp-b
+    namespace: clusters
   dns:
     clusterName: example-hcp-b
     baseDomain: clusters.example.com

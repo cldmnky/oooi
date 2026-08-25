@@ -32,10 +32,13 @@ DHCP for worker VMs. `enabled` defaults to `true`.
 | `serverIP` | string | *(empty)* | Static VLAN address of the DHCP server. Must be inside `networkConfig.cidr`. |
 | `rangeStart` / `rangeEnd` | string | *(empty)* | Inclusive dynamic pool handed to VMs. Exclude all static addresses and MetalLB ranges. |
 | `leaseTime` | duration | `1h` | Lease duration (Go duration syntax: `30m`, `1h`, `24h`). |
-| `image` | string | built-in | Override the DHCP server image (e.g. mirror registry). |
+| `image` | string | `quay.io/cldmnky/oooi:latest` for an Infra-generated child | Override the DHCP server image (e.g. mirror registry). |
 
 The server is KubeVirt-aware: it inspects `VirtualMachineInstance` interfaces
 so re-reconciliation does not churn existing leases.
+
+This Infra default is different from the standalone `DHCPServer` CRD default,
+which is `ghcr.io/cldmnky/hyperdhcp:latest`.
 
 ## spec.infraComponents.dns
 
@@ -49,11 +52,20 @@ Split-horizon CoreDNS. `enabled` defaults to `true`.
 
 Static answers generated per view:
 
+The pod-network column applies only when `internalProxyService` is configured.
+Without it, static HCP answers, including apps and alias names, are omitted
+from the default view and queries are forwarded upstream.
+
+For apps ingress, a hostname-only LoadBalancer endpoint can be used by Envoy,
+but oooi emits the VLAN and pod-network wildcard A records only when
+`externalIP` is populated. Use an IP-backed MetalLB endpoint when oooi must
+provide those static DNS answers.
+
 | Name(s) | VLAN view answers | Pod-network view answers |
 |---|---|---|
 | `api.<cluster>.<domain>` | `proxy.serverIP` | `proxy.internalProxyService` ClusterIP |
-| `api-int.<cluster>.<domain>` | `proxy.serverIP` | `internalProxyService` |
-| `oauth.*`, `ignition.*`, `konnectivity.*` | `proxy.serverIP` | `internalProxyService` |
+| `api-int.<cluster>.<domain>` | `proxy.serverIP` | `internalProxyService` ClusterIP |
+| `oauth.*`, `ignition.*`, `konnectivity.*` | `proxy.serverIP` | `internalProxyService` ClusterIP |
 | `*.apps.<cluster>.<domain>` (when apps ingress is Ready) | MetalLB external IP | proxy ClusterIP |
 | `kubernetes`, `kubernetes.default`, `kubernetes.default.svc`, `kubernetes.default.svc.cluster.local` (when a KubeVirt worker source range is known) | `proxy.serverIP` | `proxy.internalProxyService` ClusterIP |
 

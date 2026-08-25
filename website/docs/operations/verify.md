@@ -1,13 +1,14 @@
 # Verification
 
-A running oooi deployment has **three distinct paths** that must all work. An
-allocated VIP alone is not sufficient — verify each path explicitly.
+A running oooi deployment has one required path and two optional integration
+paths. An allocated VIP alone is not sufficient; verify each path that your
+configuration enables.
 
-| # | Path | Proves |
-|---|---|---|
-| 1 | VLAN client → VLAN IPs | Workers can bootstrap and operate |
-| 2 | Management pod → ClusterIPs | Pod-network split-horizon view works |
-| 3 | Public resolver → VIPs | External clients reach OAuth / apps |
+| # | Path | When | Proves |
+|---|---|---|---|
+| 1 | VLAN client → VLAN IPs | Always | Workers can bootstrap and operate |
+| 2 | Management pod → ClusterIPs | `internalProxyService` configured | Pod-network split-horizon view works |
+| 3 | Public resolver → VIPs | External Service/apps ingress and ExternalDNS configured | External clients reach OAuth / apps |
 
 ## 1. Kubernetes status
 
@@ -75,9 +76,10 @@ The result should contain the worker's VLAN address as a `/32`. Addresses are
 not populated until CAPK has copied the VMI interface address to CAPI Machine
 status. Check the fully qualified API name while that propagation is pending.
 
-## 3. From the pod network
+## 3. From the pod network (optional)
 
-The same names must resolve to the **proxy Service ClusterIP**:
+Run this section only when `internalProxyService` is configured. The names must
+then resolve to the **proxy Service ClusterIP**:
 
 ```bash
 export DIAGNOSTICS_IMAGE=registry.example.com/diagnostics:latest
@@ -90,13 +92,15 @@ kubectl run dnstest --rm -it --restart=Never \
 
 Set `DIAGNOSTICS_IMAGE` to an image in your registry that provides `nslookup`.
 
-## 4. Public resolution
+## 4. Public resolution (optional)
 
-Once ExternalDNS has converged:
+Run this section only after an ExternalDNS/provider path is configured. The apps
+query also requires apps ingress; the OAuth query requires the proxy external
+Service. Once the applicable ExternalDNS record has converged:
 
 ```bash
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
-# → current InfraClusterAttachment.status.appsIngressStatus.externalIP
+# → current InfraClusterAttachment.status.appsIngressStatus.externalIP, when IP-backed
 
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 # → current <infra>-proxy-external EXTERNAL-IP
@@ -105,8 +109,8 @@ dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 Also verify ownership TXT records exist for your registry (prevents two
 ExternalDNS instances fighting over the same names).
 
-## 5. Browser login (end-user check)
+## 5. Browser login (optional public path)
 
-Open the hosted console URL in a browser, choose your identity provider, and
-log in. A successful login exercises: public DNS → MetalLB VIP → Envoy SNI →
-OAuth Route → console route — i.e., every layer this documentation covers.
+If public apps and OAuth publishing are configured, open the hosted console URL
+in a browser, choose your identity provider, and log in. A successful login
+exercises: public DNS → MetalLB VIP → Envoy SNI → OAuth Route → console route.

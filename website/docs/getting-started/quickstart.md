@@ -11,9 +11,9 @@ them before applying anything.
 
 Complete the [prerequisites](prerequisites.md), including the
 `NetworkAttachmentDefinition`, hosted-cluster secrets, IP plan, and an image
-registry that your cluster can pull from. The examples target OpenShift Container
-Platform 4.22. Replace the example release image with a payload supported by
-your HyperShift and Red Hat OpenShift Virtualization versions.
+registry that your cluster can pull from. Replace the example release image with
+a payload supported by your HyperShift, OpenShift Container Platform, and Red
+Hat OpenShift Virtualization versions.
 
 ## 1. Install oooi
 
@@ -47,7 +47,7 @@ metadata:
   namespace: clusters
 spec:
   release:
-    image: registry.example.com/openshift-release:4.22.10
+    image: registry.example.com/openshift-release:<supported-release>
   dns:
     baseDomain: clusters.example.com
   networking:
@@ -116,7 +116,7 @@ spec:
         persistent:
           size: 50Gi
   release:
-    image: registry.example.com/openshift-release:4.22.10
+    image: registry.example.com/openshift-release:<supported-release>
 ```
 
 ```bash

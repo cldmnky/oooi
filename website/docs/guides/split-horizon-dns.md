@@ -22,7 +22,7 @@ flowchart TB
     Q(("DNS query"))
     C{"Source address<br/>within networkConfig.cidr?"}
     Q --> C
-    C -->|"yes — VLAN view"| S["Static zone answers<br/>api/api-int/oauth/ignition/konnectivity → proxy.serverIP<br/>*.apps → appsIngress externalIP"]
+    C -->|"yes — VLAN view"| S["Static zone answers<br/>api/api-int/oauth/ignition/konnectivity → proxy.serverIP<br/>*.apps → appsIngress externalIP, when present"]
     C -->|"no — default view"| P["Static zone answers<br/>HCP names → internalProxyService ClusterIP<br/>(*omitted if unset*)"]
     S --> F[/"other names forwarded upstream"/]
     P --> F
@@ -89,7 +89,7 @@ dig @192.0.2.3 +short kubernetes.default.svc
 # → 192.0.2.4   (published when the worker source range is known)
 
 dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.example.com
-# → MetalLB VIP, e.g. 192.0.2.200
+# → MetalLB VIP, e.g. 192.0.2.200, when appsIngressStatus.externalIP is set
 
 dig @192.0.2.3 +short www.example.net
 # → forwarded answer from your resolvers
@@ -108,6 +108,10 @@ kubectl run dnstest --rm -it --image="$DIAGNOSTICS_IMAGE" \
 ```
 
 Set `DIAGNOSTICS_IMAGE` to an image in your registry that provides `nslookup`.
+
+If apps ingress reports only `externalHostname`, Envoy can use that hostname as
+its target, but oooi does not add a wildcard A record to either DNS view. Use an
+IP-backed endpoint for oooi-generated split-horizon apps records.
 
 Watch live query logs while testing:
 

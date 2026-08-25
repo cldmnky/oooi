@@ -33,7 +33,8 @@ The supported order is:
 3. Create the HyperShift `HostedCluster` and its KubeVirt `NodePool`.
 4. Apply one `Infra` for the VLAN and one `InfraClusterAttachment` for each
    HostedCluster using it.
-5. Verify the VLAN, management-pod, and public-DNS paths separately.
+5. Verify the VLAN path, plus the optional management-pod and public-DNS paths
+   when `internalProxyService`, public exposure, and ExternalDNS are configured.
 
 oooi consumes HostedClusters; it does not create or delete them.
 

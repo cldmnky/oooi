@@ -49,7 +49,8 @@ message. The parent Infra reports aggregate attachment counts.
    `L2Advertisement` resources.
 6. Ensure the hosted `LoadBalancer` Service for the default ingress controller.
 7. Store the assigned IP or hostname in attachment status and requeue while it
-   is pending.
+   is pending. Use an IP for generated split-horizon wildcard A records; a
+   hostname remains an Envoy target only.
 
 ### Shared aggregation
 
@@ -70,10 +71,11 @@ does not require a remote VMI informer.
 
 ### Cleanup
 
-The attachment finalizer removes hosted apps-ingress resources and the
-cross-namespace control-plane NetworkPolicy before allowing deletion. If the
-hosted API or its CRDs are already gone, cleanup treats those resources as
-absent and still removes the finalizer.
+The attachment finalizer deletes the configured hosted apps-ingress resources
+by name and the cross-namespace control-plane NetworkPolicy before allowing
+deletion. It does not remove OLM CSVs, InstallPlans, operator workloads, or
+public DNS records. If the hosted API or its CRDs are already gone, cleanup
+treats those resources as absent and still removes the finalizer.
 
 ## Testing
 

@@ -2,8 +2,10 @@
 
 With `InfraClusterAttachment.spec.appsIngress.enabled: true`, oooi turns on wildcard
 `*.apps.<cluster>.<domain>` routing for the hosted cluster: MetalLB is
-installed *inside the hosted cluster*, a LoadBalancer VIP fronts the default
-IngressController, and both DNS views plus Envoy are wired to it.
+installed *inside the hosted cluster*, a LoadBalancer endpoint fronts the
+default IngressController, and Envoy is wired to it. An IP-backed endpoint also
+gets a VLAN DNS A record; the pod-network DNS answer is added when
+`infraComponents.proxy.internalProxyService` is configured.
 
 The feature is intentionally separate from the control-plane proxy endpoints:
 app traffic terminates at the hosted ingress router (TLS by Routes), while
@@ -24,8 +26,10 @@ Envoy only provides reachability from both networks.
 5. **Reads the allocated endpoint** from Service status and publishes it as
    `InfraClusterAttachment.status.appsIngressStatus.externalIP` /
    `.externalHostname`.
-6. **Publishes DNS and Envoy backends** for `*.apps.<cluster>.<domain>` — only
-   after a real external endpoint exists.
+6. **Publishes Envoy backends** for `*.apps.<cluster>.<domain>` after a real
+   endpoint exists. Static VLAN and pod-network A records require
+   `externalIP`; a hostname-only endpoint is used by Envoy but does not create
+   an oooi-generated A record.
 
 ```mermaid
 sequenceDiagram
@@ -37,9 +41,9 @@ sequenceDiagram
     I->>H: Subscription metallb-operator
     I->>M: MetalLB + IPAddressPool + L2Advertisement
     I->>H: Service oooi-ingress (LoadBalancer)
-    M-->>I: VIP assigned (.status → appsIngressStatus.externalIP)
-    I->>D: *.apps answers (VLAN view → VIP, pod view → proxy ClusterIP)
-    I->>D: Envoy wildcard SNI backends :80/:443 → VIP
+    M-->>I: Endpoint assigned (IP or hostname)
+    I->>D: VLAN *.apps A record if IP; pod view if IP and configured
+    I->>D: Envoy wildcard SNI backends :80/:443 → endpoint
 ```
 
 ## Configuration
@@ -100,7 +104,7 @@ from a worker). Do not include:
 | `Pending` | `WaitingForHostedClusterNodes` | No Ready hosted worker yet |
 | `Pending` | `WaitingForMetalLBCRDs` | Subscription installing |
 | `Pending` | `WaitingForExternalIP` | MetalLB has not assigned the VIP yet (re-checks every 15s) |
-| `Ready` | `ReconciliationSucceeded` | VIP known, DNS + Envoy wired |
+| `Ready` | `ReconciliationSucceeded` | Endpoint known, Envoy wired; static DNS requires an IP and pod view is conditional |
 | `Degraded` | `HostedClusterAccessFailed`, `MetalLBInstallFailed`, `IngressServiceFailed`, `ExternalIPDiscoveryFailed` | See `.message`; requeued |
 
 Query:
@@ -120,12 +124,20 @@ kubectl --kubeconfig=<hosted-kubeconfig> -n openshift-ingress get svc oooi-ingre
 
 ## Verification
 
-An allocated VIP alone proves little — confirm all three paths:
+An allocated endpoint alone proves little. For an IP-backed endpoint, always
+verify the VLAN path; verify the other paths only when they are configured:
 
-1. **VLAN → VIP**: `dig @<dns.serverIP> foo.apps.<cluster>.<domain>` returns
-   the VIP; a request to a hosted application route returns its expected response.
-2. **Pod network → proxy ClusterIP**: same query against the DNS ClusterIP.
-3. **Public → VIP** (if ExternalDNS is used): query your public resolver.
+1. **VLAN → VIP**: when `externalIP` is populated, `dig @<dns.serverIP>
+   foo.apps.<cluster>.<domain>` returns that IP; a request to a hosted
+   application route returns its expected response.
+2. **Pod network → proxy ClusterIP**: when `internalProxyService` is configured,
+   the same query against the DNS ClusterIP returns the proxy ClusterIP.
+3. **Public → VIP**: when an ExternalDNS/provider path is configured, query your
+   public resolver.
+
+With a hostname-only endpoint, oooi does not publish the wildcard A record in
+its DNS views. Verify that the hostname resolves from the proxy and that your
+external DNS/provider path publishes the application name as appropriate.
 
 Details and expected values: [Verification](../operations/verify.md).
 
@@ -134,4 +146,7 @@ Details and expected values: [Verification](../operations/verify.md).
 - Only the **default** IngressController can be selected; custom selectors are
   not configurable today.
 - IPv4 / L2-advertisement based. Validate dual-stack and BGP designs separately.
+- Hostname-only LoadBalancer endpoints are valid Envoy targets but do not yield
+  oooi-generated wildcard A records; use an IP-backed endpoint for split-horizon
+  DNS answers.
 - Public DNS records are never written by oooi itself — see the next guide.

@@ -72,14 +72,16 @@ The user-facing API has two scopes. `Infra` describes the shared VLAN stack;
 `InfraClusterAttachment` binds one HostedCluster to that stack and carries its
 DNS, control-plane, and optional apps-ingress settings. oooi reconciles the
 shared child custom resources in the Infra namespace; each child manages its
-own Deployment, Services, ConfigMap, ServiceAccount, SCC RoleBinding, and
-Multus attachment.
+own Deployment, Services, ConfigMap, and ServiceAccount. When OpenShift
+integration is enabled, the relevant child also manages its component-scoped
+SCC RoleBinding. Pods reference the configured NetworkAttachmentDefinition
+through Multus annotations; oooi does not create the NAD.
 
 | Component | Child CR | Image | Role |
 |---|---|---|---|
 | `InfraReconciler` | — | `registry.example.com/oooi` | Creates shared children, aggregates attachment routes, and reports shared status |
 | `InfraClusterAttachmentReconciler` | — | `registry.example.com/oooi` | Binds one HostedCluster, manages its control-plane policy, and drives optional apps ingress |
-| DHCP | `DHCPServer` | oooi image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
+| DHCP | `DHCPServer` | Infra-generated: oooi image; standalone API default: HyperDHCP image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
 | DNS | `DNSServer` | oooi image (CoreDNS component) | Split-horizon views; static HCP answers; upstream forwarding |
 | Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
 | Apps ingress | `InfraClusterAttachment` | MetalLB operator | Installs MetalLB into the attached hosted cluster, allocates and advertises its wildcard VIP |
@@ -157,10 +159,13 @@ For an attachment with `spec.appsIngress.enabled: true`:
 3. Creates a `LoadBalancer` Service (default name `oooi-ingress`) in the hosted
    cluster's `openshift-ingress` namespace, selector fixed to the default
    IngressController deployment.
-4. Reads the allocated IP from Service status and publishes it as
-   `InfraClusterAttachment.status.appsIngressStatus.externalIP`.
-5. Adds the `*.apps.<cluster>.<domain>` answers to both DNS views and adds
-   wildcard SNI backends to Envoy pointing at the VIP.
+4. Reads the allocated IP or hostname from Service status and publishes it as
+   `InfraClusterAttachment.status.appsIngressStatus.externalIP` or
+   `.externalHostname`.
+5. Adds the `*.apps.<cluster>.<domain>` A record to the VLAN DNS view only when
+   an external IP exists and, when `internalProxyService` is configured, to the
+   pod-network view; it adds Envoy wildcard backends for either an IP or a
+   hostname endpoint.
 
 MetalLB **L2 mode** advertises the VIP from a hosted worker itself, so the
 worker VMs reach the ingress without any external load balancer.
@@ -176,7 +181,7 @@ flowchart LR
     end
     Q --> C
     V1 -->|"static: proxy.serverIP<br/>192.0.2.4"| A1[/"A record"/]
-    V2 -->|"internalProxyService ClusterIP"| A2[/"A record"/]
+    V2 -->|"internalProxyService ClusterIP (if configured)"| A2[/"A record"/]
     Q -.->|"non-HCP names"| UP["Upstream resolvers<br/>networkConfig.dnsServers"]
 ```
 
@@ -192,7 +197,7 @@ after the TCP connection reaches Envoy.
 | TLS | Passthrough only; no keys or secrets on the proxy |
 | Exposed ports | VLAN: DHCP/67+68, DNS/53, proxy `443`+`6443`; Envoy admin `9901` stays ClusterIP-only |
 | External exposure | Optional `<infra>-proxy-external` LoadBalancer exposes **only** the configured ingress port — never admin or backend ports |
-| OpenShift SCC | With `--enable-openshift=true`, a scoped `privileged` SCC RoleBinding is created for the proxy ServiceAccount (privileged ports <1024) |
+| OpenShift SCC | With `--enable-openshift=true`, scoped SCC RoleBindings are created: `privileged` for DHCP and Proxy, and `anyuid` for DNS. Without the flag, grant equivalent permissions through cluster policy. |
 | Control-plane policy | An ingress-only `allow-infrastructure` NetworkPolicy selects all pods in the control-plane namespace and allows traffic from namespaces labeled `hostedcluster.densityops.com/network-policy-group=infrastructure` |
 | Network scope | No general tenant route into the management network; Envoy permits only configured control-plane and apps backends |
 
@@ -212,7 +217,8 @@ status:
     phase:                 # Pending | Ready | Degraded
     reason:                # WaitingForHostedClusterNodes, WaitingForExternalIP, ...
     message:               # human-readable detail when Degraded
-    externalIP:            # assigned VIP
+    externalIP:            # assigned IP, when the endpoint is IP-backed
+    externalHostname:      # assigned hostname, otherwise
 ```
 
 See [Verification](operations/verify.md) for ready-made queries and expected
