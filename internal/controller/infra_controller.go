@@ -596,8 +596,9 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 	if infra.Spec.InfraComponents.DNS.Enabled {
 		infra.Status.ComponentStatus.DNSReady = true
 	}
-	if infra.Spec.InfraComponents.Proxy.Enabled {
-		infra.Status.ComponentStatus.ProxyReady = true
+	infra.Status.ComponentStatus.ProxyReady = false
+	if infra.Spec.InfraComponents.Proxy.Enabled && agg != nil {
+		infra.Status.ComponentStatus.ProxyReady = len(r.proxyServerForInfra(infra, agg.views).Spec.Backends) > 0
 	}
 	infra.Status.Attachments = nil
 	if agg != nil && (agg.total > 0 || agg.legacyIgnored) {

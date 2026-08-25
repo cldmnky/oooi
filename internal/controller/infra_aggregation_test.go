@@ -228,6 +228,7 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 		Expect(summary.Total).To(Equal(int32(2)))
 		Expect(summary.Ready).To(Equal(int32(0)))
 		Expect(summary.LegacyFieldsIgnored).To(BeFalse())
+		Expect(getInfra().Status.ComponentStatus.ProxyReady).To(BeTrue())
 	})
 
 	It("marks conflicting domains Degraded and excludes both", func() {
@@ -243,6 +244,7 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 		Expect(cond.Reason).To(Equal(reasonDuplicateHostname))
 		Expect(cond.Message).To(ContainSubstring("first"))
 		Expect(cond.Message).To(ContainSubstring("second"))
+		Expect(getInfra().Status.ComponentStatus.ProxyReady).To(BeFalse())
 
 		for _, e := range getDNS().Spec.StaticEntries {
 			Expect(e.Hostname).NotTo(ContainSubstring("collide.example.com"))
@@ -420,6 +422,33 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name: "allow-infrastructure", Namespace: "clusters-badapps",
 		}, &policy)).To(Succeed())
+	})
+
+	It("rejects an apps ingress HostedClusterRef that differs from the attachment", func() {
+		createInfraForAttachment()
+		ensureNamespace(ctx, "clusters-attached")
+		att := makeAttachment("ref-mismatch", infraName, "attached", "example.com", "")
+		att.Spec.AppsIngress = hostedclusterv1alpha1.AppsIngressConfig{
+			Enabled: true,
+			HostedClusterRef: hostedclusterv1alpha1.HostedClusterReference{
+				Name:      "different",
+				Namespace: "clusters",
+			},
+			MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
+				AddressPoolName:    "apps-pool",
+				IPAddressPoolRange: "192.0.2.10-192.0.2.20",
+			},
+		}
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileAttachment(r, "ref-mismatch")
+		reconcileAttachment(r, "ref-mismatch")
+
+		got := getAttachment("ref-mismatch")
+		Expect(got.Status.AppsIngressStatus.Phase).To(Equal(PhaseDegraded))
+		Expect(got.Status.AppsIngressStatus.Reason).To(Equal(reasonAttachmentInvalidConfig))
+		Expect(got.Status.AppsIngressStatus.Message).To(ContainSubstring("must be omitted or match"))
 	})
 
 	It("reconciles the control-plane policy alongside apps ingress", func() {

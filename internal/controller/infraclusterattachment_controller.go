@@ -142,6 +142,24 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 		policyResult = ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
 
+	if att.Spec.AppsIngress.Enabled && !appsIngressHostedClusterRefMatches(
+		att.Spec.AppsIngress.HostedClusterRef, target.HostedClusterRef,
+	) {
+		err := r.setAppsIngressStatusAndFinish(ctx, att, target,
+			hostedclusterv1alpha1.AppsIngressStatus{
+				Phase:   PhaseDegraded,
+				Reason:  reasonAttachmentInvalidConfig,
+				Message: "appsIngress.hostedClusterRef must be omitted or match spec.hostedClusterRef",
+			})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if policyResult.RequeueAfter > 0 {
+			return policyResult, nil
+		}
+		return ctrl.Result{}, nil
+	}
+
 	if att.Spec.AppsIngress.Enabled {
 		if att.Spec.AppsIngress.MetalLB.AddressPoolName == "" ||
 			att.Spec.AppsIngress.MetalLB.IPAddressPoolRange == "" {
@@ -178,6 +196,13 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	return r.setStatusReady(ctx, att, target)
+}
+
+func appsIngressHostedClusterRefMatches(configRef, attachmentRef hostedclusterv1alpha1.HostedClusterReference) bool {
+	if configRef.Name == "" && configRef.Namespace == "" {
+		return true
+	}
+	return normalizeHostedClusterRef(configRef) == normalizeHostedClusterRef(attachmentRef)
 }
 
 func (r *InfraClusterAttachmentReconciler) hostedFactory(att *hostedclusterv1alpha1.InfraClusterAttachment, target appsIngressTarget) hostedClusterFactory {

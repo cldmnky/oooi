@@ -698,7 +698,7 @@ spec:
 			Eventually(func(g Gomega) {
 				for _, suffix := range []string{"dhcp", "dns", "proxy"} {
 					cmd := exec.Command("kubectl", "get", "deployment", mcInfraName+"-"+suffix, "-n", namespace)
-					_, err := utils.Run(cmd)
+					_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 					g.Expect(err).NotTo(HaveOccurred(), "shared deployment %s should exist", suffix)
 				}
 			}, multiClusterWait, 2*time.Second).Should(Succeed())

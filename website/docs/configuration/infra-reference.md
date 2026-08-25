@@ -156,7 +156,7 @@ Create it in the same namespace as the referenced `Infra`.
 | `dns.clusterName` / `dns.baseDomain` | string | — (**Required**) | Build the cluster's FQDNs on the shared DNS and proxy. |
 | `controlPlaneNamespace` | string | `<hc-namespace>-<hc-name>` | Management-cluster namespace hosting this control plane. Must exist; HyperShift creates it. |
 | `apiServerService` | string | `kube-apiserver` | Reserved API field. API traffic currently always targets the `kube-apiserver` Service. |
-| `appsIngress` | object | *(empty)* | Per-cluster apps ingress, same shape as the deprecated `Infra.spec.appsIngress`. MetalLB ranges must be disjoint across attachments sharing a VLAN. |
+| `appsIngress` | object | *(empty)* | Per-cluster apps ingress, same shape as the deprecated `Infra.spec.appsIngress`. The attachment's top-level `hostedClusterRef` is canonical; omit the nested field or make it match. MetalLB ranges must be disjoint across attachments sharing a VLAN. |
 
 ### status
 
