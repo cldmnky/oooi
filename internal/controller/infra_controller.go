@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -40,8 +41,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
@@ -69,7 +68,8 @@ type InfraReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dhcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch
+// +kubebuilder:rbac:groups=hypershift.openshift.io,resources=nodepools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -112,6 +112,13 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Update status
 	if err := r.updateInfraStatus(ctx, infra, agg); err != nil {
 		return ctrl.Result{}, err
+	}
+	if agg.pendingRequeue {
+		log.Info("requeuing for pending VM addresses", "after", aliasPendingRequeue)
+		return ctrl.Result{RequeueAfter: aliasPendingRequeue}, nil
+	}
+	if agg.hasAlias {
+		return ctrl.Result{RequeueAfter: aliasSafetyRequeue}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -310,6 +317,19 @@ const (
 	suffixKubernetesHostname    = "kubernetes-hostname"
 )
 
+const (
+	nodePoolAnnotation  = "hypershift.openshift.io/nodePool"
+	aliasPendingRequeue = 15 * time.Second
+	aliasSafetyRequeue  = 5 * time.Minute
+)
+
+var (
+	nodePoolGVK     = schema.GroupVersionKind{Group: "hypershift.openshift.io", Version: "v1beta1", Kind: "NodePool"}
+	nodePoolListGVK = schema.GroupVersionKind{Group: "hypershift.openshift.io", Version: "v1beta1", Kind: "NodePoolList"}
+	machineGVK      = schema.GroupVersionKind{Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "Machine"}
+	machineListGVK  = schema.GroupVersionKind{Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "MachineList"}
+)
+
 // aggregation is the resolved per-cluster view set for one reconcile pass,
 // plus observability about how it was built.
 type aggregation struct {
@@ -318,6 +338,8 @@ type aggregation struct {
 	ready          int32
 	conflicts      []string
 	degradedReason string
+	pendingRequeue bool
+	hasAlias       bool
 }
 
 // validDomain reports whether a computed hosted-cluster domain is usable for
@@ -329,7 +351,7 @@ func validDomain(domain string) bool {
 // normalizeHostedClusterRef applies the historical default namespace.
 func normalizeHostedClusterRef(ref hostedclusterv1alpha1.HostedClusterReference) hostedclusterv1alpha1.HostedClusterReference {
 	if ref.Namespace == "" {
-		ref.Namespace = "clusters"
+		ref.Namespace = "clusters" //nolint:goconst
 	}
 	return ref
 }
@@ -365,45 +387,98 @@ func attachmentFromAttachment(att *hostedclusterv1alpha1.InfraClusterAttachment)
 // ProxyBackend.sourcePrefixRanges so generated specs always pass admission.
 const maxAliasSourcePrefixRanges = 256
 
-// resolveAttachmentSourceCIDRs discovers VM IPs in the attachment's
-// control-plane namespace that lie within infraCIDR and returns them as /32
-// CIDRs. Empty infraCIDR or no matching VMIs returns nil.
-func (r *InfraReconciler) resolveAttachmentSourceCIDRs(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, infraCIDR string) []string {
+// resolveAttachmentSourceCIDRs discovers VM IPs via CAPI Machines that belong to
+// KubeVirt NodePools for the attachment's HostedCluster. It lists NodePools in
+// the HostedCluster namespace matching spec.clusterName and platform KubeVirt,
+// then lists Machines in the control-plane namespace annotated with the NodePool
+// key, extracts status.addresses, filters by infraCIDR and returns sorted /32s.
+// The second return indicates whether the attachment is pending VM addresses
+// (KubeVirt NodePools exist but no in-CIDR addresses were found).
+func (r *InfraReconciler) resolveAttachmentSourceCIDRs(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, infraCIDR string) ([]string, bool) {
 	if infraCIDR == "" {
-		return nil
+		return nil, false
 	}
 	_, cidrNet, err := net.ParseCIDR(infraCIDR)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	cpns := att.Spec.ControlPlaneNamespace
 	if cpns == "" {
 		hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
 		cpns = hcRef.Namespace + "-" + hcRef.Name
 	}
-	vmiList := &kubevirtv1.VirtualMachineInstanceList{}
-	if err := r.List(ctx, vmiList, client.InNamespace(cpns)); err != nil {
+	hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
+	// List NodePools in the HostedCluster namespace.
+	npList := &unstructured.UnstructuredList{}
+	npList.SetGroupVersionKind(nodePoolListGVK)
+	if err := r.List(ctx, npList, client.InNamespace(hcRef.Namespace)); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil, false
+		}
 		// No list permission or namespace missing -> treat as no source IPs.
-		return nil
+		return nil, false
+	}
+	var relevantKeys []string
+	relevantKeySet := map[string]bool{}
+	for i := range npList.Items {
+		u := &npList.Items[i]
+		clusterName, _, _ := unstructured.NestedString(u.Object, "spec", "clusterName")
+		if clusterName != hcRef.Name {
+			continue
+		}
+		platformType, _, _ := unstructured.NestedString(u.Object, "spec", "platform", "type")
+		if platformType != "KubeVirt" {
+			continue
+		}
+		key := u.GetNamespace() + "/" + u.GetName()
+		if !relevantKeySet[key] {
+			relevantKeySet[key] = true
+			relevantKeys = append(relevantKeys, key)
+		}
+	}
+	if len(relevantKeys) == 0 {
+		return nil, false
+	}
+	// List Machines once in the control-plane namespace and filter by annotation.
+	machineList := &unstructured.UnstructuredList{}
+	machineList.SetGroupVersionKind(machineListGVK)
+	if err := r.List(ctx, machineList, client.InNamespace(cpns)); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil, true
+		}
+		return nil, true
 	}
 	seen := map[string]bool{}
 	var cidrs []string
-	for _, vmi := range vmiList.Items {
-		for _, iface := range vmi.Status.Interfaces {
-			ips := iface.IPs
-			if iface.IP != "" {
-				ips = append(ips, iface.IP)
+	for i := range machineList.Items {
+		m := &machineList.Items[i]
+		ann := m.GetAnnotations()
+		if ann == nil {
+			continue
+		}
+		npKey := ann[nodePoolAnnotation]
+		if npKey == "" || !relevantKeySet[npKey] {
+			continue
+		}
+		addrs, found, _ := unstructured.NestedSlice(m.Object, "status", "addresses")
+		if !found {
+			continue
+		}
+		for _, a := range addrs {
+			addrMap, ok := a.(map[string]interface{})
+			if !ok {
+				continue
 			}
-			for _, ipStr := range ips {
-				ip := net.ParseIP(strings.TrimSpace(ipStr))
-				if ip == nil || !cidrNet.Contains(ip) {
-					continue
-				}
-				cidr := ip.String() + "/32"
-				if !seen[cidr] {
-					seen[cidr] = true
-					cidrs = append(cidrs, cidr)
-				}
+			ipStr, _, _ := unstructured.NestedString(addrMap, "address")
+			ipStr = strings.TrimSpace(ipStr)
+			ip := net.ParseIP(ipStr)
+			if ip == nil || !cidrNet.Contains(ip) {
+				continue
+			}
+			cidr := ip.String() + "/32"
+			if !seen[cidr] {
+				seen[cidr] = true
+				cidrs = append(cidrs, cidr)
 			}
 		}
 	}
@@ -414,7 +489,10 @@ func (r *InfraReconciler) resolveAttachmentSourceCIDRs(ctx context.Context, att 
 			"attachment", att.Name, "namespace", cpns, "found", len(cidrs), "kept", maxAliasSourcePrefixRanges)
 		cidrs = cidrs[:maxAliasSourcePrefixRanges]
 	}
-	return cidrs
+	if len(cidrs) == 0 {
+		return nil, true
+	}
+	return cidrs, false
 }
 
 // aliasBackendsForView builds source-IP scoped kubernetes.* backends for one
@@ -492,10 +570,10 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 		seenHC[hcKey] = att.Name
 		seenDomain[domain] = att.Name
 	}
-	// Resolve VM source CIDRs per attachment. A source IP claimed by more than
-	// one attachment makes only the kubernetes.* alias chains ambiguous, so the
-	// conflicting CIDRs are dropped from every claimant; the attachments keep
-	// their fully qualified SNI/DNS routing.
+	// Resolve VM source CIDRs per attachment via CAPI Machines. A source IP
+	// claimed by more than one attachment makes only the kubernetes.* alias
+	// chains ambiguous, so the conflicting CIDRs are dropped from every
+	// claimant; the attachments keep their fully qualified SNI/DNS routing.
 	cidrsByAttachment := make(map[string][]string, len(mine))
 	claims := map[string][]string{}
 	for i := range mine {
@@ -503,7 +581,10 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 		if excluded[att.Name] {
 			continue
 		}
-		cidrs := r.resolveAttachmentSourceCIDRs(ctx, att, infra.Spec.NetworkConfig.CIDR)
+		cidrs, pending := r.resolveAttachmentSourceCIDRs(ctx, att, infra.Spec.NetworkConfig.CIDR)
+		if pending {
+			agg.pendingRequeue = true
+		}
 		cidrsByAttachment[att.Name] = cidrs
 		for _, cidr := range cidrs {
 			// resolveAttachmentSourceCIDRs deduplicates within one attachment,
@@ -544,6 +625,9 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 		}
 		view := attachmentFromAttachment(att)
 		view.sourceCIDRs = cidrsByAttachment[att.Name]
+		if len(view.sourceCIDRs) > 0 {
+			agg.hasAlias = true
+		}
 		agg.views = append(agg.views, view)
 	}
 	sort.Slice(agg.conflicts, func(i, j int) bool { return agg.conflicts[i] < agg.conflicts[j] })
@@ -1029,6 +1113,8 @@ func hostnameKey(hostname string) string {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+//nolint:gocyclo
 func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	enqueueInfra := func(queue workqueue.TypedRateLimitingInterface[reconcile.Request], object client.Object) {
 		att, ok := object.(*hostedclusterv1alpha1.InfraClusterAttachment)
@@ -1056,41 +1142,251 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			enqueueInfra(queue, e.Object)
 		},
 	}
-	enqueueInfraForVMI := func(ctx context.Context, obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-		vmi, ok := obj.(*kubevirtv1.VirtualMachineInstance)
-		if !ok {
-			return
-		}
-		// Find attachments whose control-plane namespace matches the VMI namespace.
+	// Helpers for NodePool/Machine watches.
+	enqueueForHostedCluster := func(ctx context.Context, hcNamespace, hcName string, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 		attList := &hostedclusterv1alpha1.InfraClusterAttachmentList{}
 		if err := r.List(ctx, attList); err != nil {
 			return
 		}
 		for _, att := range attList.Items {
-			cpns := att.Spec.ControlPlaneNamespace
-			if cpns == "" {
-				hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
-				cpns = hcRef.Namespace + "-" + hcRef.Name
-			}
-			if cpns == vmi.Namespace {
-				q.Add(reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: att.Spec.InfraRef.Name, Namespace: att.Namespace},
-				})
+			hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
+			if hcRef.Namespace == hcNamespace && hcRef.Name == hcName {
+				q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: att.Spec.InfraRef.Name, Namespace: att.Namespace}})
 			}
 		}
 	}
-	vmiHandler := handler.Funcs{
+	normalizedAddresses := func(obj *unstructured.Unstructured) string {
+		addrs, found, _ := unstructured.NestedSlice(obj.Object, "status", "addresses")
+		if !found {
+			return ""
+		}
+		var ips []string
+		for _, a := range addrs {
+			m, ok := a.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			s, _, _ := unstructured.NestedString(m, "address")
+			s = strings.TrimSpace(s)
+			if s != "" {
+				ips = append(ips, s)
+			}
+		}
+		sort.Strings(ips)
+		return strings.Join(ips, ",")
+	}
+	nodePoolHandler := handler.Funcs{
 		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			enqueueInfraForVMI(ctx, e.Object, q)
+			u, ok := e.Object.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+			clusterName, _, _ := unstructured.NestedString(u.Object, "spec", "clusterName")
+			if clusterName == "" {
+				return
+			}
+			enqueueForHostedCluster(ctx, u.GetNamespace(), clusterName, q)
 		},
 		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			enqueueInfraForVMI(ctx, e.ObjectNew, q)
+			oldU, ok1 := e.ObjectOld.(*unstructured.Unstructured)
+			newU, ok2 := e.ObjectNew.(*unstructured.Unstructured)
+			if !ok1 || !ok2 {
+				return
+			}
+			oldName, _, _ := unstructured.NestedString(oldU.Object, "spec", "clusterName")
+			newName, _, _ := unstructured.NestedString(newU.Object, "spec", "clusterName")
+			if oldName != "" {
+				enqueueForHostedCluster(ctx, oldU.GetNamespace(), oldName, q)
+			}
+			if newName != "" && newName != oldName {
+				enqueueForHostedCluster(ctx, newU.GetNamespace(), newName, q)
+			}
+			// Fallback: if clusterName unchanged, still enqueue current to catch platform type changes.
+			if oldName == newName && newName != "" {
+				// compare platform type
+				oldPlat, _, _ := unstructured.NestedString(oldU.Object, "spec", "platform", "type")
+				newPlat, _, _ := unstructured.NestedString(newU.Object, "spec", "platform", "type")
+				if oldPlat != newPlat {
+					enqueueForHostedCluster(ctx, newU.GetNamespace(), newName, q)
+				}
+			}
 		},
 		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			enqueueInfraForVMI(ctx, e.Object, q)
+			u, ok := e.Object.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+			clusterName, _, _ := unstructured.NestedString(u.Object, "spec", "clusterName")
+			if clusterName == "" {
+				return
+			}
+			enqueueForHostedCluster(ctx, u.GetNamespace(), clusterName, q)
 		},
 		GenericFunc: func(ctx context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			enqueueInfraForVMI(ctx, e.Object, q)
+			u, ok := e.Object.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+			clusterName, _, _ := unstructured.NestedString(u.Object, "spec", "clusterName")
+			if clusterName == "" {
+				return
+			}
+			enqueueForHostedCluster(ctx, u.GetNamespace(), clusterName, q)
+		},
+	}
+	machineHandler := handler.Funcs{
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			m, ok := e.Object.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+			ann := m.GetAnnotations()
+			if ann == nil {
+				return
+			}
+			npKey := ann[nodePoolAnnotation]
+			if npKey == "" {
+				return
+			}
+			parts := strings.SplitN(npKey, "/", 2)
+			if len(parts) != 2 {
+				return
+			}
+			np := &unstructured.Unstructured{}
+			np.SetGroupVersionKind(nodePoolGVK)
+			if err := r.Get(ctx, types.NamespacedName{Namespace: parts[0], Name: parts[1]}, np); err != nil {
+				return
+			}
+			clusterName, _, _ := unstructured.NestedString(np.Object, "spec", "clusterName")
+			if clusterName == "" {
+				return
+			}
+			enqueueForHostedCluster(ctx, np.GetNamespace(), clusterName, q)
+		},
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			oldM, ok1 := e.ObjectOld.(*unstructured.Unstructured)
+			newM, ok2 := e.ObjectNew.(*unstructured.Unstructured)
+			if !ok1 || !ok2 {
+				return
+			}
+			// Only enqueue when deletion state or addresses change.
+			if !oldM.GetDeletionTimestamp().Equal(newM.GetDeletionTimestamp()) || normalizedAddresses(oldM) != normalizedAddresses(newM) || oldM.GetAnnotations()[nodePoolAnnotation] != newM.GetAnnotations()[nodePoolAnnotation] {
+				ann := newM.GetAnnotations()
+				if ann == nil {
+					return
+				}
+				npKey := ann[nodePoolAnnotation]
+				if npKey == "" {
+					return
+				}
+				parts := strings.SplitN(npKey, "/", 2)
+				if len(parts) != 2 {
+					return
+				}
+				np := &unstructured.Unstructured{}
+				np.SetGroupVersionKind(nodePoolGVK)
+				if err := r.Get(ctx, types.NamespacedName{Namespace: parts[0], Name: parts[1]}, np); err != nil {
+					// Try old annotation as fallback
+					oldAnn := oldM.GetAnnotations()
+					oldKey := ""
+					if oldAnn != nil {
+						oldKey = oldAnn[nodePoolAnnotation]
+					}
+					if oldKey != "" && oldKey != npKey {
+						parts2 := strings.SplitN(oldKey, "/", 2)
+						if len(parts2) == 2 {
+							np2 := &unstructured.Unstructured{}
+							np2.SetGroupVersionKind(nodePoolGVK)
+							if err2 := r.Get(ctx, types.NamespacedName{Namespace: parts2[0], Name: parts2[1]}, np2); err2 == nil {
+								clusterName, _, _ := unstructured.NestedString(np2.Object, "spec", "clusterName")
+								if clusterName != "" {
+									enqueueForHostedCluster(ctx, np2.GetNamespace(), clusterName, q)
+								}
+							}
+						}
+					}
+					return
+				}
+				clusterName, _, _ := unstructured.NestedString(np.Object, "spec", "clusterName")
+				if clusterName == "" {
+					return
+				}
+				enqueueForHostedCluster(ctx, np.GetNamespace(), clusterName, q)
+				// If nodePool annotation changed, also enqueue old
+				oldAnn := oldM.GetAnnotations()
+				if oldAnn != nil {
+					oldKey := oldAnn[nodePoolAnnotation]
+					if oldKey != "" && oldKey != npKey {
+						parts2 := strings.SplitN(oldKey, "/", 2)
+						if len(parts2) == 2 {
+							np2 := &unstructured.Unstructured{}
+							np2.SetGroupVersionKind(nodePoolGVK)
+							if err2 := r.Get(ctx, types.NamespacedName{Namespace: parts2[0], Name: parts2[1]}, np2); err2 == nil {
+								clusterName2, _, _ := unstructured.NestedString(np2.Object, "spec", "clusterName")
+								if clusterName2 != "" {
+									enqueueForHostedCluster(ctx, np2.GetNamespace(), clusterName2, q)
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			m, ok := e.Object.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+			ann := m.GetAnnotations()
+			if ann == nil {
+				return
+			}
+			npKey := ann[nodePoolAnnotation]
+			if npKey == "" {
+				return
+			}
+			parts := strings.SplitN(npKey, "/", 2)
+			if len(parts) != 2 {
+				return
+			}
+			np := &unstructured.Unstructured{}
+			np.SetGroupVersionKind(nodePoolGVK)
+			if err := r.Get(ctx, types.NamespacedName{Namespace: parts[0], Name: parts[1]}, np); err != nil {
+				return
+			}
+			clusterName, _, _ := unstructured.NestedString(np.Object, "spec", "clusterName")
+			if clusterName == "" {
+				return
+			}
+			enqueueForHostedCluster(ctx, np.GetNamespace(), clusterName, q)
+		},
+		GenericFunc: func(ctx context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			m, ok := e.Object.(*unstructured.Unstructured)
+			if !ok {
+				return
+			}
+			ann := m.GetAnnotations()
+			if ann == nil {
+				return
+			}
+			npKey := ann[nodePoolAnnotation]
+			if npKey == "" {
+				return
+			}
+			parts := strings.SplitN(npKey, "/", 2)
+			if len(parts) != 2 {
+				return
+			}
+			np := &unstructured.Unstructured{}
+			np.SetGroupVersionKind(nodePoolGVK)
+			if err := r.Get(ctx, types.NamespacedName{Namespace: parts[0], Name: parts[1]}, np); err != nil {
+				return
+			}
+			clusterName, _, _ := unstructured.NestedString(np.Object, "spec", "clusterName")
+			if clusterName == "" {
+				return
+			}
+			enqueueForHostedCluster(ctx, np.GetNamespace(), clusterName, q)
 		},
 	}
 	builder := ctrl.NewControllerManagedBy(mgr).
@@ -1102,22 +1398,23 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&hostedclusterv1alpha1.InfraClusterAttachment{},
 			attachmentHandler,
 		)
-
-	// Source-IP alias discovery watches VirtualMachineInstances. Clusters
-	// without the kubevirt.io CRDs must still run the operator; aliases are
-	// simply not generated there, so skip the watch instead of failing start.
-	if _, err := mgr.GetRESTMapper().RESTMapping(
-		schema.GroupKind{Group: "kubevirt.io", Kind: "VirtualMachineInstance"}, "v1",
-	); err != nil {
-		logf.Log.Info("kubevirt.io/v1 VirtualMachineInstance not served; kubernetes.* source-IP aliases disabled", "cause", err.Error())
-		return builder.Named("infra").Complete(r)
+	// Watch NodePools (management cluster) for membership/scale/rollout.
+	npProto := &unstructured.Unstructured{}
+	npProto.SetGroupVersionKind(nodePoolGVK)
+	if _, err := mgr.GetRESTMapper().RESTMapping(schema.GroupKind{Group: nodePoolGVK.Group, Kind: nodePoolGVK.Kind}, nodePoolGVK.Version); err != nil {
+		logf.Log.Info("NodePool CRD not served; kubernetes.* source-IP aliases will remain pending until available", "cause", err.Error())
+	} else {
+		builder = builder.Watches(npProto, nodePoolHandler)
+		logf.Log.Info("watching NodePools for source-IP alias discovery")
 	}
-	logf.Log.Info("watching kubevirt.io VirtualMachineInstances for source-IP alias discovery")
-	return builder.
-		Watches(
-			&kubevirtv1.VirtualMachineInstance{},
-			vmiHandler,
-		).
-		Named("infra").
-		Complete(r)
+	// Watch CAPI Machines for address/lifecycle changes.
+	machineProto := &unstructured.Unstructured{}
+	machineProto.SetGroupVersionKind(machineGVK)
+	if _, err := mgr.GetRESTMapper().RESTMapping(schema.GroupKind{Group: machineGVK.Group, Kind: machineGVK.Kind}, machineGVK.Version); err != nil {
+		logf.Log.Info("Machine CRD not served; kubernetes.* source-IP aliases will remain pending until available", "cause", err.Error())
+	} else {
+		builder = builder.Watches(machineProto, machineHandler)
+		logf.Log.Info("watching CAPI Machines for source-IP alias discovery")
+	}
+	return builder.Named("infra").Complete(r)
 }

@@ -10,12 +10,13 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
-	kubevirtv1 "kubevirt.io/api/core/v1"
 )
 
 // aggConflicts splits the Infra Ready condition message back into the
@@ -28,37 +29,44 @@ func aggConflicts(infra hostedclusterv1alpha1.Infra) []string {
 	return strings.Split(cond.Message, "; ")
 }
 
-func makeVMI(name, namespace, ip string) *kubevirtv1.VirtualMachineInstance {
-	return &kubevirtv1.VirtualMachineInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Status: kubevirtv1.VirtualMachineInstanceStatus{
-			Interfaces: []kubevirtv1.VirtualMachineInstanceNetworkInterface{
-				{IP: ip, IPs: []string{ip}},
-			},
-		},
-	}
+//nolint:unparam
+func makeNodePool(name, namespace, clusterName string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{Group: "hypershift.openshift.io", Version: "v1beta1", Kind: "NodePool"})
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	_ = unstructured.SetNestedField(u.Object, clusterName, "spec", "clusterName")
+	_ = unstructured.SetNestedField(u.Object, "KubeVirt", "spec", "platform", "type")
+	return u
 }
 
-func makeVMIWithIPs(name, namespace string, ips []string) *kubevirtv1.VirtualMachineInstance {
-	if len(ips) == 0 {
-		return &kubevirtv1.VirtualMachineInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Status: kubevirtv1.VirtualMachineInstanceStatus{
-				Interfaces: []kubevirtv1.VirtualMachineInstanceNetworkInterface{{Name: "default"}},
-			},
+func makeMachine(name, namespace, nodePoolKey string, ips []string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "Machine"})
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	if nodePoolKey != "" {
+		ann := u.GetAnnotations()
+		if ann == nil {
+			ann = map[string]string{}
+		}
+		ann[nodePoolAnnotation] = nodePoolKey
+		u.SetAnnotations(ann)
+	}
+	if len(ips) > 0 {
+		var addrs []interface{}
+		for _, ip := range ips {
+			ip = strings.TrimSpace(ip)
+			if ip == "" {
+				continue
+			}
+			addrs = append(addrs, map[string]interface{}{"address": ip, "type": "InternalIP"})
+		}
+		if len(addrs) > 0 {
+			_ = unstructured.SetNestedSlice(u.Object, addrs, "status", "addresses")
 		}
 	}
-	iface := kubevirtv1.VirtualMachineInstanceNetworkInterface{
-		Name: "default",
-		IP:   ips[0],
-		IPs:  ips,
-	}
-	return &kubevirtv1.VirtualMachineInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Status: kubevirtv1.VirtualMachineInstanceStatus{
-			Interfaces: []kubevirtv1.VirtualMachineInstanceNetworkInterface{iface},
-		},
-	}
+	return u
 }
 
 var _ = Describe("Infra source-IP alias aggregation", func() {
@@ -89,9 +97,10 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		})).To(Succeed())
 	}
 
-	reconcileInfra := func() {
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: infraKey})
+	reconcileInfra := func() reconcile.Result {
+		res, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: infraKey})
 		Expect(err).NotTo(HaveOccurred())
+		return res
 	}
 
 	getProxy := func() hostedclusterv1alpha1.ProxyServer {
@@ -108,6 +117,7 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 
 	BeforeEach(func() {
 		reconciler = &InfraReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		ensureNamespace(ctx, "clusters")
 	})
 
 	AfterEach(func() {
@@ -127,30 +137,43 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 				_ = k8sClient.Delete(ctx, obj)
 			}
 		}
-		// Clean VMIs and namespaces created in these tests
+		// Clean Machines and NodePools
 		for _, ns := range []string{
-			"clusters-alpha", "clusters-bravo", "clusters-filter", "clusters-dedupe",
+			"clusters", "clusters-alpha", "clusters-bravo", "clusters-filter", "clusters-dedupe",
 			"clusters-dup-a", "clusters-dup-b", "clusters-empty", "clusters-sort", "clusters-multi",
 			"clusters-overlap-a", "clusters-overlap-b",
 			"clusters-triple-a", "clusters-triple-b", "clusters-triple-c",
-			"clusters-longname", "clusters-cap",
+			"clusters-longname", "clusters-cap", "clusters-derived", "clusters-space",
 		} {
-			vlist := &kubevirtv1.VirtualMachineInstanceList{}
-			_ = k8sClient.List(ctx, vlist, client.InNamespace(ns))
-			for i := range vlist.Items {
-				_ = k8sClient.Delete(ctx, &vlist.Items[i])
+			// Machines
+			ml := &unstructured.UnstructuredList{}
+			ml.SetGroupVersionKind(schema.GroupVersionKind{Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "MachineList"})
+			_ = k8sClient.List(ctx, ml, client.InNamespace(ns))
+			for i := range ml.Items {
+				_ = k8sClient.Delete(ctx, &ml.Items[i])
+			}
+			// NodePools only in "clusters"
+			if ns == "clusters" {
+				nl := &unstructured.UnstructuredList{}
+				nl.SetGroupVersionKind(schema.GroupVersionKind{Group: "hypershift.openshift.io", Version: "v1beta1", Kind: "NodePoolList"})
+				_ = k8sClient.List(ctx, nl, client.InNamespace(ns))
+				for i := range nl.Items {
+					_ = k8sClient.Delete(ctx, &nl.Items[i])
+				}
 			}
 		}
 	})
 
-	It("creates source-IP scoped kubernetes alias backends when VMIs are present", func() {
+	It("creates source-IP scoped kubernetes alias backends when Machines are present", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-alpha")
 		ensureNamespace(ctx, "clusters-bravo")
 		Expect(k8sClient.Create(ctx, makeAttachment("alpha", infraName, "alpha", "example.com", "clusters-alpha"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("bravo", infraName, "bravo", "example.com", "clusters-bravo"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-alpha-1", "clusters-alpha", "192.168.100.10"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-bravo-1", "clusters-bravo", "192.168.100.11"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("alpha-np", "clusters", "alpha"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("bravo-np", "clusters", "bravo"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-alpha-1", "clusters-alpha", "clusters/alpha-np", []string{"192.168.100.10"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-bravo-1", "clusters-bravo", "clusters/bravo-np", []string{"192.168.100.11"}))).To(Succeed())
 
 		reconcileInfra()
 
@@ -181,7 +204,6 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		Expect(hostnames).To(HaveKeyWithValue("kubernetes.default", "192.168.100.4"))
 		Expect(hostnames).To(HaveKeyWithValue("kubernetes.default.svc", "192.168.100.4"))
 		Expect(hostnames).To(HaveKeyWithValue("kubernetes.default.svc.cluster.local", "192.168.100.4"))
-		// Ensure FQDN still present
 		Expect(hostnames).To(HaveKey("api.alpha.example.com"))
 
 		By("keeping FQDN backends distinct")
@@ -191,12 +213,13 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		Expect(byName["bravo-kube-apiserver"].TargetNamespace).To(Equal("clusters-bravo"))
 	})
 
-	It("filters VM IPs outside the Infra CIDR", func() {
+	It("filters Machine IPs outside the Infra CIDR", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-filter")
 		Expect(k8sClient.Create(ctx, makeAttachment("filter", infraName, "filter", "example.com", "clusters-filter"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-filter-1", "clusters-filter", "10.0.0.5"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-filter-2", "clusters-filter", "192.168.100.50"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("filter-np", "clusters", "filter"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-filter-1", "clusters-filter", "clusters/filter-np", []string{"10.0.0.5"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-filter-2", "clusters-filter", "clusters/filter-np", []string{"192.168.100.50"}))).To(Succeed())
 
 		reconcileInfra()
 		proxy := getProxy()
@@ -212,8 +235,9 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-dedupe")
 		Expect(k8sClient.Create(ctx, makeAttachment("dedupe", infraName, "dedupe", "example.com", "clusters-dedupe"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-dedupe-1", "clusters-dedupe", "192.168.100.20"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-dedupe-2", "clusters-dedupe", "192.168.100.20"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("dedupe-np", "clusters", "dedupe"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-dedupe-1", "clusters-dedupe", "clusters/dedupe-np", []string{"192.168.100.20"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-dedupe-2", "clusters-dedupe", "clusters/dedupe-np", []string{"192.168.100.20"}))).To(Succeed())
 
 		reconcileInfra()
 		proxy := getProxy()
@@ -224,20 +248,12 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		}
 	})
 
-	It("handles multiple interfaces and IPs arrays per VMI", func() {
+	It("handles multiple addresses per Machine", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-multi")
 		Expect(k8sClient.Create(ctx, makeAttachment("multi", infraName, "multi", "example.com", "clusters-multi"))).To(Succeed())
-		vmi := &kubevirtv1.VirtualMachineInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: "vm-multi", Namespace: "clusters-multi"},
-			Status: kubevirtv1.VirtualMachineInstanceStatus{
-				Interfaces: []kubevirtv1.VirtualMachineInstanceNetworkInterface{
-					{Name: "default", IP: "192.168.100.30", IPs: []string{"192.168.100.30", "192.168.100.31"}},
-					{Name: "extra", IP: "192.168.100.32", IPs: []string{"192.168.100.32"}},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, vmi)).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("multi-np", "clusters", "multi"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-multi", "clusters-multi", "clusters/multi-np", []string{"192.168.100.30", "192.168.100.31", "192.168.100.32"}))).To(Succeed())
 
 		reconcileInfra()
 		proxy := getProxy()
@@ -252,7 +268,8 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-sort")
 		Expect(k8sClient.Create(ctx, makeAttachment("sort", infraName, "sort", "example.com", "clusters-sort"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMIWithIPs("vm-sort", "clusters-sort", []string{"192.168.100.52", "192.168.100.50", "192.168.100.51"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("sort-np", "clusters", "sort"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-sort", "clusters-sort", "clusters/sort-np", []string{"192.168.100.52", "192.168.100.50", "192.168.100.51"}))).To(Succeed())
 
 		reconcileInfra()
 		proxy := getProxy()
@@ -263,12 +280,14 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		}
 	})
 
-	It("omits alias backends when no VMIs exist", func() {
+	It("omits alias backends when no Machines exist but requeues pending", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-empty")
 		Expect(k8sClient.Create(ctx, makeAttachment("empty", infraName, "empty", "example.com", "clusters-empty"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("empty-np", "clusters", "empty"))).To(Succeed())
 
-		reconcileInfra()
+		res := reconcileInfra()
+		Expect(res.RequeueAfter).To(Equal(aliasPendingRequeue))
 		proxy := getProxy()
 		for _, b := range proxy.Spec.Backends {
 			Expect(b.Name).NotTo(ContainSubstring("kubernetes-hostname"))
@@ -281,13 +300,15 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		}
 	})
 
-	It("omits alias when VMI has no IPs", func() {
+	It("omits alias when Machine has no IPs and requeues", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-empty")
 		Expect(k8sClient.Create(ctx, makeAttachment("noip", infraName, "noip", "example.com", "clusters-empty"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMIWithIPs("vm-noip", "clusters-empty", nil))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("noip-np", "clusters", "noip"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-noip", "clusters-empty", "clusters/noip-np", nil))).To(Succeed())
 
-		reconcileInfra()
+		res := reconcileInfra()
+		Expect(res.RequeueAfter).To(Equal(aliasPendingRequeue))
 		proxy := getProxy()
 		for _, b := range proxy.Spec.Backends {
 			Expect(b.Name).NotTo(ContainSubstring("kubernetes-hostname"))
@@ -300,8 +321,10 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		ensureNamespace(ctx, "clusters-dup-b")
 		Expect(k8sClient.Create(ctx, makeAttachment("dup-a", infraName, "dup-a", "example.com", "clusters-dup-a"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("dup-b", infraName, "dup-b", "example.com", "clusters-dup-b"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-dup-a", "clusters-dup-a", "192.168.100.99"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-dup-b", "clusters-dup-b", "192.168.100.99"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("dup-a-np", "clusters", "dup-a"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("dup-b-np", "clusters", "dup-b"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-dup-a", "clusters-dup-a", "clusters/dup-a-np", []string{"192.168.100.99"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-dup-b", "clusters-dup-b", "clusters/dup-b-np", []string{"192.168.100.99"}))).To(Succeed())
 
 		reconcileInfra()
 
@@ -348,8 +371,10 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		ensureNamespace(ctx, "clusters-overlap-b")
 		Expect(k8sClient.Create(ctx, makeAttachment("overlap-a", infraName, "overlap-a", "example.com", "clusters-overlap-a"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("overlap-b", infraName, "overlap-b", "example.com", "clusters-overlap-b"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMIWithIPs("vm-overlap-a", "clusters-overlap-a", []string{"192.168.100.70", "192.168.100.71"}))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-overlap-b", "clusters-overlap-b", "192.168.100.70"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("overlap-a-np", "clusters", "overlap-a"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("overlap-b-np", "clusters", "overlap-b"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-overlap-a", "clusters-overlap-a", "clusters/overlap-a-np", []string{"192.168.100.70", "192.168.100.71"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-overlap-b", "clusters-overlap-b", "clusters/overlap-b-np", []string{"192.168.100.70"}))).To(Succeed())
 
 		reconcileInfra()
 
@@ -363,10 +388,8 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		for _, b := range proxy.Spec.Backends {
 			byName[b.Name] = b
 		}
-		// overlap-a keeps its unique IP; overlap-b has none left so no alias backend.
 		Expect(byName["overlap-a-kubernetes-hostname"].SourcePrefixRanges).To(Equal([]string{"192.168.100.71/32"}))
 		Expect(byName).NotTo(HaveKey("overlap-b-kubernetes-hostname"))
-		// Exactly one conflict entry for the shared CIDR.
 		conflicts := 0
 		for _, msg := range aggConflicts(infra) {
 			if strings.Contains(msg, "192.168.100.70") {
@@ -374,7 +397,6 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 			}
 		}
 		Expect(conflicts).To(Equal(1))
-		// FQDN routing unaffected for both.
 		Expect(byName["overlap-a-kube-apiserver"].TargetNamespace).To(Equal("clusters-overlap-a"))
 		Expect(byName["overlap-b-kube-apiserver"].TargetNamespace).To(Equal("clusters-overlap-b"))
 	})
@@ -387,9 +409,12 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		Expect(k8sClient.Create(ctx, makeAttachment("tri-a", infraName, "tri-a", "example.com", "clusters-triple-a"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("tri-b", infraName, "tri-b", "example.com", "clusters-triple-b"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("tri-c", infraName, "tri-c", "example.com", "clusters-triple-c"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-tri-a", "clusters-triple-a", "192.168.100.80"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-tri-b", "clusters-triple-b", "192.168.100.80"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-tri-c", "clusters-triple-c", "192.168.100.80"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("tri-a-np", "clusters", "tri-a"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("tri-b-np", "clusters", "tri-b"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("tri-c-np", "clusters", "tri-c"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-tri-a", "clusters-triple-a", "clusters/tri-a-np", []string{"192.168.100.80"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-tri-b", "clusters-triple-b", "clusters/tri-b-np", []string{"192.168.100.80"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-tri-c", "clusters-triple-c", "clusters/tri-c-np", []string{"192.168.100.80"}))).To(Succeed())
 
 		reconcileInfra()
 
@@ -405,7 +430,6 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		for _, b := range proxy.Spec.Backends {
 			Expect(b.SourcePrefixRanges).To(BeEmpty())
 		}
-		// All three clusters keep their FQDN records.
 		hostnames := map[string]bool{}
 		for _, e := range getDNS().Spec.StaticEntries {
 			hostnames[e.Hostname] = true
@@ -451,21 +475,22 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 
 		ensureNamespace(ctx, "clusters-cap")
 		Expect(k8sClient.Create(ctx, makeAttachment("cap", "cap-infra", "cap", "example.com", "clusters-cap"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("cap-np", "clusters", "cap"))).To(Succeed())
 
 		generated := make([]string, 0, maxAliasSourcePrefixRanges+5)
 		total := maxAliasSourcePrefixRanges + 5
 		for i := 0; i < total; i++ {
 			ip := fmt.Sprintf("10.200.%d.%d", 1+i/250, 1+i%250)
 			generated = append(generated, ip+"/32")
-			Expect(k8sClient.Create(ctx, makeVMI(fmt.Sprintf("vm-cap-%03d", i), "clusters-cap", ip))).To(Succeed())
+			Expect(k8sClient.Create(ctx, makeMachine(fmt.Sprintf("machine-cap-%03d", i), "clusters-cap", "clusters/cap-np", []string{ip}))).To(Succeed())
 		}
 		sort.Strings(generated)
 		expected := generated[:maxAliasSourcePrefixRanges]
 
 		var att hostedclusterv1alpha1.InfraClusterAttachment
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cap", Namespace: "default"}, &att)).To(Succeed())
-		// The resolver itself applies the MaxItems cap.
-		dbg := reconciler.resolveAttachmentSourceCIDRs(ctx, &att, "10.200.0.0/16")
+		dbg, pending := reconciler.resolveAttachmentSourceCIDRs(ctx, &att, "10.200.0.0/16")
+		Expect(pending).To(BeFalse())
 		Expect(dbg).To(Equal(expected))
 
 		_, reconcileErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "cap-infra", Namespace: "default"}})
@@ -484,17 +509,18 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		Expect(alias.SourcePrefixRanges).To(Equal(expected))
 	})
 
-	It("removes alias when VMI is deleted", func() {
+	It("removes alias when Machine is deleted", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-alpha")
 		Expect(k8sClient.Create(ctx, makeAttachment("alpha", infraName, "alpha", "example.com", "clusters-alpha"))).To(Succeed())
-		vmi := makeVMI("vm-alpha-1", "clusters-alpha", "192.168.100.10")
-		Expect(k8sClient.Create(ctx, vmi)).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("alpha-np-del", "clusters", "alpha"))).To(Succeed())
+		m := makeMachine("machine-alpha-1", "clusters-alpha", "clusters/alpha-np-del", []string{"192.168.100.10"})
+		Expect(k8sClient.Create(ctx, m)).To(Succeed())
 
 		reconcileInfra()
 		Expect(getProxy().Spec.Backends).To(ContainElement(HaveField("Name", "alpha-kubernetes-hostname")))
 
-		Expect(k8sClient.Delete(ctx, vmi)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, m)).To(Succeed())
 		reconcileInfra()
 		proxy := getProxy()
 		for _, b := range proxy.Spec.Backends {
@@ -514,7 +540,8 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		att.Spec.HostedClusterRef.Namespace = "clusters"
 		att.Spec.HostedClusterRef.Name = "derived"
 		Expect(k8sClient.Create(ctx, att)).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-derived", "clusters-derived", "192.168.100.77"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("derived-np", "clusters", "derived"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-derived", "clusters-derived", "clusters/derived-np", []string{"192.168.100.77"}))).To(Succeed())
 
 		reconcileInfra()
 		proxy := getProxy()
@@ -536,8 +563,10 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		ensureNamespace(ctx, "clusters-bravo")
 		Expect(k8sClient.Create(ctx, makeAttachment("alpha", infraName, "alpha", "example.com", "clusters-alpha"))).To(Succeed())
 		Expect(k8sClient.Create(ctx, makeAttachment("bravo", infraName, "bravo", "example.com", "clusters-bravo"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-alpha-1", "clusters-alpha", "192.168.100.10"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-bravo-1", "clusters-bravo", "192.168.100.11"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("alpha-np-dns", "clusters", "alpha"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("bravo-np-dns", "clusters", "bravo"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-alpha-1", "clusters-alpha", "clusters/alpha-np-dns", []string{"192.168.100.10"}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-bravo-1", "clusters-bravo", "clusters/bravo-np-dns", []string{"192.168.100.11"}))).To(Succeed())
 
 		reconcileInfra()
 		dns := getDNS()
@@ -555,7 +584,8 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-alpha")
 		Expect(k8sClient.Create(ctx, makeAttachment("active", infraName, "active", "example.com", "clusters-alpha"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-active", "clusters-alpha", "192.168.100.10"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("active-np", "clusters", "active"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-active", "clusters-alpha", "clusters/active-np", []string{"192.168.100.10"}))).To(Succeed())
 		terminating := makeAttachment("terminating", infraName, "terminating", "example.com", "clusters-alpha")
 		terminating.Finalizers = []string{"test.finalizer"}
 		Expect(k8sClient.Create(ctx, terminating)).To(Succeed())
@@ -563,7 +593,6 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 
 		reconcileInfra()
 		proxy := getProxy()
-		// Terminating attachment should not contribute its domain or alias (its VMs are in same ns but excluded)
 		for _, b := range proxy.Spec.Backends {
 			Expect(b.Hostname).NotTo(ContainSubstring("terminating"))
 		}
@@ -578,10 +607,11 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 	It("keeps generated backend names within the 63-char limit for long attachment names", func() {
 		createAliasInfra()
 		ensureNamespace(ctx, "clusters-longname")
-		longName := "shared-infra-production-cluster" // 31 chars, previously produced a 66-char name
+		longName := "shared-infra-production-cluster"
 		Expect(longName).To(HaveLen(31))
 		Expect(k8sClient.Create(ctx, makeAttachment(longName, infraName, "longname", "example.com", "clusters-longname"))).To(Succeed())
-		Expect(k8sClient.Create(ctx, makeVMI("vm-longname", "clusters-longname", "192.168.100.90"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("longname-np", "clusters", longName))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-longname", "clusters-longname", "clusters/longname-np", []string{"192.168.100.90"}))).To(Succeed())
 
 		reconcileInfra()
 
@@ -599,7 +629,6 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 	})
 
 	It("reports ValidDomain handling even with alias", func() {
-		// Empty clusterName is rejected by CRD validation, so test via helper directly.
 		invalid := attachmentView{name: "bad", domain: "", sourceCIDRs: []string{"192.168.100.10/32"}}
 		Expect(aliasBackendsForView(invalid, "bad-")).To(BeNil())
 		Expect(validDomain("")).To(BeFalse())
@@ -629,10 +658,64 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 	It("keeps FQDN backends SNI-routed even without alias", func() {
 		createAliasInfra()
 		Expect(k8sClient.Create(ctx, makeAttachment("alpha", infraName, "alpha", "example.com", "clusters-alpha"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("alpha-np-fqdn", "clusters", "alpha"))).To(Succeed())
 		reconcileInfra()
 		proxy := getProxy()
 		Expect(proxy.Spec.Backends).To(ContainElement(HaveField("Hostname", "api.alpha.example.com")))
 		Expect(proxy.Spec.Backends).To(ContainElement(HaveField("Hostname", "oauth.alpha.example.com")))
+	})
+
+	It("requeues pending when KubeVirt NodePool has no addresses", func() {
+		createAliasInfra()
+		ensureNamespace(ctx, "clusters-pending")
+		Expect(k8sClient.Create(ctx, makeAttachment("pending", infraName, "pending", "example.com", "clusters-pending"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("pending-np", "clusters", "pending"))).To(Succeed())
+		res := reconcileInfra()
+		Expect(res.RequeueAfter).To(Equal(aliasPendingRequeue))
+	})
+
+	It("safety requeues every 5m when aliases are present", func() {
+		createAliasInfra()
+		ensureNamespace(ctx, "clusters-safety")
+		Expect(k8sClient.Create(ctx, makeAttachment("safety", infraName, "safety", "example.com", "clusters-safety"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("safety-np", "clusters", "safety"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-safety", "clusters-safety", "clusters/safety-np", []string{"192.168.100.99"}))).To(Succeed())
+		res := reconcileInfra()
+		Expect(res.RequeueAfter).To(Equal(aliasSafetyRequeue))
+	})
+
+	It("ignores non-KubeVirt NodePools", func() {
+		createAliasInfra()
+		ensureNamespace(ctx, "clusters-ignore")
+		Expect(k8sClient.Create(ctx, makeAttachment("ignore", infraName, "ignore", "example.com", "clusters-ignore"))).To(Succeed())
+		np := makeNodePool("ignore-np", "clusters", "ignore")
+		_ = unstructured.SetNestedField(np.Object, "AWS", "spec", "platform", "type")
+		Expect(k8sClient.Create(ctx, np)).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-ignore", "clusters-ignore", "clusters/ignore-np", []string{"192.168.100.99"}))).To(Succeed())
+		res := reconcileInfra()
+		// No KubeVirt pool => no alias, no pending requeue
+		Expect(res.RequeueAfter).To(BeZero())
+		proxy := getProxy()
+		for _, b := range proxy.Spec.Backends {
+			Expect(b.Name).NotTo(ContainSubstring("kubernetes-hostname"))
+		}
+	})
+
+	It("filters Machine addresses outside Infra CIDR and handles spaces", func() {
+		ensureNamespace(ctx, "clusters")
+		ensureNamespace(ctx, "clusters-space2")
+		// Use cap infra? create dedicated
+		cidr := "192.168.100.0/24"
+		att := makeAttachment("space2", "alias-infra", "space2", "example.com", "clusters-space2")
+		// Infra not needed for direct resolve test; create it for reconcile? Use alias-infra
+		createAliasInfra()
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeNodePool("space2-np", "clusters", "space2"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeMachine("machine-space2", "clusters-space2", "clusters/space2-np", []string{" 192.168.100.60 "}))).To(Succeed())
+		r := &InfraReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		cidrs, pending := r.resolveAttachmentSourceCIDRs(context.Background(), att, cidr)
+		Expect(pending).To(BeFalse())
+		Expect(cidrs).To(Equal([]string{"192.168.100.60/32"}))
 	})
 })
 
@@ -645,7 +728,6 @@ var _ = Describe("helper coverage", func() {
 		Expect(validDomain("alpha.example.com")).To(BeTrue())
 	})
 	It("checks hostnameKey and merge helpers via proxy status", func() {
-		// Indirectly tested via shared external Service test; ensure no panic on empty.
 		Expect(mergeOAuthHostnames(nil, nil)).To(Not(BeNil()))
 		Expect(hostnameKey("  OAuth.Example.Com. ")).To(Equal("oauth.example.com"))
 	})
@@ -661,8 +743,8 @@ var _ = Describe("helper coverage", func() {
 			"a",
 			"alpha",
 			"mc-alpha",
-			"shared-infra-production-cluster", // previously overflowed at 66 chars
-			"clusters-production-region-one-us-east-worker", // exercises prefix truncation
+			"shared-infra-production-cluster",
+			"clusters-production-region-one-us-east-worker",
 			strings.Repeat("x", 63),
 			"UPPER-case_And.Symbols!!",
 		}
@@ -683,12 +765,8 @@ var _ = Describe("helper coverage", func() {
 			Expect(len(backends[0].Name)).To(BeNumerically("<=", 63))
 		}
 
-		// Distinct long names sharing a truncated prefix must still yield distinct prefixes.
 		a := backendNamePrefix(attachmentView{name: strings.Repeat("a", 45) + "-one"})
 		b := backendNamePrefix(attachmentView{name: strings.Repeat("a", 45) + "-two"})
-		// Both truncate identically only if the difference lies beyond the cut; with the
-		// current implementation they may collide, which is pre-existing behavior for
-		// hcp backends too — assert only the length invariant here.
 		Expect(a).To(HaveLen(40))
 		Expect(b).To(HaveLen(40))
 	})
@@ -698,19 +776,42 @@ var _ = Describe("resolveAttachmentSourceCIDRs edge cases", func() {
 	It("returns nil for empty CIDR and invalid CIDR", func() {
 		r := &InfraReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		att := makeAttachment("x", "y", "x", "example.com", "clusters-x")
-		Expect(r.resolveAttachmentSourceCIDRs(context.Background(), att, "")).To(BeNil())
-		Expect(r.resolveAttachmentSourceCIDRs(context.Background(), att, "not-a-cidr")).To(BeNil())
+		c, p := r.resolveAttachmentSourceCIDRs(context.Background(), att, "")
+		Expect(c).To(BeNil())
+		Expect(p).To(BeFalse())
+		c, p = r.resolveAttachmentSourceCIDRs(context.Background(), att, "not-a-cidr")
+		Expect(c).To(BeNil())
+		Expect(p).To(BeFalse())
 	})
-	It("filters correctly when VMI IPs contain spaces", func() {
+	It("filters correctly when Machine IPs contain spaces and outside CIDR", func() {
+		ensureNamespace(context.Background(), "clusters")
 		ensureNamespace(context.Background(), "clusters-space")
 		att := makeAttachment("space", "alias-infra", "space", "example.com", "clusters-space")
 		Expect(k8sClient.Create(context.Background(), att)).To(Succeed())
-		vmi := makeVMI("vm-space", "clusters-space", " 192.168.100.60 ")
-		Expect(k8sClient.Create(context.Background(), vmi)).To(Succeed())
+		np := makeNodePool("space-np", "clusters", "space")
+		Expect(k8sClient.Create(context.Background(), np)).To(Succeed())
+		m := makeMachine("machine-space", "clusters-space", "clusters/space-np", []string{" 192.168.100.60 "})
+		Expect(k8sClient.Create(context.Background(), m)).To(Succeed())
 		r := &InfraReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		cidrs := r.resolveAttachmentSourceCIDRs(context.Background(), att, "192.168.100.0/24")
+		cidrs, pending := r.resolveAttachmentSourceCIDRs(context.Background(), att, "192.168.100.0/24")
+		Expect(pending).To(BeFalse())
 		Expect(cidrs).To(Equal([]string{"192.168.100.60/32"}))
-		Expect(k8sClient.Delete(context.Background(), vmi)).To(Succeed())
+		Expect(k8sClient.Delete(context.Background(), m)).To(Succeed())
+		Expect(k8sClient.Delete(context.Background(), np)).To(Succeed())
+		Expect(k8sClient.Delete(context.Background(), att)).To(Succeed())
+	})
+	It("returns pending when KubeVirt NodePool has no valid addresses", func() {
+		ensureNamespace(context.Background(), "clusters")
+		ensureNamespace(context.Background(), "clusters-pending2")
+		att := makeAttachment("pending2", "alias-infra", "pending2", "example.com", "clusters-pending2")
+		Expect(k8sClient.Create(context.Background(), att)).To(Succeed())
+		np := makeNodePool("pending2-np", "clusters", "pending2")
+		Expect(k8sClient.Create(context.Background(), np)).To(Succeed())
+		r := &InfraReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		cidrs, pending := r.resolveAttachmentSourceCIDRs(context.Background(), att, "192.168.100.0/24")
+		Expect(cidrs).To(BeNil())
+		Expect(pending).To(BeTrue())
+		Expect(k8sClient.Delete(context.Background(), np)).To(Succeed())
 		Expect(k8sClient.Delete(context.Background(), att)).To(Succeed())
 	})
 })
