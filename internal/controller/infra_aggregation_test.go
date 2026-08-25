@@ -384,10 +384,10 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 })
 
 var _ = Describe("Shared external Service OAuth policy", func() {
-	makeView := func(name, domain, cpns string, explicit, ready bool) attachmentView {
+	makeView := func(name, domain, cpns string, ready bool) attachmentView {
 		return attachmentView{
 			name:                  name,
-			explicit:              explicit,
+			explicit:              true,
 			ready:                 ready,
 			hostedClusterRef:      hostedclusterv1alpha1.HostedClusterReference{Name: name, Namespace: "clusters"},
 			controlPlaneNamespace: cpns,
@@ -421,8 +421,8 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 	It("appends Ready attachment oauth names to the shared VIP annotation", func() {
 		infra := infraWithExternal(true)
 		views := []attachmentView{
-			makeView("bravo", "bravo.example.com", "clusters-bravo", true, true),
-			makeView("alpha", "alpha.example.com", "clusters-alpha", true, false), // not Ready
+			makeView("bravo", "bravo.example.com", "clusters-bravo", true),
+			makeView("alpha", "alpha.example.com", "clusters-alpha", false), // not Ready
 		}
 		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
 		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
@@ -431,7 +431,7 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 
 	It("does not modify the annotation unless publishing is enabled", func() {
 		infra := infraWithExternal(false)
-		views := []attachmentView{makeView("a", "a.example.com", "clusters-a", true, true)}
+		views := []attachmentView{makeView("a", "a.example.com", "clusters-a", true)}
 		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
 		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
 			To(Equal("legacy-oauth.example.com."))
@@ -460,8 +460,8 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 
 		By("multi-attachment aggregation excludes them")
 		views := []attachmentView{
-			makeView("a", "a.example.com", "clusters-a", true, true),
-			makeView("b", "b.example.com", "clusters-b", true, true),
+			makeView("a", "a.example.com", "clusters-a", true),
+			makeView("b", "b.example.com", "clusters-b", true),
 		}
 		proxy = (&InfraReconciler{}).proxyServerForInfra(infra, views)
 		for _, b := range proxy.Spec.Backends {

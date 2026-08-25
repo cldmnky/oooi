@@ -979,7 +979,7 @@ func mergeOAuthHostnames(annotations map[string]string, hostnames []string) map[
 		return out
 	}
 	seen := map[string]bool{}
-	var userParts []string
+	userParts := make([]string, 0, len(annotations[hostnameAnnotationKey]))
 	for _, p := range strings.Split(annotations[hostnameAnnotationKey], ",") {
 		p = strings.TrimSpace(p)
 		if p == "" || seen[strings.ToLower(p)] {
