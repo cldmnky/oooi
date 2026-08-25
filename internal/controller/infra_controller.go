@@ -18,11 +18,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net"
-	"net/url"
 	"reflect"
+	"sort"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -31,13 +31,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
@@ -90,24 +90,37 @@ func (r *InfraReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	// Resolve explicit attachments (or the implicit legacy binding) before
+	// reconciling components so DNS/proxy children see a consistent view set.
+	agg, err := r.aggregateAttachments(ctx, infra)
+	if err != nil {
+		log.Error(err, "Failed to list InfraClusterAttachments")
+		return ctrl.Result{}, err
+	}
+
+	// Legacy path: drive apps ingress here so the discovered endpoint feeds
+	// DNS/proxy generation in this same pass. Explicit attachments reconcile
+	// their own ingress and publish endpoints through attachment status.
+	var appsIngressResult ctrl.Result
+	if len(agg.views) == 1 && !agg.views[0].explicit {
+		appsIngressResult = r.reconcileImplicitAppsIngress(ctx, infra, &agg.views[0])
+	}
+
 	// Reconcile infrastructure components
 	if err := r.reconcileDHCPComponent(ctx, infra); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile apps ingress first to discover external IP for DNS/Proxy wildcard
-	appsIngressResult := r.reconcileAppsIngress(ctx, infra)
-
-	if err := r.reconcileDNSComponent(ctx, infra); err != nil {
+	if err := r.reconcileDNSComponent(ctx, infra, agg.views); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileProxyComponent(ctx, infra); err != nil {
+	if err := r.reconcileProxyComponent(ctx, infra, agg.views); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Update status
-	if err := r.updateInfraStatus(ctx, infra); err != nil {
+	if err := r.updateInfraStatus(ctx, infra, agg); err != nil {
 		return ctrl.Result{}, err
 	}
 	if appsIngressResult.Requeue || appsIngressResult.RequeueAfter > 0 {
@@ -151,14 +164,14 @@ func (r *InfraReconciler) reconcileDHCPComponent(ctx context.Context, infra *hos
 }
 
 // reconcileDNSComponent handles DNS server creation and updates
-func (r *InfraReconciler) reconcileDNSComponent(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+func (r *InfraReconciler) reconcileDNSComponent(ctx context.Context, infra *hostedclusterv1alpha1.Infra, views []attachmentView) error {
 	log := logf.FromContext(ctx)
 
 	if !infra.Spec.InfraComponents.DNS.Enabled {
 		return nil
 	}
 
-	dnsServer := r.dnsServerForInfra(infra)
+	dnsServer := r.dnsServerForInfra(infra, views)
 	if internalProxy := dnsServer.Spec.NetworkConfig.InternalProxyIP; internalProxy != "" && net.ParseIP(internalProxy) == nil {
 		resolvedProxyIP, err := r.resolveInternalProxyService(ctx, internalProxy)
 		if err != nil {
@@ -215,14 +228,21 @@ func (r *InfraReconciler) resolveInternalProxyService(ctx context.Context, refer
 }
 
 // reconcileProxyComponent handles proxy server creation, updates, and network policy
-func (r *InfraReconciler) reconcileProxyComponent(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+func (r *InfraReconciler) reconcileProxyComponent(ctx context.Context, infra *hostedclusterv1alpha1.Infra, views []attachmentView) error {
 	log := logf.FromContext(ctx)
 
 	if !infra.Spec.InfraComponents.Proxy.Enabled {
 		return nil
 	}
 
-	proxyServer := r.proxyServerForInfra(infra)
+	proxyServer := r.proxyServerForInfra(infra, views)
+	if len(proxyServer.Spec.Backends) == 0 {
+		// Every attachment was excluded (e.g. duplicate-hostname conflict).
+		// Leave any existing proxy untouched rather than applying an invalid
+		// empty backend set; the Infra condition reports the conflict.
+		log.Info("No valid SNI backends after aggregation; leaving ProxyServer unchanged")
+		return nil
+	}
 	if err := ctrl.SetControllerReference(infra, proxyServer, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for ProxyServer")
 		return err
@@ -252,7 +272,9 @@ func (r *InfraReconciler) reconcileProxyComponent(ctx context.Context, infra *ho
 		}
 	}
 
-	// Create NetworkPolicy in HCP namespace if ControlPlaneNamespace is specified
+	// Create NetworkPolicy in HCP namespace if ControlPlaneNamespace is specified.
+	// This covers only the implicit legacy binding; explicit attachments manage
+	// their own policies through the InfraClusterAttachment controller.
 	if infra.Spec.InfraComponents.Proxy.ControlPlaneNamespace != "" {
 		return r.reconcileNetworkPolicy(ctx, infra)
 	}
@@ -286,103 +308,206 @@ func (r *InfraReconciler) reconcileNetworkPolicy(ctx context.Context, infra *hos
 	return nil
 }
 
-// reconcileAppsIngress handles apps ingress configuration for hosted clusters.
-func (r *InfraReconciler) reconcileAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra) ctrl.Result {
-	previousStatus := infra.Status.AppsIngressStatus
+// attachmentView is the normalized per-cluster input derived either from an
+// explicit InfraClusterAttachment or synthesized from this Infra's legacy
+// cluster-specific fields.
+type attachmentView struct {
+	name                  string // attachment name; legacyAttachmentName when synthesized
+	explicit              bool
+	createNetworkPolicy   bool
+	hostedClusterRef      hostedclusterv1alpha1.HostedClusterReference
+	apiServerService      string
+	controlPlaneNamespace string
+	domain                string // "<clusterName>.<baseDomain>"; may be "." for empty legacy fields
+	appsConfig            hostedclusterv1alpha1.AppsIngressConfig
+	appsExternalIP        string // wildcard DNS answer; empty until the VIP exists
+	appsEndpoint          string // IP or hostname used for Envoy apps backends
+}
 
-	// If apps ingress is not enabled, clear status and skip
-	if !infra.Spec.AppsIngress.Enabled {
-		infra.Status.AppsIngressStatus = hostedclusterv1alpha1.AppsIngressStatus{}
-		return ctrl.Result{}
-	}
+const (
+	legacyAttachmentName       = "<legacy>"
+	reasonDuplicateHostname    = "DuplicateHostname"
+	reasonDuplicateHostedClust = "DuplicateHostedCluster"
+)
 
-	hostedClient, err := r.getHostedClusterClient(ctx, infra)
-	if err != nil {
-		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
-		infra.Status.AppsIngressStatus.Reason = "HostedClusterAccessFailed"
-		infra.Status.AppsIngressStatus.Message = err.Error()
-		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-		infra.Status.AppsIngressStatus.ExternalIP = ""
-		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}
-	}
+// aggregation is the resolved per-cluster view set for one reconcile pass,
+// plus observability about how it was built.
+type aggregation struct {
+	views          []attachmentView
+	legacyIgnored  bool
+	total          int32
+	ready          int32
+	conflicts      []string
+	degradedReason string
+}
 
-	nodes := &corev1.NodeList{}
-	if err := hostedClient.List(ctx, nodes); err != nil {
-		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
-		infra.Status.AppsIngressStatus.Reason = "HostedClusterNodeListFailed"
-		infra.Status.AppsIngressStatus.Message = err.Error()
-		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-		infra.Status.AppsIngressStatus.ExternalIP = ""
-		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}
-	}
-	if !hasReadyNode(nodes.Items) {
-		infra.Status.AppsIngressStatus.Phase = PhasePending
-		infra.Status.AppsIngressStatus.Reason = "WaitingForHostedClusterNodes"
-		infra.Status.AppsIngressStatus.Message = "waiting for a Ready hosted cluster node before installing MetalLB"
-		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-		infra.Status.AppsIngressStatus.ExternalIP = ""
-		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}
-	}
+// validDomain reports whether a computed hosted-cluster domain is usable for
+// DNS records and SNI routes.
+func validDomain(domain string) bool {
+	return domain != "" && domain != "."
+}
 
-	if err := r.ensureMetalLBInstalled(ctx, hostedClient, infra); err != nil {
-		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
-		infra.Status.AppsIngressStatus.Reason = "MetalLBInstallFailed"
-		infra.Status.AppsIngressStatus.Message = err.Error()
-		if meta.IsNoMatchError(err) {
-			infra.Status.AppsIngressStatus.Phase = PhasePending
-			infra.Status.AppsIngressStatus.Reason = "WaitingForMetalLBCRDs"
-			infra.Status.AppsIngressStatus.Message = "MetalLB operator is not ready: " + err.Error()
+// normalizeHostedClusterRef applies the historical default namespace.
+func normalizeHostedClusterRef(ref hostedclusterv1alpha1.HostedClusterReference) hostedclusterv1alpha1.HostedClusterReference {
+	if ref.Namespace == "" {
+		ref.Namespace = "clusters"
+	}
+	return ref
+}
+
+// hasLegacyClusterConfig reports whether this Infra still carries
+// cluster-specific settings in its deprecated fields.
+func hasLegacyClusterConfig(infra *hostedclusterv1alpha1.Infra) bool {
+	dnsSpec := infra.Spec.InfraComponents.DNS
+	proxySpec := infra.Spec.InfraComponents.Proxy
+	return dnsSpec.ClusterName != "" || dnsSpec.BaseDomain != "" ||
+		proxySpec.ControlPlaneNamespace != "" ||
+		infra.Spec.AppsIngress.HostedClusterRef.Name != ""
+}
+
+// legacyAttachmentView synthesizes the implicit single-cluster binding from
+// this Infra's own fields, preserving pre-multi-cluster behavior exactly.
+func legacyAttachmentView(infra *hostedclusterv1alpha1.Infra) attachmentView {
+	proxySpec := infra.Spec.InfraComponents.Proxy
+	cpns := proxySpec.ControlPlaneNamespace
+	if cpns == "" {
+		cpns = infra.Namespace + "-" + infra.Name
+	}
+	hcRef := normalizeHostedClusterRef(infra.Spec.AppsIngress.HostedClusterRef)
+	return attachmentView{
+		name:                  legacyAttachmentName,
+		createNetworkPolicy:   proxySpec.ControlPlaneNamespace != "",
+		hostedClusterRef:      hcRef,
+		apiServerService:      proxySpec.APIServerService,
+		controlPlaneNamespace: cpns,
+		domain:                infra.Spec.InfraComponents.DNS.ClusterName + "." + infra.Spec.InfraComponents.DNS.BaseDomain,
+		appsConfig:            infra.Spec.AppsIngress,
+	}
+}
+
+// attachmentFromAttachment builds a view from an explicit InfraClusterAttachment.
+func attachmentFromAttachment(att *hostedclusterv1alpha1.InfraClusterAttachment) attachmentView {
+	cpns := att.Spec.ControlPlaneNamespace
+	if cpns == "" {
+		cpns = att.Spec.HostedClusterRef.Namespace + "-" + att.Spec.HostedClusterRef.Name
+	}
+	view := attachmentView{
+		name:                  att.Name,
+		explicit:              true,
+		createNetworkPolicy:   false, // owned by the attachment controller
+		hostedClusterRef:      normalizeHostedClusterRef(att.Spec.HostedClusterRef),
+		apiServerService:      att.Spec.APIServerService,
+		controlPlaneNamespace: cpns,
+		domain:                att.Spec.DNS.ClusterName + "." + att.Spec.DNS.BaseDomain,
+		appsConfig:            att.Spec.AppsIngress,
+	}
+	status := att.Status.AppsIngressStatus
+	if att.Spec.AppsIngress.Enabled && status.Phase == phaseReady {
+		view.appsEndpoint = status.ExternalIP
+		if view.appsEndpoint == "" {
+			view.appsEndpoint = status.ExternalHostname
 		}
-		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-		infra.Status.AppsIngressStatus.ExternalIP = ""
-		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}
+		view.appsExternalIP = status.ExternalIP // hostname-only endpoints have no A record
 	}
+	return view
+}
 
-	if err := r.ensureAppsIngressService(ctx, hostedClient, infra); err != nil {
-		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
-		infra.Status.AppsIngressStatus.Reason = "IngressServiceFailed"
-		infra.Status.AppsIngressStatus.Message = err.Error()
-		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-		infra.Status.AppsIngressStatus.ExternalIP = ""
-		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 30 * time.Second}
+// aggregateAttachments resolves every InfraClusterAttachment targeting infra
+// into deterministic views, detecting duplicate HostedCluster references and
+// duplicate domains. When no explicit attachments exist, a single implicit
+// view synthesized from legacy fields preserves historical behavior.
+func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (*aggregation, error) {
+	list := &hostedclusterv1alpha1.InfraClusterAttachmentList{}
+	if err := r.List(ctx, list, client.InNamespace(infra.Namespace)); err != nil {
+		return nil, err
 	}
+	mine := make([]hostedclusterv1alpha1.InfraClusterAttachment, 0, len(list.Items))
+	for _, att := range list.Items {
+		if att.Spec.InfraRef.Name == infra.Name {
+			mine = append(mine, att)
+		}
+	}
+	sort.Slice(mine, func(i, j int) bool { return mine[i].Name < mine[j].Name })
 
-	externalIP, externalHostname, err := r.discoverAppsIngressExternalIP(ctx, hostedClient, infra)
-	if err != nil {
-		infra.Status.AppsIngressStatus.Phase = PhaseDegraded
-		infra.Status.AppsIngressStatus.Reason = "ExternalIPDiscoveryFailed"
-		infra.Status.AppsIngressStatus.Message = err.Error()
-		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-		infra.Status.AppsIngressStatus.ExternalIP = ""
-		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		return ctrl.Result{RequeueAfter: 15 * time.Second}
+	agg := &aggregation{total: int32(len(mine))}
+	if len(mine) == 0 {
+		agg.views = []attachmentView{legacyAttachmentView(infra)}
+		return agg, nil
 	}
-	if externalIP == "" && externalHostname == "" {
-		infra.Status.AppsIngressStatus.Phase = PhasePending
-		infra.Status.AppsIngressStatus.Reason = "WaitingForExternalIP"
-		infra.Status.AppsIngressStatus.Message = "MetalLB and ingress service configured; waiting for external IP"
-		infra.Status.AppsIngressStatus.ExternalIP = ""
-		infra.Status.AppsIngressStatus.ExternalHostname = ""
-		setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-		return ctrl.Result{RequeueAfter: 15 * time.Second}
-	}
+	agg.legacyIgnored = hasLegacyClusterConfig(infra)
 
-	infra.Status.AppsIngressStatus.ExternalIP = externalIP
-	infra.Status.AppsIngressStatus.ExternalHostname = externalHostname
-	infra.Status.AppsIngressStatus.Phase = phaseReady
-	infra.Status.AppsIngressStatus.Reason = "ReconciliationSucceeded"
-	endpoint := externalIP
-	if endpoint == "" {
-		endpoint = externalHostname
+	seenHC := map[string]string{}
+	seenDomain := map[string]string{}
+	excluded := map[string]bool{}
+	for i := range mine {
+		att := &mine[i]
+		domain := att.Spec.DNS.ClusterName + "." + att.Spec.DNS.BaseDomain
+		hcKey := att.Spec.HostedClusterRef.Namespace + "/" + att.Spec.HostedClusterRef.Name
+		if owner, ok := seenHC[hcKey]; ok && !excluded[att.Name] {
+			excluded[att.Name] = true
+			excluded[owner] = true
+			agg.conflicts = append(agg.conflicts,
+				fmt.Sprintf("attachments %q and %q reference HostedCluster %s", owner, att.Name, hcKey))
+			agg.degradedReason = reasonDuplicateHostedClust
+			continue
+		}
+		if owner, ok := seenDomain[domain]; ok && !excluded[att.Name] {
+			excluded[att.Name] = true
+			excluded[owner] = true
+			agg.conflicts = append(agg.conflicts,
+				fmt.Sprintf("attachments %q and %q declare domain %q", owner, att.Name, domain))
+			agg.degradedReason = reasonDuplicateHostname
+			continue
+		}
+		seenHC[hcKey] = att.Name
+		seenDomain[domain] = att.Name
 	}
-	infra.Status.AppsIngressStatus.Message = "Apps ingress ready with external endpoint " + endpoint
-	setAppsIngressLastSyncTime(&infra.Status.AppsIngressStatus, previousStatus)
-	return ctrl.Result{}
+	for i := range mine {
+		att := &mine[i]
+		if excluded[att.Name] {
+			continue
+		}
+		agg.views = append(agg.views, attachmentFromAttachment(att))
+		if meta.IsStatusConditionTrue(att.Status.Conditions, phaseReady) {
+			agg.ready++
+		}
+	}
+	sort.Slice(agg.conflicts, func(i, j int) bool { return agg.conflicts[i] < agg.conflicts[j] })
+	return agg, nil
+}
+
+// legacyHostedFactory adapts the shared apps-ingress machinery to the
+// Infra-owned hosted-cluster client source.
+func (r *InfraReconciler) legacyHostedFactory(infra *hostedclusterv1alpha1.Infra, target appsIngressTarget) hostedClusterFactory {
+	return func(ctx context.Context) (client.Client, error) {
+		if r.HostedClusterClientFactory != nil {
+			return r.HostedClusterClientFactory(ctx, infra)
+		}
+		return defaultHostedClusterClient(ctx, r.Client, target.HostedClusterRef, target.APIServerService, target.ControlPlaneNamespace)
+	}
+}
+
+// reconcileImplicitAppsIngress runs the shared apps-ingress automation for the
+// synthesized legacy view and mirrors the resulting endpoint onto the view so
+// DNS/proxy generation can consume it in the same pass.
+func (r *InfraReconciler) reconcileImplicitAppsIngress(ctx context.Context, infra *hostedclusterv1alpha1.Infra, view *attachmentView) ctrl.Result {
+	target := appsIngressTarget{
+		AttachmentName:        view.name,
+		HostedClusterRef:      view.hostedClusterRef,
+		APIServerService:      view.apiServerService,
+		ControlPlaneNamespace: view.controlPlaneNamespace,
+		Config:                view.appsConfig,
+	}
+	result := reconcileAppsIngressCore(ctx, r.legacyHostedFactory(infra, target), target, &infra.Status.AppsIngressStatus)
+	status := infra.Status.AppsIngressStatus
+	if view.appsConfig.Enabled && status.Phase == phaseReady {
+		view.appsEndpoint = status.ExternalIP
+		if view.appsEndpoint == "" {
+			view.appsEndpoint = status.ExternalHostname
+		}
+		view.appsExternalIP = status.ExternalIP
+	}
+	return result
 }
 
 func hasReadyNode(nodes []corev1.Node) bool {
@@ -404,270 +529,7 @@ func setAppsIngressLastSyncTime(status *hostedclusterv1alpha1.AppsIngressStatus,
 	}
 }
 
-// discoverAppsIngressExternalIP reads the LoadBalancer Service status from the hosted cluster.
-// It returns (ip, hostname, error). Exactly one of ip or hostname will be non-empty when the
-// service has been assigned an endpoint; both will be empty when the service is still pending.
-func (r *InfraReconciler) discoverAppsIngressExternalIP(ctx context.Context, hostedClient client.Client, infra *hostedclusterv1alpha1.Infra) (ip, hostname string, err error) {
-	serviceName := infra.Spec.AppsIngress.Service.Name
-	if serviceName == "" {
-		serviceName = "oooi-ingress"
-	}
-	serviceNamespace := infra.Spec.AppsIngress.Service.Namespace
-	if serviceNamespace == "" {
-		serviceNamespace = "openshift-ingress"
-	}
-	svc := &corev1.Service{}
-	if err = hostedClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNamespace}, svc); err != nil {
-		return "", "", err
-	}
-	if len(svc.Status.LoadBalancer.Ingress) == 0 {
-		return "", "", nil
-	}
-	ingress := svc.Status.LoadBalancer.Ingress[0]
-	if ingress.IP != "" {
-		return ingress.IP, "", nil
-	}
-	if ingress.Hostname != "" {
-		return "", ingress.Hostname, nil
-	}
-	return "", "", nil
-}
-
-func (r *InfraReconciler) getHostedClusterClient(ctx context.Context, infra *hostedclusterv1alpha1.Infra) (client.Client, error) {
-	if r.HostedClusterClientFactory != nil {
-		return r.HostedClusterClientFactory(ctx, infra)
-	}
-
-	hostedClusterName := infra.Spec.AppsIngress.HostedClusterRef.Name
-	hostedClusterNamespace := infra.Spec.AppsIngress.HostedClusterRef.Namespace
-	if hostedClusterNamespace == "" {
-		hostedClusterNamespace = "clusters"
-	}
-	if hostedClusterName == "" {
-		return nil, errors.NewBadRequest("appsIngress.hostedClusterRef.name is required")
-	}
-
-	hostedCluster := &unstructured.Unstructured{}
-	hostedCluster.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "hypershift.openshift.io",
-		Version: "v1beta1",
-		Kind:    "HostedCluster",
-	})
-	if err := r.Get(ctx, types.NamespacedName{Name: hostedClusterName, Namespace: hostedClusterNamespace}, hostedCluster); err != nil {
-		return nil, err
-	}
-
-	kubeconfigName, found, err := unstructured.NestedString(hostedCluster.Object, "status", "kubeconfig", "name")
-	if err != nil {
-		return nil, err
-	}
-	if !found || kubeconfigName == "" {
-		return nil, errors.NewBadRequest("hostedcluster does not report a kubeconfig")
-	}
-
-	kubeconfigSecret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: kubeconfigName, Namespace: hostedClusterNamespace}, kubeconfigSecret); err != nil {
-		return nil, err
-	}
-
-	kubeconfigBytes, ok := kubeconfigSecret.Data["kubeconfig"]
-	if !ok || len(kubeconfigBytes) == 0 {
-		return nil, errors.NewBadRequest("kubeconfig secret has no kubeconfig data")
-	}
-
-	config, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	// The kubeconfig endpoint is intended for cluster clients on the VLAN. The
-	// management controller must use the in-cluster API Service instead, while
-	// retaining the public hostname for certificate validation and SNI.
-	serverURL, err := url.Parse(config.Host)
-	if err != nil {
-		return nil, err
-	}
-	serverName := config.ServerName
-	if serverName == "" {
-		serverName = serverURL.Hostname()
-	}
-	port := serverURL.Port()
-	if port == "" {
-		port = "443"
-	}
-	apiServerService := infra.Spec.InfraComponents.Proxy.APIServerService
-	if apiServerService == "" {
-		apiServerService = "kube-apiserver"
-	}
-	controlPlaneNamespace := infra.Spec.InfraComponents.Proxy.ControlPlaneNamespace
-	if controlPlaneNamespace == "" {
-		controlPlaneNamespace = hostedClusterNamespace + "-" + hostedClusterName
-	}
-	apiServerHost := apiServerService + "." + controlPlaneNamespace + ".svc.cluster.local"
-	config.Host = (&url.URL{
-		Scheme: "https",
-		Host:   net.JoinHostPort(apiServerHost, port),
-	}).String()
-	config.ServerName = serverName
-
-	hostedScheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(hostedScheme); err != nil {
-		return nil, err
-	}
-
-	return client.New(config, client.Options{Scheme: hostedScheme})
-}
-
-func (r *InfraReconciler) ensureMetalLBInstalled(ctx context.Context, hostedClient client.Client, infra *hostedclusterv1alpha1.Infra) error {
-	addressPoolName := infra.Spec.AppsIngress.MetalLB.AddressPoolName
-	if addressPoolName == "" {
-		return errors.NewBadRequest("appsIngress.metallb.addressPoolName is required")
-	}
-
-	addressRange := infra.Spec.AppsIngress.MetalLB.IPAddressPoolRange
-	if addressRange == "" {
-		return errors.NewBadRequest("appsIngress.metallb.ipAddressPoolRange is required")
-	}
-
-	operatorNamespace := "openshift-operators"
-
-	subscription := &unstructured.Unstructured{}
-	subscription.SetGroupVersionKind(schema.GroupVersionKind{Group: "operators.coreos.com", Version: "v1alpha1", Kind: "Subscription"})
-	subscription.SetName("metallb-operator")
-	subscription.SetNamespace(operatorNamespace)
-	subscription.Object["spec"] = map[string]interface{}{
-		"channel":             "stable",
-		"name":                "metallb-operator",
-		"source":              "redhat-operators",
-		"sourceNamespace":     "openshift-marketplace",
-		"installPlanApproval": "Automatic",
-	}
-	if err := r.applyUnstructured(ctx, hostedClient, subscription); err != nil {
-		return err
-	}
-
-	metallb := &unstructured.Unstructured{}
-	metallb.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "MetalLB"})
-	metallb.SetName("metallb")
-	metallb.SetNamespace(operatorNamespace)
-	if err := r.applyUnstructured(ctx, hostedClient, metallb); err != nil {
-		return err
-	}
-
-	ipPool := &unstructured.Unstructured{}
-	ipPool.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "IPAddressPool"})
-	ipPool.SetName(addressPoolName)
-	ipPool.SetNamespace(operatorNamespace)
-	ipPool.Object["spec"] = map[string]interface{}{
-		"autoAssign": true,
-		"addresses":  []interface{}{addressRange},
-	}
-	if err := r.applyUnstructured(ctx, hostedClient, ipPool); err != nil {
-		return err
-	}
-
-	advertisementName := infra.Spec.AppsIngress.MetalLB.L2AdvertisementName
-	if advertisementName == "" {
-		advertisementName = "advertise-" + addressPoolName
-	}
-	l2Adv := &unstructured.Unstructured{}
-	l2Adv.SetGroupVersionKind(schema.GroupVersionKind{Group: "metallb.io", Version: "v1beta1", Kind: "L2Advertisement"})
-	l2Adv.SetName(advertisementName)
-	l2Adv.SetNamespace(operatorNamespace)
-	l2Adv.Object["spec"] = map[string]interface{}{
-		"ipAddressPools": []interface{}{addressPoolName},
-	}
-	if err := r.applyUnstructured(ctx, hostedClient, l2Adv); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *InfraReconciler) ensureAppsIngressService(ctx context.Context, hostedClient client.Client, infra *hostedclusterv1alpha1.Infra) error {
-	serviceName := infra.Spec.AppsIngress.Service.Name
-	if serviceName == "" {
-		serviceName = "oooi-ingress"
-	}
-	serviceNamespace := infra.Spec.AppsIngress.Service.Namespace
-	if serviceNamespace == "" {
-		serviceNamespace = "openshift-ingress"
-	}
-
-	httpPort := infra.Spec.AppsIngress.Ports.HTTP
-	if httpPort == 0 {
-		httpPort = 80
-	}
-	httpsPort := infra.Spec.AppsIngress.Ports.HTTPS
-	if httpsPort == 0 {
-		httpsPort = 443
-	}
-
-	service := &corev1.Service{}
-	if err := hostedClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNamespace}, service); err == nil {
-		service.Spec.Type = corev1.ServiceTypeLoadBalancer
-		service.Spec.Selector = map[string]string{
-			"ingresscontroller.operator.openshift.io/deployment-ingresscontroller": "default",
-		}
-		service.Spec.Ports = []corev1.ServicePort{
-			{Name: "http", Protocol: corev1.ProtocolTCP, Port: httpPort, TargetPort: intstrFromInt32(httpPort)},
-			{Name: "https", Protocol: corev1.ProtocolTCP, Port: httpsPort, TargetPort: intstrFromInt32(httpsPort)},
-		}
-		if service.Annotations == nil {
-			service.Annotations = map[string]string{}
-		}
-		if infra.Spec.AppsIngress.MetalLB.AddressPoolName != "" {
-			service.Annotations["metallb.universe.tf/address-pool"] = infra.Spec.AppsIngress.MetalLB.AddressPoolName
-		}
-		if service.Labels == nil {
-			service.Labels = map[string]string{}
-		}
-		for key, value := range infra.Spec.AppsIngress.Service.Labels {
-			service.Labels[key] = value
-		}
-		for key, value := range infra.Spec.AppsIngress.Service.Annotations {
-			service.Annotations[key] = value
-		}
-		return hostedClient.Update(ctx, service)
-	}
-
-	labels := map[string]string{}
-	for key, value := range infra.Spec.AppsIngress.Service.Labels {
-		labels[key] = value
-	}
-	annotations := map[string]string{
-		"metallb.universe.tf/address-pool": infra.Spec.AppsIngress.MetalLB.AddressPoolName,
-	}
-	for key, value := range infra.Spec.AppsIngress.Service.Annotations {
-		annotations[key] = value
-	}
-	if infra.Spec.AppsIngress.MetalLB.AddressPoolName == "" {
-		delete(annotations, "metallb.universe.tf/address-pool")
-	}
-
-	service = &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        serviceName,
-			Namespace:   serviceNamespace,
-			Labels:      labels,
-			Annotations: annotations,
-		},
-		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeLoadBalancer,
-			Ports: []corev1.ServicePort{
-				{Name: "http", Protocol: corev1.ProtocolTCP, Port: httpPort, TargetPort: intstrFromInt32(httpPort)},
-				{Name: "https", Protocol: corev1.ProtocolTCP, Port: httpsPort, TargetPort: intstrFromInt32(httpsPort)},
-			},
-			Selector: map[string]string{
-				"ingresscontroller.operator.openshift.io/deployment-ingresscontroller": "default",
-			},
-		},
-	}
-
-	return hostedClient.Create(ctx, service)
-}
-
-func (r *InfraReconciler) applyUnstructured(ctx context.Context, c client.Client, desired *unstructured.Unstructured) error {
+func applyUnstructured(ctx context.Context, c client.Client, desired *unstructured.Unstructured) error {
 	current := &unstructured.Unstructured{}
 	current.SetGroupVersionKind(desired.GroupVersionKind())
 	if err := c.Get(ctx, types.NamespacedName{Name: desired.GetName(), Namespace: desired.GetNamespace()}, current); err != nil {
@@ -686,7 +548,7 @@ func intstrFromInt32(value int32) intstr.IntOrString {
 }
 
 // updateInfraStatus updates the status of the Infra resource
-func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedclusterv1alpha1.Infra) error {
+func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedclusterv1alpha1.Infra, agg *aggregation) error {
 	log := logf.FromContext(ctx)
 	originalStatus := *infra.Status.DeepCopy()
 
@@ -698,6 +560,11 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 		LastTransitionTime: metav1.Now(),
 		Reason:             "ReconciliationSucceeded",
 		Message:            "Infrastructure components provisioned successfully",
+	}
+	if agg != nil && agg.degradedReason != "" {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = agg.degradedReason
+		condition.Message = strings.Join(agg.conflicts, "; ")
 	}
 	if infra.Spec.AppsIngress.Enabled && infra.Status.AppsIngressStatus.Phase != phaseReady {
 		condition.Status = metav1.ConditionFalse
@@ -721,6 +588,13 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 	}
 	if infra.Spec.InfraComponents.Proxy.Enabled {
 		infra.Status.ComponentStatus.ProxyReady = true
+	}
+	if agg != nil {
+		infra.Status.Attachments = hostedclusterv1alpha1.AttachmentsSummary{
+			Total:               agg.total,
+			Ready:               agg.ready,
+			LegacyFieldsIgnored: agg.legacyIgnored,
+		}
 	}
 
 	if reflect.DeepEqual(originalStatus, infra.Status) {
@@ -789,8 +663,9 @@ func (r *InfraReconciler) dhcpServerForInfra(infra *hostedclusterv1alpha1.Infra)
 	}
 }
 
-// dnsServerForInfra returns a DNSServer object for the Infra
-func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) *hostedclusterv1alpha1.DNSServer {
+// dnsServerForInfra returns a DNSServer object for the Infra whose static
+// entries cover every attached hosted cluster.
+func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra, views []attachmentView) *hostedclusterv1alpha1.DNSServer {
 	dnsSpec := infra.Spec.InfraComponents.DNS
 
 	// Use default image if not specified
@@ -806,77 +681,39 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 		nadNamespace = infra.Spec.NetworkConfig.NetworkAttachmentNamespace
 	}
 
-	// Build hosted cluster domain from ClusterName and BaseDomain
-	hostedClusterDomain := dnsSpec.ClusterName + "." + dnsSpec.BaseDomain
-
-	// Get proxy IPs (external for VMs on secondary network, internal for management pods)
 	externalProxyIP := infra.Spec.InfraComponents.Proxy.ServerIP
 	internalProxyIP := infra.Spec.InfraComponents.Proxy.InternalProxyService
 
-	// Build static DNS entries for HCP endpoints
-	// These entries use the external proxy IP - the controller will create
-	// separate entries for the internal proxy IP in the default view
-	// Common HCP endpoints:
-	// - api.<hostedClusterDomain>: Main Kubernetes API endpoint
-	// - api-int.<hostedClusterDomain>: Internal API endpoint
-	// - oauth.<hostedClusterDomain>: OAuth server endpoint
-	// - ignition.<hostedClusterDomain>: Ignition configuration server
-	// - konnectivity.<hostedClusterDomain>: Konnectivity proxy endpoint
-	staticEntries := []hostedclusterv1alpha1.DNSStaticEntry{
-		{
-			Hostname: "api." + hostedClusterDomain,
-			IP:       externalProxyIP,
-		},
-		{
-			Hostname: "api-int." + hostedClusterDomain,
-			IP:       externalProxyIP,
-		},
-		{
-			Hostname: "oauth." + hostedClusterDomain,
-			IP:       externalProxyIP,
-		},
-		{
-			Hostname: "ignition." + hostedClusterDomain,
-			IP:       externalProxyIP,
-		},
-		{
-			Hostname: "konnectivity." + hostedClusterDomain,
-			IP:       externalProxyIP,
-		},
+	// Static DNS entries per attached cluster. Each view contributes its HCP
+	// endpoint names (answered with the VLAN proxy IP); a Ready apps-ingress
+	// endpoint contributes the *.apps wildcard. Entries resolve to the shared
+	// proxy ClusterIP in the pod-network view via InternalProxyIP.
+	staticEntries := make([]hostedclusterv1alpha1.DNSStaticEntry, 0, len(views)*6)
+	hostedClusterDomain := ""
+	for _, view := range views {
+		if !validDomain(view.domain) {
+			continue
+		}
+		if hostedClusterDomain == "" {
+			hostedClusterDomain = view.domain
+		}
+		for _, prefix := range []string{"api.", "api-int.", "oauth.", "ignition.", "konnectivity."} {
+			appendUniqueEntry(&staticEntries, prefix+view.domain, externalProxyIP)
+		}
+		if view.appsExternalIP != "" {
+			appendUniqueEntry(&staticEntries, "*.apps."+view.domain, view.appsExternalIP)
+			// Legacy quirk preserved for the implicit binding only: an explicit
+			// appsIngress.baseDomain override publishes an additional wildcard.
+			if !view.explicit && view.appsConfig.BaseDomain != "" && view.appsConfig.BaseDomain != dnsSpec.BaseDomain {
+				appendUniqueEntry(&staticEntries, "*.apps."+view.appsConfig.BaseDomain, view.appsExternalIP)
+			}
+		}
 	}
 
-	// Apps ingress wildcard handling: only add DNS static entries when ExternalIP is available,
-	// since DNSStaticEntry.IP requires a valid IPv4 address.
-	if infra.Spec.AppsIngress.Enabled && infra.Status.AppsIngressStatus.ExternalIP != "" && infra.Status.AppsIngressStatus.Phase == phaseReady {
-		hostedClusterDomainForApps := dnsSpec.ClusterName + "." + dnsSpec.BaseDomain
-		if hostedClusterDomainForApps == "." || hostedClusterDomainForApps == "" {
-			if infra.Spec.AppsIngress.BaseDomain != "" {
-				hostedClusterDomainForApps = infra.Spec.AppsIngress.BaseDomain
-			}
-		}
-		if hostedClusterDomainForApps != "" && hostedClusterDomainForApps != "." {
-			wildcard := "*.apps." + hostedClusterDomainForApps
-			staticEntries = append(staticEntries, hostedclusterv1alpha1.DNSStaticEntry{
-				Hostname: wildcard,
-				IP:       infra.Status.AppsIngressStatus.ExternalIP,
-			})
-		}
-		if infra.Spec.AppsIngress.BaseDomain != "" && infra.Spec.AppsIngress.BaseDomain != dnsSpec.BaseDomain {
-			wildcard2 := "*.apps." + infra.Spec.AppsIngress.BaseDomain
-			isDup := false
-			for _, e := range staticEntries {
-				if e.Hostname == wildcard2 {
-					isDup = true
-					break
-				}
-			}
-			if !isDup {
-				staticEntries = append(staticEntries, hostedclusterv1alpha1.DNSStaticEntry{
-					Hostname: wildcard2,
-					IP:       infra.Status.AppsIngressStatus.ExternalIP,
-				})
-			}
-		}
+	// Preserve the historical HostedClusterDomain value when no valid domain
+	// exists (the child CRD requires a non-empty string).
+	if hostedClusterDomain == "" {
+		hostedClusterDomain = dnsSpec.ClusterName + "." + dnsSpec.BaseDomain
 	}
 
 	return &hostedclusterv1alpha1.DNSServer{
@@ -904,73 +741,95 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra) 
 	}
 }
 
-// proxyServerForInfra returns a ProxyServer object for the Infra
-func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra) *hostedclusterv1alpha1.ProxyServer {
-	proxySpec := infra.Spec.InfraComponents.Proxy
-
-	// Parse NetworkAttachmentDefinition name and namespace
-	// Get NAD namespace from NetworkConfig or default to Infra's namespace
-	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
-	nadNamespace := infra.Namespace
-	if infra.Spec.NetworkConfig.NetworkAttachmentNamespace != "" {
-		nadNamespace = infra.Spec.NetworkConfig.NetworkAttachmentNamespace
+// appendUniqueEntry appends a static entry unless an entry with the same
+// hostname already exists.
+func appendUniqueEntry(entries *[]hostedclusterv1alpha1.DNSStaticEntry, hostname, ip string) {
+	for _, e := range *entries {
+		if e.Hostname == hostname {
+			return
+		}
 	}
+	*entries = append(*entries, hostedclusterv1alpha1.DNSStaticEntry{Hostname: hostname, IP: ip})
+}
 
-	// Build hosted cluster domain from ClusterName and BaseDomain
-	hostedClusterDomain := infra.Spec.InfraComponents.DNS.ClusterName + "." + infra.Spec.InfraComponents.DNS.BaseDomain
-
-	// Get the control plane namespace
-	controlPlaneNamespace := proxySpec.ControlPlaneNamespace
-	if controlPlaneNamespace == "" {
-		controlPlaneNamespace = infra.Namespace + "-" + infra.Name
+// backendNamePrefix returns the per-attachment prefix applied to Envoy
+// backend names so multiple attachments can coexist on one ProxyServer.
+// The implicit legacy binding keeps unprefixed (historical) names.
+func backendNamePrefix(view attachmentView) string {
+	if !view.explicit {
+		return ""
 	}
+	prefix := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '-'
+		}
+	}, view.name)
+	const maxBase = len("kube-apiserver-kubernetes-hostname")
+	const maxPrefix = 63 - maxBase - 1
+	if len(prefix) > maxPrefix {
+		prefix = strings.TrimRight(prefix[:maxPrefix], "-")
+	}
+	return prefix + "-"
+}
 
-	// Build backends for standard HCP services
-	// These are the core services that need to be proxied through SNI-based routing
+// hcpBackendsForView builds the standard control-plane SNI backends for one
+// attached cluster. Unqualified Kubernetes service aliases are emitted only
+// when this proxy serves a single implicit binding; they are ambiguous on a
+// shared proxy.
+func hcpBackendsForView(view attachmentView, prefix string, includeKubeAliases bool) []hostedclusterv1alpha1.ProxyBackend {
+	domain := view.domain
+	cpns := view.controlPlaneNamespace
 	backends := []hostedclusterv1alpha1.ProxyBackend{
 		{
-			Name:            "kube-apiserver",
-			Hostname:        "api." + hostedClusterDomain,
+			Name:            prefix + "kube-apiserver",
+			Hostname:        "api." + domain,
 			Port:            6443,
 			TargetService:   "kube-apiserver",
 			TargetPort:      6443,
-			TargetNamespace: controlPlaneNamespace,
+			TargetNamespace: cpns,
 			Protocol:        "TCP",
 			TimeoutSeconds:  30,
 		},
 		{
-			Name:            "kube-apiserver-internal",
-			Hostname:        "api-int." + hostedClusterDomain,
+			Name:            prefix + "kube-apiserver-internal",
+			Hostname:        "api-int." + domain,
 			Port:            6443,
 			TargetService:   "kube-apiserver",
 			TargetPort:      6443,
-			TargetNamespace: controlPlaneNamespace,
+			TargetNamespace: cpns,
 			Protocol:        "TCP",
 			TimeoutSeconds:  30,
 		},
 		{
-			Name:            "oauth-openshift",
-			Hostname:        "oauth." + hostedClusterDomain,
+			Name:            prefix + "oauth-openshift",
+			Hostname:        "oauth." + domain,
 			Port:            443,
 			TargetService:   "oauth-openshift",
 			TargetPort:      6443,
-			TargetNamespace: controlPlaneNamespace,
+			TargetNamespace: cpns,
 			Protocol:        "TCP",
 			TimeoutSeconds:  30,
 		},
 		{
-			Name:            "ignition-server",
-			Hostname:        "ignition." + hostedClusterDomain,
+			Name:            prefix + "ignition-server",
+			Hostname:        "ignition." + domain,
 			Port:            443,
 			TargetService:   "ignition-server-proxy",
 			TargetPort:      443,
-			TargetNamespace: controlPlaneNamespace,
+			TargetNamespace: cpns,
 			Protocol:        "TCP",
 			TimeoutSeconds:  30,
 		},
-		{
-			Name:     "kube-apiserver-kubernetes-hostname",
-			Hostname: "kubernetes." + hostedClusterDomain,
+	}
+	if includeKubeAliases {
+		backends = append(backends, hostedclusterv1alpha1.ProxyBackend{
+			Name:     prefix + "kube-apiserver-kubernetes-hostname",
+			Hostname: "kubernetes." + domain,
 			AlternateHostnames: []string{
 				"kubernetes",
 				"kubernetes.default",
@@ -980,65 +839,84 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 			Port:            443,
 			TargetService:   "kube-apiserver",
 			TargetPort:      6443,
-			TargetNamespace: controlPlaneNamespace,
+			TargetNamespace: cpns,
+			Protocol:        "TCP",
+			TimeoutSeconds:  30,
+		})
+	}
+	backends = append(backends, hostedclusterv1alpha1.ProxyBackend{
+		Name:            prefix + "konnectivity-server",
+		Hostname:        "konnectivity." + domain,
+		Port:            443,
+		TargetService:   "konnectivity-server",
+		TargetPort:      8091,
+		TargetNamespace: cpns,
+		Protocol:        "TCP",
+		TimeoutSeconds:  30,
+	})
+	return backends
+}
+
+// appsBackendsForView builds the wildcard apps backends for one attached
+// cluster once its LoadBalancer endpoint is Ready.
+func appsBackendsForView(view attachmentView, prefix string) []hostedclusterv1alpha1.ProxyBackend {
+	if view.appsEndpoint == "" || !validDomain(view.domain) {
+		return nil
+	}
+	httpPort := view.appsConfig.Ports.HTTP
+	if httpPort == 0 {
+		httpPort = 80
+	}
+	httpsPort := view.appsConfig.Ports.HTTPS
+	if httpsPort == 0 {
+		httpsPort = 443
+	}
+	wildcard := "*.apps." + view.domain
+	return []hostedclusterv1alpha1.ProxyBackend{
+		{
+			Name:            prefix + "apps-http",
+			Hostname:        wildcard,
+			Port:            httpPort,
+			TargetService:   view.appsEndpoint,
+			TargetPort:      httpPort,
+			TargetNamespace: "default",
 			Protocol:        "TCP",
 			TimeoutSeconds:  30,
 		},
 		{
-			Name:            "konnectivity-server",
-			Hostname:        "konnectivity." + hostedClusterDomain,
-			Port:            443,
-			TargetService:   "konnectivity-server",
-			TargetPort:      8091,
-			TargetNamespace: controlPlaneNamespace,
+			Name:            prefix + "apps-https",
+			Hostname:        wildcard,
+			Port:            httpsPort,
+			TargetService:   view.appsEndpoint,
+			TargetPort:      httpsPort,
+			TargetNamespace: "default",
 			Protocol:        "TCP",
 			TimeoutSeconds:  30,
 		},
 	}
+}
 
-	// Apps ingress wildcard backends
-	externalEndpoint := infra.Status.AppsIngressStatus.ExternalIP
-	if externalEndpoint == "" {
-		externalEndpoint = infra.Status.AppsIngressStatus.ExternalHostname
+// proxyServerForInfra returns a ProxyServer object whose SNI backends cover
+// every attached hosted cluster.
+func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra, views []attachmentView) *hostedclusterv1alpha1.ProxyServer {
+	proxySpec := infra.Spec.InfraComponents.Proxy
+
+	nadName := infra.Spec.NetworkConfig.NetworkAttachmentDefinition
+	nadNamespace := infra.Namespace
+	if infra.Spec.NetworkConfig.NetworkAttachmentNamespace != "" {
+		nadNamespace = infra.Spec.NetworkConfig.NetworkAttachmentNamespace
 	}
-	if infra.Spec.AppsIngress.Enabled && externalEndpoint != "" && infra.Status.AppsIngressStatus.Phase == phaseReady {
-		hostedClusterDomainForProxy := infra.Spec.InfraComponents.DNS.ClusterName + "." + infra.Spec.InfraComponents.DNS.BaseDomain
-		if hostedClusterDomainForProxy == "." || hostedClusterDomainForProxy == "" {
-			if infra.Spec.AppsIngress.BaseDomain != "" {
-				hostedClusterDomainForProxy = infra.Spec.AppsIngress.BaseDomain
-			}
+
+	singleImplicit := len(views) == 1 && !views[0].explicit
+
+	var backends []hostedclusterv1alpha1.ProxyBackend
+	for _, view := range views {
+		if !validDomain(view.domain) {
+			continue
 		}
-		if hostedClusterDomainForProxy != "" && hostedClusterDomainForProxy != "." {
-			wildcardHostname := "*.apps." + hostedClusterDomainForProxy
-			httpPort := infra.Spec.AppsIngress.Ports.HTTP
-			if httpPort == 0 {
-				httpPort = 80
-			}
-			httpsPort := infra.Spec.AppsIngress.Ports.HTTPS
-			if httpsPort == 0 {
-				httpsPort = 443
-			}
-			backends = append(backends, hostedclusterv1alpha1.ProxyBackend{
-				Name:            appsHTTPBackendName,
-				Hostname:        wildcardHostname,
-				Port:            httpPort,
-				TargetService:   externalEndpoint,
-				TargetPort:      httpPort,
-				TargetNamespace: "default",
-				Protocol:        "TCP",
-				TimeoutSeconds:  30,
-			})
-			backends = append(backends, hostedclusterv1alpha1.ProxyBackend{
-				Name:            appsHTTPSBackendName,
-				Hostname:        wildcardHostname,
-				Port:            httpsPort,
-				TargetService:   externalEndpoint,
-				TargetPort:      httpsPort,
-				TargetNamespace: "default",
-				Protocol:        "TCP",
-				TimeoutSeconds:  30,
-			})
-		}
+		prefix := backendNamePrefix(view)
+		backends = append(backends, hcpBackendsForView(view, prefix, singleImplicit)...)
+		backends = append(backends, appsBackendsForView(view, prefix)...)
 	}
 
 	return &hostedclusterv1alpha1.ProxyServer{
@@ -1104,6 +982,18 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&hostedclusterv1alpha1.DNSServer{}).
 		Owns(&hostedclusterv1alpha1.ProxyServer{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Watches(
+			&hostedclusterv1alpha1.InfraClusterAttachment{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+				att, ok := o.(*hostedclusterv1alpha1.InfraClusterAttachment)
+				if !ok || att.Spec.InfraRef.Name == "" {
+					return nil
+				}
+				return []reconcile.Request{{
+					NamespacedName: types.NamespacedName{Name: att.Spec.InfraRef.Name, Namespace: att.Namespace},
+				}}
+			}),
+		).
 		Named("infra").
 		Complete(r)
 }
