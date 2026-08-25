@@ -71,6 +71,7 @@ type InfraClusterAttachmentReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=infras,verbs=get;list;watch
 // +kubebuilder:rbac:groups=hypershift.openshift.io,resources=hostedclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;create;update;patch;delete
 
 // Reconcile moves the current state of the cluster closer to the desired state

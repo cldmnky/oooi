@@ -501,10 +501,20 @@ var _ = Describe("Shared external Service OAuth policy", func() {
 
 	It("deduplicates case-insensitively and preserves user ordering", func() {
 		out := mergeOAuthHostnames(map[string]string{
-			hostnameAnnotationKey: "OAuth.A.example.com, extra.example.com",
-		}, []string{"oauth.a.example.com", "oauth.b.example.com"})
+			hostnameAnnotationKey: "OAuth.A.example.com., extra.example.com",
+		}, []string{" oauth.a.example.com ", "oauth.b.example.com"})
 		Expect(out[hostnameAnnotationKey]).
-			To(Equal("OAuth.A.example.com,extra.example.com,oauth.b.example.com"))
+			To(Equal("OAuth.A.example.com.,extra.example.com,oauth.b.example.com"))
+	})
+
+	It("normalizes omitted HostedCluster namespaces for routing defaults", func() {
+		att := makeAttachment("defaulted", "shared-vlan", "defaulted", "example.com", "")
+		att.Spec.HostedClusterRef.Namespace = ""
+
+		view := attachmentFromAttachment(att)
+
+		Expect(view.hostedClusterRef.Namespace).To(Equal("clusters"))
+		Expect(view.controlPlaneNamespace).To(Equal("clusters-defaulted"))
 	})
 
 	It("keeps unqualified Kubernetes aliases only for the implicit binding", func() {

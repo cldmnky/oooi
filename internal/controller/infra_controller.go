@@ -390,16 +390,17 @@ func legacyAttachmentView(infra *hostedclusterv1alpha1.Infra) attachmentView {
 
 // attachmentFromAttachment builds a view from an explicit InfraClusterAttachment.
 func attachmentFromAttachment(att *hostedclusterv1alpha1.InfraClusterAttachment) attachmentView {
+	hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
 	cpns := att.Spec.ControlPlaneNamespace
 	if cpns == "" {
-		cpns = att.Spec.HostedClusterRef.Namespace + "-" + att.Spec.HostedClusterRef.Name
+		cpns = hcRef.Namespace + "-" + hcRef.Name
 	}
 	view := attachmentView{
 		name:                  att.Name,
 		explicit:              true,
 		ready:                 meta.IsStatusConditionTrue(att.Status.Conditions, phaseReady),
 		createNetworkPolicy:   false, // owned by the attachment controller
-		hostedClusterRef:      normalizeHostedClusterRef(att.Spec.HostedClusterRef),
+		hostedClusterRef:      hcRef,
 		apiServerService:      att.Spec.APIServerService,
 		controlPlaneNamespace: cpns,
 		domain:                att.Spec.DNS.ClusterName + "." + att.Spec.DNS.BaseDomain,
@@ -448,7 +449,8 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 	for i := range mine {
 		att := &mine[i]
 		domain := att.Spec.DNS.ClusterName + "." + att.Spec.DNS.BaseDomain
-		hcKey := att.Spec.HostedClusterRef.Namespace + "/" + att.Spec.HostedClusterRef.Name
+		hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
+		hcKey := hcRef.Namespace + "/" + hcRef.Name
 		if owner, ok := seenHC[hcKey]; ok && !excluded[att.Name] {
 			excluded[att.Name] = true
 			excluded[owner] = true
@@ -1000,24 +1002,31 @@ func mergeOAuthHostnames(annotations map[string]string, hostnames []string) map[
 	userParts := make([]string, 0, len(annotations[hostnameAnnotationKey]))
 	for _, p := range strings.Split(annotations[hostnameAnnotationKey], ",") {
 		p = strings.TrimSpace(p)
-		if p == "" || seen[strings.ToLower(p)] {
+		key := hostnameKey(p)
+		if key == "" || seen[key] {
 			continue
 		}
-		seen[strings.ToLower(p)] = true
+		seen[key] = true
 		userParts = append(userParts, p)
 	}
 	added := make([]string, 0, len(hostnames))
 	for _, h := range hostnames {
-		if h == "" || seen[strings.ToLower(h)] {
+		h = strings.TrimSpace(h)
+		key := hostnameKey(h)
+		if key == "" || seen[key] {
 			continue
 		}
-		seen[strings.ToLower(h)] = true
+		seen[key] = true
 		added = append(added, h)
 	}
 	sort.Strings(added)
 	all := append(userParts, added...)
 	out[hostnameAnnotationKey] = strings.Join(all, ",")
 	return out
+}
+
+func hostnameKey(hostname string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
 }
 
 // networkPolicyForInfra returns a NetworkPolicy for the HCP namespace to allow infrastructure traffic

@@ -170,7 +170,7 @@ spec:
                       namespace:
                         description: |-
                           Namespace is the namespace where the service will be created.
-                          Default: "clusters-<hostedcluster-name>"
+                          Default: "openshift-ingress"
                         type: string
                     type: object
                 type: object

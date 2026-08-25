@@ -602,14 +602,14 @@ spec:
 		kubectlApply := func(manifest string) {
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(manifest)
-			_, err := utils.Run(cmd)
+			_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 			Expect(err).NotTo(HaveOccurred())
 		}
 
 		getJSONPath := func(resource, name, path string) string {
 			cmd := exec.Command("kubectl", "get", resource, name, "-n", namespace,
 				"-o", fmt.Sprintf("jsonpath=%s", path))
-			out, err := utils.Run(cmd)
+			out, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 			Expect(err).NotTo(HaveOccurred())
 			return strings.TrimSpace(out)
 		}
@@ -617,7 +617,7 @@ spec:
 		deleteResource := func(resource, name string) {
 			cmd := exec.Command("kubectl", "delete", resource, name, "-n", namespace,
 				"--ignore-not-found=true", "--wait=false")
-			_, err := utils.Run(cmd)
+			_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 			Expect(err).NotTo(HaveOccurred())
 		}
 

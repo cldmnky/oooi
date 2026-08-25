@@ -293,7 +293,7 @@ type AppsIngressService struct {
 	Name string `json:"name,omitempty"`
 
 	// Namespace is the namespace where the service will be created.
-	// Default: "clusters-<hostedcluster-name>"
+	// Default: "openshift-ingress"
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
