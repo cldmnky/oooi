@@ -95,9 +95,9 @@ spec:
       ipAddressPoolRange: 192.0.2.200-192.0.2.209
 ```
 
-The attachment's top-level `spec.hostedClusterRef` is canonical. Omit
-`spec.appsIngress.hostedClusterRef`; if supplied, it must match the top-level
-reference.
+When apps ingress is enabled, the attachment's top-level
+`spec.hostedClusterRef` is canonical. Omit `spec.appsIngress.hostedClusterRef`;
+if supplied, it must match the top-level reference.
 
 Each attachment's wildcard VIP is reported on its own status, so one cluster's
 ingress can be Pending while another is Ready.
