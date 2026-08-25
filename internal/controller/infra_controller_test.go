@@ -66,7 +66,7 @@ var _ = Describe("Infra Controller", func() {
 			},
 		}
 
-		proxyServer := (&InfraReconciler{}).proxyServerForInfra(infra)
+		proxyServer := (&InfraReconciler{}).proxyServerForInfra(infra, []attachmentView{legacyAttachmentView(infra)})
 		Expect(proxyServer.Spec.ExternalService).To(Equal(infra.Spec.InfraComponents.Proxy.ExternalService))
 	})
 
@@ -744,7 +744,8 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			controllerReconciler.reconcileAppsIngress(ctx, infra)
+			view := legacyAttachmentView(infra)
+			controllerReconciler.reconcileImplicitAppsIngress(ctx, infra, &view)
 
 			By("verifying the MetalLB Subscription is created")
 			subscription := &unstructured.Unstructured{}
@@ -791,7 +792,8 @@ var _ = Describe("Infra Controller", func() {
 				},
 			}
 
-			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
+			view := legacyAttachmentView(infra)
+			result := controllerReconciler.reconcileImplicitAppsIngress(ctx, infra, &view)
 			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
 			Expect(infra.Status.AppsIngressStatus.Reason).To(Equal("WaitingForHostedClusterNodes"))
 
@@ -842,14 +844,14 @@ var _ = Describe("Infra Controller", func() {
 				},
 			}
 
-			controllerReconciler := &InfraReconciler{
+			_ = &InfraReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				HostedClusterClientFactory: func(ctx context.Context, _ *hostedclusterv1alpha1.Infra) (client.Client, error) {
 					return hostedClient, nil
 				},
 			}
-			Expect(controllerReconciler.ensureAppsIngressService(ctx, hostedClient, infra)).To(Succeed())
+			Expect(ensureAppsIngressServiceFor(ctx, hostedClient, infra.Spec.AppsIngress)).To(Succeed())
 
 			By("verifying labels and annotations are applied on create")
 			service := &corev1.Service{}
@@ -863,7 +865,7 @@ var _ = Describe("Infra Controller", func() {
 				"external-dns.alpha.kubernetes.io/hostname": "*.apps2.mycluster.example.com.",
 			}
 			infra.Spec.AppsIngress.Service.Labels = nil
-			Expect(controllerReconciler.ensureAppsIngressService(ctx, hostedClient, infra)).To(Succeed())
+			Expect(ensureAppsIngressServiceFor(ctx, hostedClient, infra.Spec.AppsIngress)).To(Succeed())
 
 			By("verifying annotations are updated and pre-existing values preserved")
 			service = &corev1.Service{}
@@ -960,7 +962,8 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
+			view := legacyAttachmentView(infra)
+			result := controllerReconciler.reconcileImplicitAppsIngress(ctx, infra, &view)
 			Expect(result.Requeue).To(BeFalse())
 			Expect(result.RequeueAfter).To(BeZero())
 			Expect(infra.Status.AppsIngressStatus.Phase).To(Equal("Ready"))
@@ -968,7 +971,7 @@ var _ = Describe("Infra Controller", func() {
 			Expect(infra.Status.AppsIngressStatus.Reason).To(Equal("ReconciliationSucceeded"))
 
 			By("verifying DNS server includes wildcard")
-			dnsServer := controllerReconciler.dnsServerForInfra(infra)
+			dnsServer := controllerReconciler.dnsServerForInfra(infra, []attachmentView{view})
 			foundWildcard := false
 			for _, e := range dnsServer.Spec.StaticEntries {
 				if e.Hostname == "*.apps.mycluster.example.com" && e.IP == externalIP {
@@ -979,7 +982,7 @@ var _ = Describe("Infra Controller", func() {
 			Expect(foundWildcard).To(BeTrue(), "DNS should contain wildcard for apps")
 
 			By("verifying Proxy server includes wildcard backends")
-			proxyServer := controllerReconciler.proxyServerForInfra(infra)
+			proxyServer := controllerReconciler.proxyServerForInfra(infra, []attachmentView{view})
 			foundHTTP := false
 			foundHTTPS := false
 			for _, b := range proxyServer.Spec.Backends {
@@ -1087,20 +1090,21 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
+			view := legacyAttachmentView(infra)
+			result := controllerReconciler.reconcileImplicitAppsIngress(ctx, infra, &view)
 			Expect(result.RequeueAfter).To(BeZero())
 			Expect(infra.Status.AppsIngressStatus.Phase).To(Equal("Ready"))
 			Expect(infra.Status.AppsIngressStatus.ExternalIP).To(BeEmpty(), "ExternalIP must be empty when LoadBalancer reports a hostname")
 			Expect(infra.Status.AppsIngressStatus.ExternalHostname).To(Equal(externalHostname))
 
 			By("verifying DNS static entries are not added for hostname (no IP available)")
-			dnsServer := controllerReconciler.dnsServerForInfra(infra)
+			dnsServer := controllerReconciler.dnsServerForInfra(infra, []attachmentView{view})
 			for _, e := range dnsServer.Spec.StaticEntries {
 				Expect(e.Hostname).NotTo(ContainSubstring("*.apps."), "DNS static entries must not be added when only a hostname is available (IP required)")
 			}
 
 			By("verifying proxy backends use the external hostname as TargetService")
-			proxyServer := controllerReconciler.proxyServerForInfra(infra)
+			proxyServer := controllerReconciler.proxyServerForInfra(infra, []attachmentView{view})
 			foundHTTP := false
 			foundHTTPS := false
 			for _, b := range proxyServer.Spec.Backends {
@@ -1170,7 +1174,8 @@ var _ = Describe("Infra Controller", func() {
 					return hostedClient, nil
 				},
 			}
-			result := controllerReconciler.reconcileAppsIngress(ctx, infra)
+			view := legacyAttachmentView(infra)
+			result := controllerReconciler.reconcileImplicitAppsIngress(ctx, infra, &view)
 			Expect(result.RequeueAfter).NotTo(BeZero())
 			Expect(infra.Status.AppsIngressStatus.Phase).To(Equal("Pending"))
 			Expect(infra.Status.AppsIngressStatus.ExternalIP).To(BeEmpty())
