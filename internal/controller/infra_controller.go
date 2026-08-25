@@ -427,7 +427,9 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 	}
 	mine := make([]hostedclusterv1alpha1.InfraClusterAttachment, 0, len(list.Items))
 	for _, att := range list.Items {
-		if att.Spec.InfraRef.Name == infra.Name {
+		// A terminating attachment is no longer desired infrastructure. Do not
+		// retain its DNS/SNI records while its cleanup finalizer runs.
+		if att.DeletionTimestamp.IsZero() && att.Spec.InfraRef.Name == infra.Name {
 			mine = append(mine, att)
 		}
 	}
@@ -605,12 +607,28 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 		return nil
 	}
 
-	if err := r.Status().Update(ctx, infra); err != nil {
-		log.Error(err, "Failed to update Infra status")
-		return err
+	// Optimistic-concurrency conflicts are expected when child-watch events
+	// trigger an immediate re-reconcile before the cache reflects our own
+	// previous status write. Retry inline against the latest resourceVersion;
+	// falling into the workqueue's exponential backoff here stalls recovery
+	// for minutes.
+	for attempt := 0; ; attempt++ {
+		err := r.Status().Update(ctx, infra)
+		if err == nil {
+			return nil
+		}
+		if !errors.IsConflict(err) || attempt >= 4 {
+			log.Error(err, "Failed to update Infra status")
+			return err
+		}
+		fresh := &hostedclusterv1alpha1.Infra{}
+		if err := r.Get(ctx, types.NamespacedName{Name: infra.Name, Namespace: infra.Namespace}, fresh); err != nil {
+			return err
+		}
+		desired := infra.Status
+		fresh.Status = desired
+		*infra = *fresh
 	}
-
-	return nil
 }
 
 // dhcpServerForInfra returns a DHCPServer object for the Infra

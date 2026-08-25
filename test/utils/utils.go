@@ -19,10 +19,12 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
 )
@@ -62,6 +64,36 @@ func Run(cmd *exec.Cmd) (string, error) {
 		return string(output), fmt.Errorf("%q failed with error %q: %w", command, string(output), err)
 	}
 
+	return string(output), nil
+}
+
+// RunWithTimeout is used for test cleanup and diagnostics that must not keep
+// the suite alive indefinitely when the API server or a finalizer is stuck.
+func RunWithTimeout(timeout time.Duration, cmd *exec.Cmd) (string, error) {
+	dir, _ := GetProjectDir()
+	cmd.Dir = dir
+
+	if err := os.Chdir(cmd.Dir); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %q\n", err)
+	}
+
+	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	command := strings.Join(cmd.Args, " ")
+	_, _ = fmt.Fprintf(GinkgoWriter, "running: %q (timeout %s)\n", command, timeout)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	timedCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	timedCmd.Dir = cmd.Dir
+	timedCmd.Env = cmd.Env
+	timedCmd.Stdin = cmd.Stdin
+	output, err := timedCmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return string(output), fmt.Errorf("%q timed out after %s: %w", command, timeout, ctx.Err())
+	}
+	if err != nil {
+		return string(output), fmt.Errorf("%q failed with error %q: %w", command, string(output), err)
+	}
 	return string(output), nil
 }
 

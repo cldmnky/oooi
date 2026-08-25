@@ -37,6 +37,12 @@ const metricsServiceName = "oooi-controller-manager-metrics-service"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "oooi-metrics-binding"
 
+const (
+	cleanupCommandTimeout    = 30 * time.Second
+	diagnosticCommandTimeout = 15 * time.Second
+	multiClusterWait         = 90 * time.Second
+)
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
@@ -82,19 +88,19 @@ var _ = Describe("Manager", Ordered, func() {
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
-		_, _ = utils.Run(cmd)
+		_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
+		_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 
 		By("uninstalling CRDs")
 		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 
 		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found=true", "--wait=false")
+		_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -102,18 +108,20 @@ var _ = Describe("Manager", Ordered, func() {
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-			controllerLogs, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+			if controllerPodName != "" {
+				By("Fetching controller manager pod logs")
+				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+				controllerLogs, err := utils.RunWithTimeout(diagnosticCommandTimeout, cmd)
+				if err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+				}
 			}
 
 			By("Fetching Kubernetes events")
-			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
-			eventsOutput, err := utils.Run(cmd)
+			cmd := exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
+			eventsOutput, err := utils.RunWithTimeout(diagnosticCommandTimeout, cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
 			} else {
@@ -122,20 +130,22 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("Fetching curl-metrics logs")
 			cmd = exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-			metricsOutput, err := utils.Run(cmd)
+			metricsOutput, err := utils.RunWithTimeout(diagnosticCommandTimeout, cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
 			} else {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
 			}
 
-			By("Fetching controller manager pod description")
-			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
-			podDescription, err := utils.Run(cmd)
-			if err == nil {
-				fmt.Println("Pod description:\n", podDescription)
-			} else {
-				fmt.Println("Failed to describe controller pod")
+			if controllerPodName != "" {
+				By("Fetching controller manager pod description")
+				cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
+				podDescription, err := utils.RunWithTimeout(diagnosticCommandTimeout, cmd)
+				if err == nil {
+					fmt.Println("Pod description:\n", podDescription)
+				} else {
+					fmt.Println("Failed to describe controller pod")
+				}
 			}
 		}
 	})
@@ -664,14 +674,19 @@ spec:
 		})
 
 		AfterAll(func() {
-			By("removing attachments before the shared Infra")
+			By("removing attachments and releasing any stuck finalizers")
 			for _, name := range []string{mcAlpha, mcBeta, mcDupe} {
 				deleteResource("infraclusterattachment", name)
+				cmd := exec.Command("kubectl", "wait", "--for=delete",
+					"infraclusterattachment/"+name, "-n", namespace, "--timeout=5s")
+				_, _ = utils.RunWithTimeout(8*time.Second, cmd)
+				cmd = exec.Command("kubectl", "patch", "infraclusterattachment", name,
+					"-n", namespace, "--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
+				_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
 			}
+
+			By("deleting the shared Infra")
 			deleteResource("infra", mcInfraName)
-			for _, suffix := range []string{"dhcp", "dns", "proxy"} {
-				deleteResource("deployment", mcInfraName+"-"+suffix)
-			}
 		})
 
 		It("aggregates two clusters into one shared child set", func() {
@@ -686,7 +701,7 @@ spec:
 					_, err := utils.Run(cmd)
 					g.Expect(err).NotTo(HaveOccurred(), "shared deployment %s should exist", suffix)
 				}
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
 
 			By("publishing static records for both attached domains on ONE DNSServer")
 			Eventually(func(g Gomega) {
@@ -694,7 +709,7 @@ spec:
 					`{.spec.staticEntries[*].hostname}`)
 				g.Expect(entries).To(ContainSubstring("api.mc-alpha.clusters.example.com"))
 				g.Expect(entries).To(ContainSubstring("konnectivity.mc-beta.clusters.example.com"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
 
 			By("routing SNI backends per control-plane namespace on ONE ProxyServer")
 			Eventually(func(g Gomega) {
@@ -702,7 +717,7 @@ spec:
 					`{.spec.backends[*].name}`)
 				g.Expect(backends).To(ContainSubstring("mc-alpha-kube-apiserver"))
 				g.Expect(backends).To(ContainSubstring("mc-beta-konnectivity-server"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
 
 			targets := getJSONPath("proxyserver", mcInfraName+"-proxy",
 				`{range .spec.backends[*]}{.targetNamespace}{"\n"}{end}`)
@@ -721,7 +736,7 @@ spec:
 				reason := getJSONPath("infra", mcInfraName,
 					`{.status.conditions[?(@.type=="Ready")].reason}`)
 				g.Expect(reason).To(Equal("DuplicateHostname"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
 
 			message := getJSONPath("infra", mcInfraName,
 				`{.status.conditions[?(@.type=="Ready")].message}`)
@@ -734,7 +749,7 @@ spec:
 				status := getJSONPath("infra", mcInfraName,
 					`{.status.conditions[?(@.type=="Ready")].status}`)
 				g.Expect(status).To(Equal("True"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
 		})
 
 		It("removes only the deleted cluster's records when its attachment goes away", func() {
@@ -745,7 +760,7 @@ spec:
 					`{.spec.staticEntries[*].hostname}`)
 				g.Expect(entries).NotTo(ContainSubstring("api.mc-alpha.clusters.example.com"))
 				g.Expect(entries).To(ContainSubstring("api.mc-beta.clusters.example.com"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
 
 			backends := getJSONPath("proxyserver", mcInfraName+"-proxy",
 				`{.spec.backends[*].targetNamespace}`)

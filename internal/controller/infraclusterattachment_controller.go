@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -42,6 +44,16 @@ const (
 	reasonAttachmentInfraNotFound = "InfraNotFound"
 	defaultAPIServerServiceName   = "kube-apiserver"
 )
+
+// namespacePendingError signals that an attachment's control-plane namespace
+// does not exist yet; callers requeue without erroring.
+type namespacePendingError struct {
+	namespace string
+}
+
+func (e *namespacePendingError) Error() string {
+	return "control-plane namespace " + e.namespace + " does not exist yet"
+}
 
 // InfraClusterAttachmentReconciler reconciles an InfraClusterAttachment object.
 type InfraClusterAttachmentReconciler struct {
@@ -138,6 +150,14 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	att.Status.AppsIngressStatus = hostedclusterv1alpha1.AppsIngressStatus{}
 
 	if err := r.ensureControlPlaneNetworkPolicy(ctx, target); err != nil {
+		var nsPending *namespacePendingError
+		if stderrors.As(err, &nsPending) {
+			log.Info("Waiting for control-plane namespace", "namespace", nsPending.namespace)
+			if err := r.updateAttachmentStatusWithRetry(ctx, att); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -160,6 +180,17 @@ func (r *InfraClusterAttachmentReconciler) hostedFactory(att *hostedclusterv1alp
 func (r *InfraClusterAttachmentReconciler) ensureControlPlaneNetworkPolicy(ctx context.Context, target appsIngressTarget) error {
 	if target.ControlPlaneNamespace == "" {
 		return nil
+	}
+	// HyperShift creates the control-plane namespace while the HostedCluster
+	// is provisioning. Until it exists there is nowhere to attach the policy;
+	// treat that as pending rather than hot-looping on create errors.
+	ns := &corev1.Namespace{}
+	err := r.Get(ctx, types.NamespacedName{Name: target.ControlPlaneNamespace}, ns)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return &namespacePendingError{namespace: target.ControlPlaneNamespace}
+		}
+		return err
 	}
 	policy := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -209,18 +240,22 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 		target.APIServerService = defaultAPIServerServiceName
 	}
 
-	factory := r.hostedFactory(att, target)
-	hostedClient, err := factory(ctx)
-	if err != nil {
-		// The hosted cluster may already be gone; treat access failure as done.
-		if errors.IsNotFound(err) {
-			log.Info("Hosted cluster already removed during cleanup", "ref", target.HostedClusterRef)
-		} else {
+	if target.Config.Enabled {
+		factory := r.hostedFactory(att, target)
+		hostedClient, err := factory(ctx)
+		if err != nil {
+			// The hosted cluster may already be gone — or its API may not exist at
+			// all (e.g. HyperShift removed with attachments left behind). Both mean
+			// there is nothing left to clean up.
+			if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
+				log.Info("Hosted cluster API unavailable during cleanup; skipping hosted cleanup", "ref", target.HostedClusterRef, "cause", err.Error())
+			} else {
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+		} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
+			log.Error(err, "Failed hosted-cluster cleanup; requeueing")
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
-	} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
-		log.Error(err, "Failed hosted-cluster cleanup; requeueing")
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	policy := &networkingv1.NetworkPolicy{
@@ -280,7 +315,7 @@ func (r *InfraClusterAttachmentReconciler) setStatusAndFinish(ctx context.Contex
 		Message:            message,
 	}
 	setAttachmentCondition(att, cond)
-	if err := r.Status().Update(ctx, att); err != nil && !errors.IsConflict(err) {
+	if err := r.updateAttachmentStatusWithRetry(ctx, att); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -324,15 +359,38 @@ func (r *InfraClusterAttachmentReconciler) updateStatusCommon(ctx context.Contex
 	}
 	setAttachmentCondition(att, cond)
 
-	if err := r.Status().Update(ctx, att); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	return nil
+	return r.updateAttachmentStatusWithRetry(ctx, att)
 }
 
 func setAttachmentCondition(att *hostedclusterv1alpha1.InfraClusterAttachment, cond metav1.Condition) {
 	cond = preserveConditionTransitionTime(att.Status.Conditions, cond)
 	meta.SetStatusCondition(&att.Status.Conditions, cond)
+}
+
+// updateAttachmentStatusWithRetry persists attachment status, re-reading the
+// live object on optimistic-concurrency conflicts instead of falling into
+// long workqueue backoff.
+func (r *InfraClusterAttachmentReconciler) updateAttachmentStatusWithRetry(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment) error {
+	key := types.NamespacedName{Name: att.Name, Namespace: att.Namespace}
+	for attempt := 0; ; attempt++ {
+		err := r.Status().Update(ctx, att)
+		if err == nil {
+			return nil
+		}
+		if client.IgnoreNotFound(err) == nil {
+			return nil
+		}
+		if !errors.IsConflict(err) || attempt >= 4 {
+			return err
+		}
+		fresh := &hostedclusterv1alpha1.InfraClusterAttachment{}
+		if err := r.Get(ctx, key, fresh); err != nil {
+			return err
+		}
+		desired := att.Status
+		fresh.Status = desired
+		*att = *fresh
+	}
 }
 
 func endpointString(ip, hostname string) string {

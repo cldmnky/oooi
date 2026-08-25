@@ -32,6 +32,7 @@ import (
 var (
 	// Optional Environment Variables:
 	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
+	// - E2E_IMAGE: Uses a prebuilt image and skips the image build step.
 	// These variables are useful if CertManager is already installed, avoiding
 	// re-installation and conflicts.
 	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
@@ -41,6 +42,9 @@ var (
 	// projectImage is the name of the image which will be built and loaded
 	// with the code source changes to be tested. Allow override via env var IMG.
 	projectImage = func() string {
+		if v := os.Getenv("E2E_IMAGE"); v != "" {
+			return v
+		}
 		if v := os.Getenv("IMG"); v != "" {
 			return v
 		}
@@ -76,10 +80,15 @@ var _ = BeforeSuite(func() {
 		g.Expect(utils.IsNADReady("test-vlan-200", namespace)).To(BeTrue())
 	}, 2*time.Minute, time.Second).Should(Succeed())
 
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "container-build-e2e")
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	var err error
+	if os.Getenv("E2E_IMAGE") == "" && os.Getenv("IMG") == "" {
+		By("building the manager(Operator) image")
+		cmd := exec.Command("make", "container-build-e2e")
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Using prebuilt manager image %s\n", projectImage)
+	}
 
 	// When using Kind with KIND_CLUSTER env var set, ko automatically loads the image
 	// into the cluster. The LoadImageToKindClusterWithName step is skipped in this case.

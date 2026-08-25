@@ -248,6 +248,29 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 		}
 	})
 
+	It("excludes terminating attachments from desired records", func() {
+		createSharedInfra(false)
+		Expect(k8sClient.Create(ctx, makeAttachment("active", infraName, "active", "example.com", "clusters-active"))).To(Succeed())
+		terminating := makeAttachment("terminating", infraName, "terminating", "example.com", "clusters-terminating")
+		terminating.Finalizers = []string{"test.finalizer"}
+		Expect(k8sClient.Create(ctx, terminating)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, terminating)).To(Succeed())
+
+		reconcileInfra()
+
+		dns := getDNS()
+		for _, entry := range dns.Spec.StaticEntries {
+			Expect(entry.Hostname).NotTo(ContainSubstring("terminating.example.com"))
+		}
+		Expect(dns.Spec.StaticEntries).To(ContainElement(HaveField("Hostname", "api.active.example.com")))
+		Expect(getInfra().Status.Attachments.Total).To(Equal(int32(1)))
+
+		// Release the test finalizer so the shared cleanup can remove the object.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "terminating", Namespace: "default"}, terminating)).To(Succeed())
+		terminating.Finalizers = nil
+		Expect(k8sClient.Update(ctx, terminating)).To(Succeed())
+	})
+
 	It("ignores legacy cluster fields when explicit attachments exist", func() {
 		createSharedInfra(true)
 		Expect(k8sClient.Create(ctx, makeAttachment("only", infraName, "only", "example.com", "clusters-only"))).To(Succeed())
@@ -326,7 +349,15 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		att.Spec.ControlPlaneNamespace = "" // exercise derivation
 		Expect(k8sClient.Create(ctx, att)).To(Succeed())
 
-		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		factoryCalled := false
+		r := &InfraClusterAttachmentReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			HostedClusterClientFactory: func(context.Context, *hostedclusterv1alpha1.InfraClusterAttachment, string, string) (client.Client, error) {
+				factoryCalled = true
+				return nil, nil
+			},
+		}
 		reconcileAttachment(r, "defaults") // finalizer add pass
 		reconcileAttachment(r, "defaults") // main pass
 
@@ -344,6 +375,7 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 
 		Expect(k8sClient.Delete(ctx, &got)).To(Succeed())
 		reconcileAttachment(r, "defaults") // cleanup pass removes finalizer
+		Expect(factoryCalled).To(BeFalse(), "disabled apps ingress must not contact a HostedCluster API during cleanup")
 
 		Eventually(func() bool {
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: "defaults", Namespace: "default"}, &hostedclusterv1alpha1.InfraClusterAttachment{})

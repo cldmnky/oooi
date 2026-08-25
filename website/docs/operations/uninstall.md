@@ -30,6 +30,14 @@ kubectl -n clusters delete infraclusterattachment <name>
 Wait for each attachment to disappear before continuing; a stuck finalizer
 usually means the hosted cluster is unreachable.
 
+If the operator is already removed and attachments are stuck `Terminating`,
+remove the finalizers manually:
+
+```bash
+kubectl -n clusters patch infraclusterattachment <name> --type=merge \
+  -p '{"metadata":{"finalizers":null}}'
+```
+
 ### 2. Delete `Infra` second
 
 Owner references cascade-delete every child object:

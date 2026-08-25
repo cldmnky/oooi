@@ -124,6 +124,10 @@ KIND_CLUSTER ?= oooi-test-e2e
 CALICO_VERSION ?= v3.29.1
 MULTUS_VERSION ?= v4.2.3
 PODMAN_RUNTIME ?= false
+E2E_TIMEOUT ?= 20m
+E2E_FOCUS ?=
+E2E_IMAGE ?=
+E2E_IMAGE_FOR_TEST := $(if $(filter command line environment environment override,$(origin IMG)),$(IMG),$(E2E_IMAGE))
 
 # Detect podman availability
 PODMAN_AVAILABLE := $(shell command -v podman >/dev/null 2>&1 && echo true || echo false)
@@ -191,8 +195,12 @@ create-test-nads: ## Create test NetworkAttachmentDefinitions for secondary netw
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) CERT_MANAGER_INSTALL_SKIP=true go test ./test/e2e/ -v -timeout=45m -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+	@status=0; \
+	E2E_IMAGE="$(E2E_IMAGE_FOR_TEST)" KIND_CLUSTER=$(KIND_CLUSTER) CERT_MANAGER_INSTALL_SKIP=true \
+		go test ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) -ginkgo.v \
+		$(if $(E2E_FOCUS),-ginkgo.focus "$(E2E_FOCUS)",) || status=$$?; \
+	$(MAKE) cleanup-test-e2e; \
+	exit $$status
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
