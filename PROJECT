@@ -25,4 +25,9 @@ resources:
   group: hostedcluster
   kind: DHCPServer
   version: v1alpha1
+- controller: true
+  domain: densityops.com
+  group: hostedcluster
+  kind: InfraClusterAttachment
+  version: v1alpha1
 version: "3"

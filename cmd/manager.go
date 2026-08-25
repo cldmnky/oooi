@@ -224,6 +224,13 @@ func runManager(cmd *cobra.Command, args []string) {
 		setupLog.Error(err, "unable to create controller", "controller", "Infra")
 		os.Exit(1)
 	}
+	if err := (&controller.InfraClusterAttachmentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "InfraClusterAttachment")
+		os.Exit(1)
+	}
 	if err := (&controller.DHCPServerReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),

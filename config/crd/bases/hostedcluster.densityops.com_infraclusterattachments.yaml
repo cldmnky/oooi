@@ -4,19 +4,32 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: infras.hostedcluster.densityops.com
+  name: infraclusterattachments.hostedcluster.densityops.com
 spec:
   group: hostedcluster.densityops.com
   names:
-    kind: Infra
-    listKind: InfraList
-    plural: infras
+    kind: InfraClusterAttachment
+    listKind: InfraClusterAttachmentList
+    plural: infraclusterattachments
     shortNames:
-    - infra
-    singular: infra
+    - infraattachment
+    - ica
+    singular: infraclusterattachment
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - description: Referenced Infra
+      jsonPath: .spec.infraRef.name
+      name: Infra
+      type: string
+    - description: Attached HostedCluster
+      jsonPath: .spec.hostedClusterRef.name
+      name: HostedCluster
+      type: string
+    - description: Hosted cluster domain
+      jsonPath: .status.domain
+      name: Domain
+      type: string
     - description: Ready status
       jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
@@ -27,7 +40,11 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Infra is the Schema for the infras API.
+        description: |-
+          InfraClusterAttachment attaches one HyperShift HostedCluster to the shared
+          VLAN infrastructure owned by an Infra resource. Multiple attachments may
+          reference the same Infra; each contributes its own DNS records, Envoy SNI
+          backends, and optional apps-ingress automation.
         properties:
           apiVersion:
             description: |-
@@ -47,11 +64,17 @@ spec:
           metadata:
             type: object
           spec:
-            description: InfraSpec defines the desired state of Infra.
+            description: InfraClusterAttachmentSpec defines the desired state of InfraClusterAttachment.
             properties:
+              apiServerService:
+                description: |-
+                  APIServerService is the name of the hosted API server Service in the
+                  control plane namespace. Defaults to "kube-apiserver".
+                type: string
               appsIngress:
-                description: AppsIngress defines optional configuration for hosted
-                  cluster *.apps ingress handling.
+                description: |-
+                  AppsIngress configures optional per-cluster *.apps ingress automation.
+                  MetalLB ranges must not overlap between attachments sharing a VLAN.
                 properties:
                   baseDomain:
                     description: |-
@@ -151,191 +174,77 @@ spec:
                         type: string
                     type: object
                 type: object
-              infraComponents:
+              controlPlaneNamespace:
                 description: |-
-                  InfraComponents defines the configuration for infrastructure services
-                  (DHCP, DNS, Proxy) that bridge the isolated VLAN to the control plane.
-                properties:
-                  dhcp:
-                    description: DHCP configuration for dynamic IP assignment to tenant
-                      VMs.
-                    properties:
-                      enabled:
-                        default: true
-                        description: Enabled determines whether the DHCP server should
-                          be deployed.
-                        type: boolean
-                      image:
-                        description: Image is the container image for the DHCP server.
-                        type: string
-                      leaseTime:
-                        default: 1h
-                        description: LeaseTime is the DHCP lease duration (e.g., "1h",
-                          "24h").
-                        type: string
-                      rangeEnd:
-                        description: RangeEnd is the end of the DHCP IP address pool.
-                        type: string
-                      rangeStart:
-                        description: RangeStart is the beginning of the DHCP IP address
-                          pool.
-                        type: string
-                      serverIP:
-                        description: |-
-                          ServerIP is the static IP address assigned to the DHCP server pod
-                          on the secondary network. Must be within the NetworkConfig CIDR.
-                        type: string
-                    type: object
-                  dns:
-                    description: DNS configuration for split-horizon CoreDNS service.
-                    properties:
-                      baseDomain:
-                        description: |-
-                          BaseDomain is the base domain for the hosted cluster (e.g., "example.com").
-                          Used to construct FQDNs for API server and routes.
-                        type: string
-                      clusterName:
-                        description: |-
-                          ClusterName is the name of the hosted cluster.
-                          Used to construct FQDNs (e.g., "api.<clusterName>.<baseDomain>").
-                        type: string
-                      enabled:
-                        default: true
-                        description: Enabled determines whether the DNS server should
-                          be deployed.
-                        type: boolean
-                      image:
-                        description: Image is the container image for CoreDNS.
-                        type: string
-                      serverIP:
-                        description: |-
-                          ServerIP is the static IP address assigned to the CoreDNS pod
-                          on the secondary network. Must be within the NetworkConfig CIDR.
-                        type: string
-                    type: object
-                  proxy:
-                    description: Proxy configuration for Envoy L4 proxy gateway.
-                    properties:
-                      apiServerService:
-                        default: kube-apiserver
-                        description: |-
-                          APIServerService is the name of the Kubernetes API server service
-                          in the control plane namespace.
-                        type: string
-                      controlPlaneNamespace:
-                        description: |-
-                          ControlPlaneNamespace is the namespace where the hosted control plane
-                          services are running (e.g., "clusters-<clustername>").
-                        type: string
-                      enabled:
-                        default: true
-                        description: Enabled determines whether the Envoy proxy should
-                          be deployed.
-                        type: boolean
-                      externalService:
-                        description: |-
-                          ExternalService exposes the proxy through a LoadBalancer Service on the
-                          hosting cluster. It can be labeled and annotated for integrations such as
-                          MetalLB and ExternalDNS.
-                        properties:
-                          addressPoolName:
-                            description: |-
-                              AddressPoolName selects a MetalLB IPAddressPool through the standard
-                              metallb.universe.tf/address-pool Service annotation. When empty, the
-                              cluster's default LoadBalancer allocation policy is used.
-                            type: string
-                          annotations:
-                            additionalProperties:
-                              type: string
-                            description: |-
-                              Annotations are reconciled onto the proxy Service. Use these to configure
-                              integrations such as external-dns.alpha.kubernetes.io/hostname.
-                            type: object
-                          enabled:
-                            default: false
-                            description: Enabled changes the proxy Service from ClusterIP
-                              to LoadBalancer.
-                            type: boolean
-                          labels:
-                            additionalProperties:
-                              type: string
-                            description: |-
-                              Labels are reconciled onto the proxy Service. Use these to select the
-                              Service from ExternalDNS.
-                            type: object
-                        type: object
-                      internalProxyService:
-                        description: |-
-                          InternalProxyService is the internal proxy service for pod network access.
-                          Can be a ClusterIP service name (e.g., "envoy-internal.namespace.svc.cluster.local")
-                          or a ClusterIP address. Used by DNS default view for management cluster pod access.
-                        type: string
-                      managerImage:
-                        default: quay.io/cldmnky/oooi:latest
-                        description: ManagerImage is the container image for the xDS
-                          control plane (oooi).
-                        type: string
-                      proxyImage:
-                        default: envoyproxy/envoy:v1.36.4
-                        description: ProxyImage is the container image for Envoy proxy.
-                        type: string
-                      serverIP:
-                        description: |-
-                          ServerIP is the static IP address assigned to the Envoy proxy pod
-                          on the secondary network. Must be within the NetworkConfig CIDR.
-                          This is used for external access (VM/multus network).
-                        type: string
-                    type: object
-                type: object
-              networkConfig:
+                  ControlPlaneNamespace is the management-cluster namespace hosting this
+                  cluster's control-plane Services. When empty, oooi derives it from the
+                  HostedCluster reference as "<namespace>-<name>".
+                type: string
+              dns:
                 description: |-
-                  NetworkConfig defines the secondary network (VLAN) configuration
-                  for the hosted cluster's isolated network.
+                  DNS defines the hosted cluster DNS naming used to generate static
+                  records on the shared DNSServer and SNI routes on the shared ProxyServer.
                 properties:
-                  cidr:
+                  baseDomain:
                     description: |-
-                      CIDR is the IP address range for the secondary network in CIDR notation.
-                      Example: "192.168.100.0/24"
-                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
-                    type: string
-                  dnsServers:
-                    description: |-
-                      DNSServers is an optional list of upstream DNS servers for external resolution.
-                      If not specified, the infrastructure DNS will use the pod's default resolvers.
-                    items:
-                      type: string
-                    type: array
-                  gateway:
-                    description: |-
-                      Gateway is the default gateway IP address for the secondary network.
-                      Example: "192.168.100.1"
-                    pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
-                    type: string
-                  networkAttachmentDefinition:
-                    description: |-
-                      NetworkAttachmentDefinition is the name of the Multus NetworkAttachmentDefinition
-                      that represents the secondary VLAN.
+                      BaseDomain is the DNS base domain of the hosted cluster, for example
+                      "clusters.example.com".
                     minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
                     type: string
-                  networkAttachmentNamespace:
+                  clusterName:
                     description: |-
-                      NetworkAttachmentNamespace is the namespace where the NetworkAttachmentDefinition resides.
-                      If not specified, the operator will look for the NAD first in the current namespace,
-                      then in the default namespace.
+                      ClusterName is the hosted cluster name used to construct FQDNs such as
+                      "api.<clusterName>.<baseDomain>".
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     type: string
                 required:
-                - cidr
-                - gateway
-                - networkAttachmentDefinition
+                - baseDomain
+                - clusterName
+                type: object
+              hostedClusterRef:
+                description: |-
+                  HostedClusterRef references the HyperShift HostedCluster attached to
+                  the shared infrastructure. Each HostedCluster may be referenced by at
+                  most one InfraClusterAttachment.
+                properties:
+                  name:
+                    description: Name is the name of the HostedCluster.
+                    type: string
+                  namespace:
+                    default: clusters
+                    description: Namespace is the namespace of the HostedCluster.
+                    type: string
+                required:
+                - name
+                type: object
+              infraRef:
+                description: |-
+                  InfraRef references the shared Infra resource that owns the VLAN
+                  infrastructure (DHCP, DNS, and proxy). The InfraClusterAttachment must
+                  be created in the same namespace as the referenced Infra.
+                properties:
+                  name:
+                    description: Name is the name of the referenced Infra resource.
+                    minLength: 1
+                    type: string
+                required:
+                - name
                 type: object
             required:
-            - networkConfig
+            - dns
+            - hostedClusterRef
+            - infraRef
             type: object
           status:
-            description: InfraStatus defines the observed state of Infra.
+            description: InfraClusterAttachmentStatus defines the observed state of
+              InfraClusterAttachment.
             properties:
               appsIngressStatus:
-                description: AppsIngressStatus tracks the status of apps ingress configuration.
+                description: |-
+                  AppsIngressStatus tracks the per-cluster apps ingress state in the
+                  hosted cluster.
                 properties:
                   externalHostname:
                     description: |-
@@ -365,45 +274,10 @@ spec:
                     description: Reason provides a short reason for the current phase.
                     type: string
                 type: object
-              attachments:
-                description: |-
-                  Attachments summarizes the InfraClusterAttachment resources targeting
-                  this Infra. Empty when none exist.
-                properties:
-                  legacyFieldsIgnored:
-                    description: |-
-                      LegacyFieldsIgnored reports that cluster-specific Infra fields were
-                      present but ignored because explicit attachments take precedence.
-                    type: boolean
-                  ready:
-                    description: Ready is the number of attachments whose Ready condition
-                      is True.
-                    format: int32
-                    type: integer
-                  total:
-                    description: Total is the number of attachments targeting this
-                      Infra.
-                    format: int32
-                    type: integer
-                type: object
-              componentStatus:
-                description: ComponentStatus tracks the status of individual infrastructure
-                  components.
-                properties:
-                  dhcpReady:
-                    description: DHCPReady indicates whether the DHCP server is ready.
-                    type: boolean
-                  dnsReady:
-                    description: DNSReady indicates whether the CoreDNS server is
-                      ready.
-                    type: boolean
-                  proxyReady:
-                    description: ProxyReady indicates whether the Envoy proxy is ready.
-                    type: boolean
-                type: object
               conditions:
-                description: Conditions represents the latest available observations
-                  of the Infra's state.
+                description: |-
+                  Conditions represents the latest available observations of the
+                  InfraClusterAttachment's state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -462,9 +336,20 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              controlPlaneNamespace:
+                description: |-
+                  ControlPlaneNamespace is the resolved management-cluster namespace
+                  hosting this cluster's control-plane Services.
+                type: string
+              domain:
+                description: |-
+                  Domain is the fully qualified hosted cluster domain derived from
+                  spec.dns ("<clusterName>.<baseDomain>").
+                type: string
               observedGeneration:
-                description: ObservedGeneration reflects the generation of the most
-                  recently observed Infra.
+                description: |-
+                  ObservedGeneration reflects the generation of the most recently
+                  observed InfraClusterAttachment.
                 format: int64
                 type: integer
             type: object

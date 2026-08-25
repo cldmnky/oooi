@@ -342,6 +342,28 @@ type InfraStatus struct {
 	// ObservedGeneration reflects the generation of the most recently observed Infra.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Attachments summarizes the InfraClusterAttachment resources targeting
+	// this Infra. Empty when none exist.
+	// +optional
+	Attachments AttachmentsSummary `json:"attachments,omitempty"`
+}
+
+// AttachmentsSummary aggregates the state of the InfraClusterAttachments
+// referencing an Infra resource.
+type AttachmentsSummary struct {
+	// Total is the number of attachments targeting this Infra.
+	// +optional
+	Total int32 `json:"total,omitempty"`
+
+	// Ready is the number of attachments whose Ready condition is True.
+	// +optional
+	Ready int32 `json:"ready,omitempty"`
+
+	// LegacyFieldsIgnored reports that cluster-specific Infra fields were
+	// present but ignored because explicit attachments take precedence.
+	// +optional
+	LegacyFieldsIgnored bool `json:"legacyFieldsIgnored,omitempty"`
 }
 
 // ComponentStatus tracks the readiness of infrastructure components.
