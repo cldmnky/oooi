@@ -103,7 +103,7 @@ dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<pub
 # → current InfraClusterAttachment.status.appsIngressStatus.externalIP, when IP-backed
 
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
-# → current <infra>-proxy-external EXTERNAL-IP
+# → current <attachment>-proxy-external EXTERNAL-IP
 ```
 
 Also verify ownership TXT records exist for your registry (prevents two

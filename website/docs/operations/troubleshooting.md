@@ -107,7 +107,7 @@ The public record must point at the **hosting-cluster** external Service VIP,
 not the hosted Route. Verify:
 
 ```bash
-kubectl -n <infra-namespace> get svc <infra>-proxy-external   # EXTERNAL-IP
+kubectl -n <infra-namespace> get svc <attachment>-proxy-external   # EXTERNAL-IP
 dig +short oauth.<cluster>.<domain> @<public-resolver>         # must match above
 curl -k -o /dev/null -w '%{http_code}\n' \
   'https://oauth.<cluster>.<domain>/oauth/authorize?client_id=openshift-challenging-client&response_type=token'  # 401 = good

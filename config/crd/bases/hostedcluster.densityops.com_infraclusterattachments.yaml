@@ -184,6 +184,37 @@ spec:
                 - baseDomain
                 - clusterName
                 type: object
+              externalService:
+                description: |-
+                  ExternalService configures an optional hosting-cluster LoadBalancer for
+                  this attachment's OAuth and other SNI endpoints. Each attachment gets its
+                  own Service when this is enabled.
+                properties:
+                  addressPoolName:
+                    description: |-
+                      AddressPoolName selects a MetalLB IPAddressPool through the standard
+                      metallb.universe.tf/address-pool Service annotation. When empty, the
+                      cluster's default LoadBalancer allocation policy is used.
+                    type: string
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Annotations are reconciled onto the proxy Service. Use these to configure
+                      integrations such as external-dns.alpha.kubernetes.io/hostname.
+                    type: object
+                  enabled:
+                    default: false
+                    description: Enabled creates a LoadBalancer Service for the proxy.
+                    type: boolean
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Labels are reconciled onto the proxy Service. Use these to select the
+                      Service from ExternalDNS.
+                    type: object
+                type: object
               hostedClusterRef:
                 description: |-
                   HostedClusterRef references the HyperShift HostedCluster attached to

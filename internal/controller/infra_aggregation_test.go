@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -286,6 +287,9 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 					Gateway:                     "192.168.100.1",
 					NetworkAttachmentDefinition: "vlan100",
 				},
+				InfraComponents: hostedclusterv1alpha1.InfraComponents{
+					Proxy: hostedclusterv1alpha1.ProxyConfig{Enabled: true},
+				},
 			},
 		})).To(Succeed())
 	}
@@ -442,76 +446,120 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		}, &policy)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, &policy)).To(Succeed())
 	})
-})
 
-var _ = Describe("Shared external Service OAuth policy", func() {
-	makeView := func(name, domain, cpns string, ready bool) attachmentView {
-		return attachmentView{
-			name:                  name,
-			ready:                 ready,
-			hostedClusterRef:      hostedclusterv1alpha1.HostedClusterReference{Name: name, Namespace: "clusters"},
-			controlPlaneNamespace: cpns,
-			domain:                domain,
-		}
-	}
-
-	infraWithExternal := func(publish bool) *hostedclusterv1alpha1.Infra {
-		return &hostedclusterv1alpha1.Infra{
-			ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "default"},
-			Spec: hostedclusterv1alpha1.InfraSpec{
-				NetworkConfig: hostedclusterv1alpha1.NetworkConfig{NetworkAttachmentDefinition: "vlan"},
-				InfraComponents: hostedclusterv1alpha1.InfraComponents{
-					Proxy: hostedclusterv1alpha1.ProxyConfig{
-						ServerIP: "192.0.2.4",
-						ExternalService: hostedclusterv1alpha1.ProxyExternalService{
-							Enabled:                 true,
-							AddressPoolName:         "public-pool",
-							PublishAttachmentOAuths: publish,
-							Annotations: map[string]string{
-								"external-dns.alpha.kubernetes.io/hostname": "custom-oauth.example.com.",
-							},
-						},
-					},
-				},
+	It("reconciles one attachment-owned external Service per cluster", func() {
+		createInfraForAttachment()
+		att := makeAttachment("oauth", infraName, "oauth", "example.com", "clusters-oauth")
+		att.Spec.ExternalService = hostedclusterv1alpha1.ProxyExternalService{
+			Enabled:         true,
+			AddressPoolName: "oauth-pool",
+			Labels: map[string]string{
+				"external-dns.example.com/publish": "yes",
+			},
+			Annotations: map[string]string{
+				"external-dns.alpha.kubernetes.io/hostname": "oauth.oauth.example.com.",
 			},
 		}
-	}
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
 
-	It("appends Ready attachment oauth names to the shared VIP annotation", func() {
-		infra := infraWithExternal(true)
-		views := []attachmentView{
-			makeView("bravo", "bravo.example.com", "clusters-bravo", true),
-			makeView("alpha", "alpha.example.com", "clusters-alpha", false), // not Ready
+		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileAttachment(r, "oauth") // finalizer add pass
+		reconcileAttachment(r, "oauth") // service reconciliation pass
+
+		service := &corev1.Service{}
+		serviceKey := types.NamespacedName{Name: "oauth-proxy-external", Namespace: "default"}
+		Expect(k8sClient.Get(ctx, serviceKey, service)).To(Succeed())
+		Expect(service.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+		Expect(service.Spec.Ports).To(HaveLen(1))
+		Expect(service.Spec.Ports[0].Name).To(Equal("proxy"))
+		Expect(service.Spec.Ports[0].Port).To(Equal(int32(443)))
+		Expect(service.Spec.Ports[0].TargetPort).To(Equal(intstr.FromInt(443)))
+		Expect(service.Spec.Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
+		Expect(service.Spec.Selector).To(Equal(map[string]string{
+			"app":                          "proxy-server",
+			"hostedcluster.densityops.com": "att-infra-proxy",
+		}))
+		Expect(service.Labels).To(HaveKeyWithValue("external-dns.example.com/publish", "yes"))
+		Expect(service.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "oauth-pool"))
+		Expect(service.Annotations).To(HaveKeyWithValue("external-dns.alpha.kubernetes.io/hostname", "oauth.oauth.example.com."))
+		Expect(service.OwnerReferences).To(HaveLen(1))
+		Expect(service.OwnerReferences[0].Name).To(Equal("oauth"))
+		Expect(service.OwnerReferences[0].Kind).To(Equal("InfraClusterAttachment"))
+		resourceVersion := service.ResourceVersion
+
+		reconcileAttachment(r, "oauth")
+		Expect(k8sClient.Get(ctx, serviceKey, service)).To(Succeed())
+		Expect(service.ResourceVersion).To(Equal(resourceVersion))
+
+		Expect(k8sClient.Delete(ctx, service)).To(Succeed())
+		reconcileAttachment(r, "oauth")
+		Expect(k8sClient.Get(ctx, serviceKey, service)).To(Succeed())
+
+		updated := getAttachment("oauth")
+		updated.Spec.ExternalService.Enabled = false
+		Expect(k8sClient.Update(ctx, &updated)).To(Succeed())
+		reconcileAttachment(r, "oauth")
+		Eventually(func() bool {
+			return errors.IsNotFound(k8sClient.Get(ctx, serviceKey, &corev1.Service{}))
+		}).Should(BeTrue())
+
+		updated = getAttachment("oauth")
+		updated.Spec.ExternalService.Enabled = true
+		Expect(k8sClient.Update(ctx, &updated)).To(Succeed())
+		reconcileAttachment(r, "oauth")
+		Expect(k8sClient.Get(ctx, serviceKey, service)).To(Succeed())
+
+		Expect(k8sClient.Delete(ctx, &updated)).To(Succeed())
+		reconcileAttachment(r, "oauth")
+		Eventually(func() bool {
+			return errors.IsNotFound(k8sClient.Get(ctx, serviceKey, &corev1.Service{}))
+		}).Should(BeTrue())
+	})
+
+	It("keeps external Services independent across attachments", func() {
+		createInfraForAttachment()
+		for name, hostname := range map[string]string{
+			"oauth-a": "oauth.a.example.com.",
+			"oauth-b": "oauth.b.example.com.",
+		} {
+			att := makeAttachment(name, infraName, name, "example.com", "clusters-"+name)
+			att.Spec.ExternalService = hostedclusterv1alpha1.ProxyExternalService{
+				Enabled: true,
+				Annotations: map[string]string{
+					"external-dns.alpha.kubernetes.io/hostname": hostname,
+				},
+			}
+			Expect(k8sClient.Create(ctx, att)).To(Succeed())
 		}
-		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
-		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
-			To(Equal("custom-oauth.example.com.,oauth.bravo.example.com"))
+
+		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		for name := range map[string]struct{}{"oauth-a": {}, "oauth-b": {}} {
+			reconcileAttachment(r, name) // finalizer add pass
+			reconcileAttachment(r, name) // service reconciliation pass
+		}
+
+		for name, hostname := range map[string]string{
+			"oauth-a": "oauth.a.example.com.",
+			"oauth-b": "oauth.b.example.com.",
+		} {
+			service := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: externalProxyServiceName(name), Namespace: "default",
+			}, service)).To(Succeed())
+			Expect(service.Annotations).To(HaveKeyWithValue("external-dns.alpha.kubernetes.io/hostname", hostname))
+			Expect(service.Spec.Selector).To(HaveKeyWithValue("hostedcluster.densityops.com", infraName+"-proxy"))
+		}
+
+		first := getAttachment("oauth-a")
+		Expect(k8sClient.Delete(ctx, &first)).To(Succeed())
+		reconcileAttachment(r, "oauth-a")
+		Eventually(func() bool {
+			return errors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{
+				Name: externalProxyServiceName("oauth-a"), Namespace: "default",
+			}, &corev1.Service{}))
+		}).Should(BeTrue())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: externalProxyServiceName("oauth-b"), Namespace: "default",
+		}, &corev1.Service{})).To(Succeed())
 	})
-
-	It("does not modify the annotation unless publishing is enabled", func() {
-		infra := infraWithExternal(false)
-		views := []attachmentView{makeView("a", "a.example.com", "clusters-a", true)}
-		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
-		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
-			To(Equal("custom-oauth.example.com."))
-	})
-
-	It("deduplicates case-insensitively and preserves user ordering", func() {
-		out := mergeOAuthHostnames(map[string]string{
-			hostnameAnnotationKey: "OAuth.A.example.com., extra.example.com",
-		}, []string{" oauth.a.example.com ", "oauth.b.example.com"})
-		Expect(out[hostnameAnnotationKey]).
-			To(Equal("OAuth.A.example.com.,extra.example.com,oauth.b.example.com"))
-	})
-
-	It("normalizes omitted HostedCluster namespaces for routing defaults", func() {
-		att := makeAttachment("defaulted", "shared-vlan", "defaulted", "example.com", "")
-		att.Spec.HostedClusterRef.Namespace = ""
-
-		view := attachmentFromAttachment(att)
-
-		Expect(view.hostedClusterRef.Namespace).To(Equal("clusters"))
-		Expect(view.controlPlaneNamespace).To(Equal("clusters-defaulted"))
-	})
-
 })

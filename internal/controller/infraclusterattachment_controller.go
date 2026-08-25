@@ -18,7 +18,11 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	stderrors "errors"
+	"reflect"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,10 +32,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
@@ -43,6 +52,7 @@ const (
 	reasonAttachmentInvalidConfig = "InvalidConfiguration"
 	reasonAttachmentInfraNotFound = "InfraNotFound"
 	defaultAPIServerServiceName   = "kube-apiserver"
+	maxServiceNameLength          = 63
 )
 
 // namespacePendingError signals that an attachment's control-plane namespace
@@ -72,6 +82,7 @@ type InfraClusterAttachmentReconciler struct {
 // +kubebuilder:rbac:groups=hypershift.openshift.io,resources=hostedclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;create;update;patch;delete
 
 // Reconcile moves the current state of the cluster closer to the desired state
@@ -109,10 +120,17 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("Referenced Infra not found", "infra", att.Spec.InfraRef.Name)
+			if err := r.deleteExternalProxyService(ctx, att); err != nil {
+				return ctrl.Result{}, err
+			}
 			return r.setStatusAndFinish(ctx, att, metav1.ConditionFalse,
 				reasonAttachmentInfraNotFound,
 				"referenced Infra "+att.Spec.InfraRef.Name+" not found")
 		}
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileExternalProxyService(ctx, att, infra); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -213,6 +231,107 @@ func (r *InfraClusterAttachmentReconciler) cleanupHostedAppsIngress(ctx context.
 	return cleanupMetalLBInstallation(ctx, hostedClient, cfg)
 }
 
+// externalProxyServiceName returns a stable DNS-1123 Service name for an
+// attachment. The hash keeps long attachment names unique within the Service
+// name limit.
+func externalProxyServiceName(attachmentName string) string {
+	base := attachmentName + "-proxy-external"
+	if len(base) <= maxServiceNameLength {
+		return base
+	}
+	digest := sha256.Sum256([]byte(base))
+	suffix := "-" + hex.EncodeToString(digest[:])[:8] + "-external"
+	prefix := strings.TrimRight(base[:maxServiceNameLength-len(suffix)], "-")
+	return prefix + suffix
+}
+
+func newExternalProxyService(att *hostedclusterv1alpha1.InfraClusterAttachment, infra *hostedclusterv1alpha1.Infra) *corev1.Service {
+	labels := map[string]string{}
+	for key, value := range att.Spec.ExternalService.Labels {
+		labels[key] = value
+	}
+	labels["app"] = "proxy-server"
+	labels["hostedcluster.densityops.com"] = infra.Name + "-proxy"
+	annotations := map[string]string{}
+	for key, value := range att.Spec.ExternalService.Annotations {
+		annotations[key] = value
+	}
+	if poolName := att.Spec.ExternalService.AddressPoolName; poolName != "" {
+		annotations["metallb.universe.tf/address-pool"] = poolName
+	} else {
+		delete(annotations, "metallb.universe.tf/address-pool")
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        externalProxyServiceName(att.Name),
+			Namespace:   att.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeLoadBalancer,
+			Selector: map[string]string{
+				"app":                          "proxy-server",
+				"hostedcluster.densityops.com": infra.Name + "-proxy",
+			},
+			Ports: []corev1.ServicePort{{
+				Name:       "proxy",
+				Port:       443,
+				TargetPort: intstr.FromInt(443),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+}
+
+func (r *InfraClusterAttachmentReconciler) deleteExternalProxyService(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment) error {
+	return client.IgnoreNotFound(r.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Name: externalProxyServiceName(att.Name), Namespace: att.Namespace,
+	}}))
+}
+
+func (r *InfraClusterAttachmentReconciler) reconcileExternalProxyService(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, infra *hostedclusterv1alpha1.Infra) error {
+	if !att.Spec.ExternalService.Enabled || !infra.Spec.InfraComponents.Proxy.Enabled {
+		return r.deleteExternalProxyService(ctx, att)
+	}
+
+	desired := newExternalProxyService(att, infra)
+	if err := controllerutil.SetControllerReference(att, desired, r.Scheme); err != nil {
+		return err
+	}
+	current := &corev1.Service{}
+	key := client.ObjectKeyFromObject(desired)
+	if err := r.Get(ctx, key, current); err != nil {
+		if errors.IsNotFound(err) {
+			return r.Create(ctx, desired)
+		}
+		return err
+	}
+
+	before := current.DeepCopy()
+	current.Labels = desired.Labels
+	current.Annotations = desired.Annotations
+	current.Spec.Type = desired.Spec.Type
+	current.Spec.Selector = desired.Spec.Selector
+	for i := range desired.Spec.Ports {
+		for _, existingPort := range current.Spec.Ports {
+			if existingPort.Name == desired.Spec.Ports[i].Name {
+				desired.Spec.Ports[i].NodePort = existingPort.NodePort
+				break
+			}
+		}
+	}
+	current.Spec.Ports = desired.Spec.Ports
+	if err := controllerutil.SetControllerReference(att, current, r.Scheme); err != nil {
+		return err
+	}
+	if reflect.DeepEqual(before, current) {
+		return nil
+	}
+	return r.Update(ctx, current)
+}
+
 // ensureControlPlaneNetworkPolicy reconciles the allow-infrastructure policy
 // in this attachment's control-plane namespace. The policy is cross-namespace
 // relative to the attachment and therefore cannot carry an owner reference;
@@ -265,6 +384,9 @@ func (r *InfraClusterAttachmentReconciler) ensureControlPlaneNetworkPolicy(ctx c
 // reconcileDelete performs hosted-cluster cleanup, then removes the finalizer.
 func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	if err := r.deleteExternalProxyService(ctx, att); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	target := appsIngressTarget{
 		AttachmentName:        att.Name,
@@ -454,8 +576,39 @@ func endpointString(ip, hostname string) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *InfraClusterAttachmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	enqueueAttachmentsForInfra := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
+		infra, ok := obj.(*hostedclusterv1alpha1.Infra)
+		if !ok {
+			return nil
+		}
+		attachments := &hostedclusterv1alpha1.InfraClusterAttachmentList{}
+		if err := r.List(ctx, attachments, client.InNamespace(infra.Namespace)); err != nil {
+			return nil
+		}
+		requests := make([]ctrl.Request, 0, len(attachments.Items))
+		for i := range attachments.Items {
+			att := &attachments.Items[i]
+			if att.Spec.InfraRef.Name == infra.Name {
+				requests = append(requests, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(att)})
+			}
+		}
+		return requests
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.InfraClusterAttachment{}).
+		Owns(&corev1.Service{}, builder.WithPredicates(predicate.Funcs{
+			CreateFunc:  func(event.CreateEvent) bool { return false },
+			UpdateFunc:  func(event.UpdateEvent) bool { return false },
+			DeleteFunc:  func(event.DeleteEvent) bool { return true },
+			GenericFunc: func(event.GenericEvent) bool { return false },
+		})).
+		Watches(&hostedclusterv1alpha1.Infra{}, enqueueAttachmentsForInfra, builder.WithPredicates(predicate.Funcs{
+			CreateFunc:  func(event.CreateEvent) bool { return true },
+			UpdateFunc:  func(e event.UpdateEvent) bool { return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() },
+			DeleteFunc:  func(event.DeleteEvent) bool { return true },
+			GenericFunc: func(event.GenericEvent) bool { return false },
+		})).
 		Named("infraclusterattachment").
 		Complete(r)
 }

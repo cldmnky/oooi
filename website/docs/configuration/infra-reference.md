@@ -88,23 +88,6 @@ Ignition, konnectivity, and Kubernetes aliases. Apps-ingress backends use the
 configured HTTP/HTTPS ports. Envoy admin `9901` remains internal (ClusterIP
 only).
 
-### spec.infraComponents.proxy.externalService
-
-Optional second Service exposing the proxy through a hosting-cluster
-LoadBalancer. Created as `<infra>-proxy-external`, type `LoadBalancer`,
-selecting the same Envoy pod, exposing **only** the configured ingress port.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | bool | `false` | Create/reconcile the external LoadBalancer Service. Setting false removes an existing one. |
-| `addressPoolName` | string | *(empty)* | Set as annotation `metallb.universe.tf/address-pool` to pin a MetalLB pool. Empty = cluster default allocation. |
-| `labels` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. your ExternalDNS publish label. |
-| `annotations` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. `external-dns.alpha.kubernetes.io/hostname: oauth.<cluster>.<domain>.` |
-| `publishAttachmentOAuths` | bool | `false` | Append each Ready attachment's `oauth.<domain>` name to the hostname annotation as a comma-separated list. See [Multiple hosted clusters on one VLAN](../guides/multi-cluster.md). |
-
-Use this to put OAuth and other Route-published endpoints on a public VIP. See
-[Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
-
 ## status
 
 | Field | Description |
@@ -138,7 +121,25 @@ Create it in the same namespace as the referenced `Infra`.
 | `dns.clusterName` / `dns.baseDomain` | string | — (**Required**) | Build the cluster's FQDNs on the shared DNS and proxy. |
 | `controlPlaneNamespace` | string | `<hc-namespace>-<hc-name>` | Management-cluster namespace hosting this control plane. Must exist; HyperShift creates it. |
 | `apiServerService` | string | `kube-apiserver` | API Service used when the attachment controller builds a hosted-cluster client for apps ingress. Shared proxy API backends currently target `kube-apiserver`. |
+| `externalService` | object | *(empty)* | Optional per-cluster hosting-cluster LoadBalancer exposing the shared Envoy proxy. |
 | `appsIngress` | object | *(empty)* | Per-cluster apps ingress. When enabled, MetalLB ranges must be disjoint across attachments sharing a VLAN. |
+
+### spec.externalService
+
+Optional hosting-cluster LoadBalancer for this attachment. The generated Service
+is named `<attachment>-proxy-external`, selects the shared Envoy pods,
+and exposes only port `443`. Each attachment has an independent Service and
+MetalLB allocation; the Service is owned and cleaned up by that attachment.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Create/reconcile this attachment's external LoadBalancer Service. Setting false removes it. |
+| `addressPoolName` | string | *(empty)* | Set as annotation `metallb.universe.tf/address-pool` to pin a MetalLB pool. Empty = cluster default allocation. |
+| `labels` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. your ExternalDNS publish label. |
+| `annotations` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. `external-dns.alpha.kubernetes.io/hostname: oauth.<cluster>.<domain>.` |
+
+Use this to put the attachment's OAuth and other Route-published endpoints on a
+dedicated public VIP. See [Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
 
 ### status
 

@@ -149,8 +149,10 @@ spec:
                 minItems: 1
                 type: array
               externalService:
-                description: ExternalService configures optional LoadBalancer exposure
-                  for the proxy.
+                description: |-
+                  ExternalService configures optional LoadBalancer exposure for direct
+                  ProxyServer users. InfraClusterAttachment resources own their per-cluster
+                  external Services instead.
                 properties:
                   addressPoolName:
                     description: |-
@@ -167,8 +169,7 @@ spec:
                     type: object
                   enabled:
                     default: false
-                    description: Enabled changes the proxy Service from ClusterIP
-                      to LoadBalancer.
+                    description: Enabled creates a LoadBalancer Service for the proxy.
                     type: boolean
                   labels:
                     additionalProperties:
@@ -177,15 +178,6 @@ spec:
                       Labels are reconciled onto the proxy Service. Use these to select the
                       Service from ExternalDNS.
                     type: object
-                  publishAttachmentOAuths:
-                    description: |-
-                      PublishAttachmentOAuths appends the oauth.<cluster>.<baseDomain> name of
-                      every Ready InfraClusterAttachment on this Infra to this Service's
-                      external-dns.alpha.kubernetes.io/hostname annotation as a
-                      comma-separated list, merged with any value already configured. This
-                      publishes each attached cluster's OAuth endpoint through the shared
-                      proxy VIP. Only effective when Enabled is true.
-                    type: boolean
                 type: object
               logLevel:
                 default: info

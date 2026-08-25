@@ -195,32 +195,32 @@ Service:
 
 - Watch the hosted cluster's `oooi-ingress` Service for
   `*.apps.<cluster>.<baseDomain>`.
-- Watch the management cluster's `<infra>-proxy-external` Service for public
-  OAuth when the HostedCluster uses Route publishing.
+- Watch the management cluster's generated
+  `<attachment>-proxy-external` Service for public OAuth when the
+  HostedCluster uses Route publishing.
 
-Enable the second path on the shared Infra when needed:
+Enable the per-cluster path on each attachment when needed:
 
 ```yaml
-infraComponents:
-  proxy:
-    externalService:
-      enabled: true
-      addressPoolName: hosting-public-pool
-      publishAttachmentOAuths: true
-      annotations:
-        external-dns.alpha.kubernetes.io/hostname: shared.example.com.
-      labels:
-        external-dns.example.com/publish: "yes"
+spec:
+  externalService:
+    enabled: true
+    addressPoolName: hosting-public-pool
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
+    labels:
+      external-dns.example.com/publish: "yes"
 ```
 
-`publishAttachmentOAuths` merges the `oauth.<cluster>.<baseDomain>` names of
-Ready attachments into that Service's hostname annotation. Existing user names
-remain first and generated names are sorted.
+Each enabled attachment gets its own hosting-cluster LoadBalancer Service. The
+Service exposes only port `443`, selects the shared Envoy pods, and is removed
+when the attachment no longer enables the external Service.
 
 ## Ownership and cleanup
 
 The three child CRs and their namespaced workloads are owned by `Infra`.
-Attachment finalizers clean up hosted-cluster apps-ingress resources and the
+Each attachment owns its `<attachment>-proxy-external` Service. Attachment
+finalizers also clean up hosted-cluster apps-ingress resources and the
 cross-namespace control-plane NetworkPolicy. Those resources cannot be
 garbage-collected through an `Infra` owner reference.
 

@@ -161,13 +161,6 @@ spec:
     proxy:
       serverIP: 192.0.2.4
       internalProxyService: example-hcp-proxy.clusters.svc.cluster.local
-      externalService:
-        enabled: true
-        addressPoolName: hosting-public-pool
-        annotations:
-          external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
-        labels:
-          external-dns.example.com/publish: "yes"
 ---
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: InfraClusterAttachment
@@ -183,6 +176,13 @@ spec:
   dns:
     clusterName: example-hcp
     baseDomain: clusters.example.com
+  externalService:
+    enabled: true
+    addressPoolName: hosting-public-pool
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
+    labels:
+      external-dns.example.com/publish: "yes"
   appsIngress:
     enabled: true
     metallb:

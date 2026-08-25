@@ -61,7 +61,9 @@ type ProxyServerSpec struct {
 	// +kubebuilder:validation:Enum=trace;debug;info;warning;error;critical
 	LogLevel string `json:"logLevel,omitempty"`
 
-	// ExternalService configures optional LoadBalancer exposure for the proxy.
+	// ExternalService configures optional LoadBalancer exposure for direct
+	// ProxyServer users. InfraClusterAttachment resources own their per-cluster
+	// external Services instead.
 	// +optional
 	ExternalService ProxyExternalService `json:"externalService,omitempty"`
 }
