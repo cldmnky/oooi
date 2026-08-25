@@ -81,7 +81,7 @@ through Multus annotations; oooi does not create the NAD.
 |---|---|---|---|
 | `InfraReconciler` | — | `registry.example.com/oooi` | Creates shared children, aggregates attachment routes, and reports shared status |
 | `InfraClusterAttachmentReconciler` | — | `registry.example.com/oooi` | Binds one HostedCluster, manages its control-plane policy, and drives optional apps ingress |
-| DHCP | `DHCPServer` | oooi image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
+| DHCP | `DHCPServer` | Infra-generated: oooi image; standalone API default: HyperDHCP image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
 | DNS | `DNSServer` | oooi image (CoreDNS component) | Split-horizon views; static HCP answers; upstream forwarding |
 | Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
 | Apps ingress | `InfraClusterAttachment` | MetalLB operator | Installs MetalLB into the attached hosted cluster, allocates and advertises its wildcard VIP |
@@ -159,11 +159,13 @@ For an attachment with `spec.appsIngress.enabled: true`:
 3. Creates a `LoadBalancer` Service (default name `oooi-ingress`) in the hosted
    cluster's `openshift-ingress` namespace, selector fixed to the default
    IngressController deployment.
-4. Reads the allocated IP from Service status and publishes it as
-   `InfraClusterAttachment.status.appsIngressStatus.externalIP`.
-5. Adds the `*.apps.<cluster>.<domain>` answer to the VLAN DNS view and, when
-   `internalProxyService` is configured, to the pod-network view; it also adds
-   wildcard SNI backends to Envoy pointing at the VIP.
+4. Reads the allocated IP or hostname from Service status and publishes it as
+   `InfraClusterAttachment.status.appsIngressStatus.externalIP` or
+   `.externalHostname`.
+5. Adds the `*.apps.<cluster>.<domain>` A record to the VLAN DNS view only when
+   an external IP exists and, when `internalProxyService` is configured, to the
+   pod-network view; it adds Envoy wildcard backends for either an IP or a
+   hostname endpoint.
 
 MetalLB **L2 mode** advertises the VIP from a hosted worker itself, so the
 worker VMs reach the ingress without any external load balancer.
@@ -215,7 +217,8 @@ status:
     phase:                 # Pending | Ready | Degraded
     reason:                # WaitingForHostedClusterNodes, WaitingForExternalIP, ...
     message:               # human-readable detail when Degraded
-    externalIP:            # assigned VIP
+    externalIP:            # assigned IP, when the endpoint is IP-backed
+    externalHostname:      # assigned hostname, otherwise
 ```
 
 See [Verification](operations/verify.md) for ready-made queries and expected

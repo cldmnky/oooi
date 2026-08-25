@@ -45,6 +45,8 @@ allowHostPID: false
 allowHostPorts: false
 allowPrivilegeEscalation: true
 allowPrivilegedContainer: false
+allowedCapabilities:
+- NET_BIND_SERVICE
 runAsUser:
   type: RunAsAny
 seLinuxContext:
@@ -62,6 +64,10 @@ volumes:
 ```
 
 Bind it only to the proxy ServiceAccount:
+
+Envoy declares `NET_BIND_SERVICE` in its container security context, so the
+custom SCC must allow that capability as shown above. The operator-managed
+`privileged` binding already covers it.
 
 ```bash
 oc apply -f oooi-proxy-scc.yaml

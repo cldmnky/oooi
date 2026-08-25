@@ -55,6 +55,7 @@ spec:
     cidr: 192.0.2.0/24
     gateway: 192.0.2.1
     networkAttachmentDefinition: vlan100
+    networkAttachmentNamespace: default
     dnsServers:
       - "resolv.conf"          # inherit node resolvers
   infraComponents:
