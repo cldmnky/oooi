@@ -8,7 +8,7 @@ require a manual check.
 
 ```mermaid
 flowchart TB
-    A["1. Delete InfraClusterAttachments<br/>(finalizer removes hosted ingress Service,<br/>MetalLB resources, control-plane NetworkPolicy)"]
+    A["1. Delete InfraClusterAttachments<br/>(finalizer deletes named hosted resources,<br/>control-plane NetworkPolicy; inspect OLM leftovers)"]
     --> B["2. Delete Infra resources<br/>(GC removes DHCP/DNS/proxy children<br/>and their namespaced workloads)"]
     --> C["3. Check unowned resources<br/>(NetworkPolicy and DHCP cluster RBAC)"]
     --> D["4. Delete NodePool + HostedCluster<br/>(HyperShift tears down control-plane<br/>namespace, VMs, PVCs)"]
@@ -18,9 +18,9 @@ flowchart TB
 
 ### 1. Delete attachments first
 
-Each `InfraClusterAttachment` finalizer removes the hosted-cluster objects it
-created (ingress Service, IPAddressPool, L2Advertisement, MetalLB, and
-Subscription) plus its control-plane NetworkPolicy:
+Each `InfraClusterAttachment` finalizer deletes the configured hosted-cluster
+Service, `IPAddressPool`, `L2Advertisement`, `MetalLB`, and Subscription by
+name, plus its control-plane NetworkPolicy:
 
 ```bash
 kubectl -n clusters get infraclusterattachment
@@ -31,6 +31,10 @@ kubectl -n clusters delete infraclusterattachment <name>
 
 Wait for each attachment to disappear before continuing; a stuck finalizer
 usually means the hosted cluster is unreachable.
+
+Cleanup is name-based and does not verify ownership. Use names dedicated to
+oooi. It does not remove OLM CSVs, InstallPlans, operator workloads, or public
+DNS records; inspect those separately after the attachment is gone.
 
 If the operator is already removed and attachments are stuck `Terminating`,
 remove the finalizers manually:

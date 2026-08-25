@@ -100,7 +100,7 @@ Service. Once the applicable ExternalDNS record has converged:
 
 ```bash
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
-# → current InfraClusterAttachment.status.appsIngressStatus.externalIP
+# → current InfraClusterAttachment.status.appsIngressStatus.externalIP, when IP-backed
 
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 # → current <infra>-proxy-external EXTERNAL-IP

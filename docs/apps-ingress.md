@@ -14,8 +14,9 @@ attachment-owned:
    by default, selecting the default IngressController.
 5. It records the Service IP or hostname in
    `InfraClusterAttachment.status.appsIngressStatus`.
-6. The shared Infra controller adds DNS and Envoy wildcard routes only after a
-   usable endpoint is reported.
+6. The shared Infra controller adds Envoy wildcard routes after a usable IP or
+   hostname endpoint is reported. It adds static VLAN DNS only when the endpoint
+   includes an IP address; hostname-only endpoints do not produce an A record.
 
 The application TLS session terminates at the hosted ingress router. Envoy only
 provides reachability to that router and continues to pass through control-plane
@@ -83,7 +84,7 @@ Typical phases and reasons are:
 | `Pending` | `WaitingForHostedClusterNodes` | No Ready worker is available |
 | `Pending` | `WaitingForMetalLBCRDs` | OLM has not supplied the MetalLB CRDs |
 | `Pending` | `WaitingForExternalIP` | The Service has no endpoint yet |
-| `Ready` | `ReconciliationSucceeded` | The endpoint is known and shared DNS/proxy can use it |
+| `Ready` | `ReconciliationSucceeded` | The endpoint is known; Envoy can use an IP or hostname, while static VLAN DNS requires an IP |
 | `Degraded` | `HostedClusterAccessFailed`, `MetalLBInstallFailed`, `IngressServiceFailed`, or `ExternalIPDiscoveryFailed` | Read the status message and hosted-cluster events |
 
 Confirm all applicable paths:
@@ -96,8 +97,11 @@ dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.exampl
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
 ```
 
-The VLAN answer should be the attachment's `externalIP`. The pod-network view
-uses the shared proxy Service ClusterIP and Envoy forwards to the hosted VIP.
+When `externalIP` is populated, the VLAN answer should be that IP and the
+pod-network view uses the shared proxy Service ClusterIP. If only
+`externalHostname` is populated, Envoy can target that hostname, but oooi does
+not create a VLAN A record; provide a separate record or use an IP-backed
+MetalLB endpoint.
 
 ## Public DNS ownership
 
@@ -112,9 +116,11 @@ hosted-cluster kubeconfig.
 
 The apps-ingress objects are in the hosted cluster and are not owned by the
 management-cluster `Infra`. Delete the attachment before deleting its Infra so
-the finalizer can remove the hosted Service, MetalLB objects, and control-plane
-NetworkPolicy. If the hosted API is gone, inspect and remove any remaining
-objects manually.
+the finalizer can delete the configured hosted Service, `IPAddressPool`,
+`L2Advertisement`, `MetalLB`, and Subscription by name, plus the control-plane
+NetworkPolicy. It does not remove OLM CSVs, InstallPlans, operator workloads,
+or public DNS records. These names are not ownership-checked, so dedicate them
+to oooi and inspect/remove leftovers manually.
 
 ## Limitations
 

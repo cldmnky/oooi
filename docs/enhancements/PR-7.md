@@ -25,10 +25,11 @@ the resulting VIP into split-horizon DNS and Envoy, while the
   Service.
 - The attachment status records `Pending`, `Ready`, or `Degraded` state,
   endpoint, reason, message, and applied-resource identities used for cleanup.
-- The Infra controller adds the wildcard DNS entries and Envoy backends only
-  after an endpoint is available.
-- The attachment finalizer cleans hosted apps-ingress resources and the
-  cross-namespace control-plane NetworkPolicy.
+- The Infra controller adds Envoy backends after an IP or hostname endpoint is
+  available; wildcard A records require an external IP.
+- The attachment finalizer deletes the configured hosted resources by name and
+  the cross-namespace control-plane NetworkPolicy; OLM leftovers and public DNS
+  remain manual cleanup.
 - Public DNS remains the responsibility of ExternalDNS or another DNS writer.
 - Shared Infra resources are not owned by attachments; `Infra` remains the only
   writer of the shared DHCP, DNS, and proxy children.
@@ -42,8 +43,9 @@ addresses; addresses outside the Infra CIDR are ignored. See the
 
 ## Historical questions resolved
 
-- External IP discovery is performed from the hosted Service status and supports
-  both IP and hostname endpoints.
+- External endpoint discovery is performed from the hosted Service status and
+  supports both IP and hostname endpoints. Hostname-only endpoints do not
+  produce oooi-generated wildcard A records.
 - DNS and proxy wildcard generation is part of shared Infra aggregation.
 - Pending and degraded reconciliation uses explicit status reasons and
   requeues.

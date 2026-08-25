@@ -96,7 +96,8 @@ resolves `*.apps.<cluster>.<domain>` through public DNS. If the record points to
 an old VIP after reallocation, routes fail with `RouteHealth_FailedGet`.
 
 - Compare the attachment's `.status.appsIngressStatus.externalIP` with a query to your public
-  resolver.
+  resolver. If only `.externalHostname` is populated, verify the hostname and
+  provider record instead; oooi does not generate a VLAN A record for it.
 - With ExternalDNS (`--policy=sync`) records self-heal; without it, update the
   A record manually.
 
