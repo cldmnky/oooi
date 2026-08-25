@@ -224,6 +224,7 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 
 		By("summarizing attachment readiness")
 		summary := getInfra().Status.Attachments
+		Expect(summary).NotTo(BeNil())
 		Expect(summary.Total).To(Equal(int32(2)))
 		Expect(summary.Ready).To(Equal(int32(0)))
 		Expect(summary.LegacyFieldsIgnored).To(BeFalse())
@@ -287,6 +288,7 @@ var _ = Describe("Infra multi-cluster aggregation", func() {
 	It("keeps the historical single-cluster behavior with no attachments", func() {
 		createSharedInfra(true)
 		reconcileInfra()
+		Expect(getInfra().Status.Attachments).To(BeNil())
 
 		dns := getDNS()
 		found := false

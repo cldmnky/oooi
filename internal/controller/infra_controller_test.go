@@ -873,6 +873,13 @@ var _ = Describe("Infra Controller", func() {
 			Expect(service.Annotations).To(HaveKeyWithValue("external-dns.alpha.kubernetes.io/hostname", "*.apps2.mycluster.example.com."))
 			Expect(service.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "lab-network"))
 			Expect(service.Labels).To(HaveKeyWithValue("external-dns.example.com/publish", "yes"), "labels not in spec should be preserved")
+
+			By("removing the MetalLB pool pin when the address pool is cleared")
+			infra.Spec.AppsIngress.MetalLB.AddressPoolName = ""
+			Expect(ensureAppsIngressServiceFor(ctx, hostedClient, infra.Spec.AppsIngress)).To(Succeed())
+			service = &corev1.Service{}
+			Expect(hostedClient.Get(ctx, types.NamespacedName{Name: "oooi-ingress", Namespace: "openshift-ingress"}, service)).To(Succeed())
+			Expect(service.Annotations).NotTo(HaveKey("metallb.universe.tf/address-pool"))
 		})
 
 		It("should discover external IP and transition to Ready with DNS/Proxy wildcard", func() {

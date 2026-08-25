@@ -309,6 +309,11 @@ func ensureAppsIngressServiceFor(ctx context.Context, hostedClient client.Client
 		for key, value := range cfg.Service.Annotations {
 			service.Annotations[key] = value
 		}
+		if cfg.MetalLB.AddressPoolName == "" {
+			delete(service.Annotations, "metallb.universe.tf/address-pool")
+		} else {
+			service.Annotations["metallb.universe.tf/address-pool"] = cfg.MetalLB.AddressPoolName
+		}
 		return hostedClient.Update(ctx, service)
 	}
 

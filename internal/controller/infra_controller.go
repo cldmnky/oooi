@@ -597,8 +597,9 @@ func (r *InfraReconciler) updateInfraStatus(ctx context.Context, infra *hostedcl
 	if infra.Spec.InfraComponents.Proxy.Enabled {
 		infra.Status.ComponentStatus.ProxyReady = true
 	}
-	if agg != nil {
-		infra.Status.Attachments = hostedclusterv1alpha1.AttachmentsSummary{
+	infra.Status.Attachments = nil
+	if agg != nil && (agg.total > 0 || agg.legacyIgnored) {
+		infra.Status.Attachments = &hostedclusterv1alpha1.AttachmentsSummary{
 			Total:               agg.total,
 			Ready:               agg.ready,
 			LegacyFieldsIgnored: agg.legacyIgnored,

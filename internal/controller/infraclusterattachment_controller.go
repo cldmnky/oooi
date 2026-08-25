@@ -259,6 +259,7 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 			if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
 				log.Info("Hosted cluster API unavailable during cleanup; skipping hosted cleanup", "ref", target.HostedClusterRef, "cause", err.Error())
 			} else {
+				log.Error(err, "Failed to build hosted-cluster client during cleanup; requeueing", "ref", target.HostedClusterRef)
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
 		} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
@@ -296,7 +297,7 @@ func (r *InfraClusterAttachmentReconciler) setAppsIngressStatusAndFinish(ctx con
 	if err := r.updateStatusCommon(ctx, att, target); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	return ctrl.Result{}, nil
 }
 
 // setStatusReady records a successful reconciliation with no apps ingress.

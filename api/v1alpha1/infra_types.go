@@ -355,7 +355,7 @@ type InfraStatus struct {
 	// Attachments summarizes the InfraClusterAttachment resources targeting
 	// this Infra. Empty when none exist.
 	// +optional
-	Attachments AttachmentsSummary `json:"attachments,omitempty"`
+	Attachments *AttachmentsSummary `json:"attachments,omitempty"`
 }
 
 // AttachmentsSummary aggregates the state of the InfraClusterAttachments
