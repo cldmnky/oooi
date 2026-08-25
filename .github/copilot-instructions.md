@@ -66,7 +66,10 @@ make deploy IMG=quay.io/cldmnky/oooi:v0.0.1
 ```
 Then regenerate with `make manifests` to update [config/rbac/role.yaml](config/rbac/role.yaml).
 
-**Owner references**: All operator-created resources must set `OwnerReference` pointing to the `HostedCluster` to enable garbage collection cascade.
+**Owner references**: Namespaced resources must point to their owning `Infra` or
+`InfraClusterAttachment` where possible. Cross-namespace resources and
+cluster-scoped DHCP RBAC cannot use those owner references and require explicit
+cleanup.
 
 **Testing pattern**: Controller tests use Ginkgo/Gomega with envtest ([internal/controller/suite_test.go](internal/controller/suite_test.go)). The test suite starts a local etcd/apiserver and fake client.
 
@@ -90,7 +93,7 @@ Then regenerate with `make manifests` to update [config/rbac/role.yaml](config/r
 
 **Run controller with verbose logs**:
 ```bash
-make run -- --zap-log-level=debug
+go run ./main.go manager --zap-log-level=debug
 ```
 
 **View generated manifests**:

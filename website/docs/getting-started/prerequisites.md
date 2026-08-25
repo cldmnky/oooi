@@ -15,6 +15,12 @@ oooi runs on an **OpenShift Container Platform management cluster** (the
 | Multus (built-in) | Attaches oooi pods and worker VMs to the secondary VLAN via `NetworkAttachmentDefinition` | `oc auth can-i get net-attach-def` |
 | Operator Lifecycle Manager (OLM) | Installs the Red Hat MetalLB Operator in the hosted cluster when apps ingress is enabled | `oc get packagemanifest -n openshift-marketplace metallb-operator` |
 
+The management cluster must also expose the CAPI `Machine` API used for
+KubeVirt source-IP alias discovery. On a real HyperShift installation, CAPK
+populates `Machine.status.addresses` from the VMI interfaces. The alias feature
+waits for an address inside the configured Infra CIDR; fully qualified control
+plane names do not wait for that data.
+
 A management cluster with at least one worker node is sufficient for lab use.
 Size production clusters per your HCP density targets.
 

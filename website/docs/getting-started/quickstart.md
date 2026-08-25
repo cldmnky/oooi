@@ -130,6 +130,11 @@ Apply `Infra` and its `InfraClusterAttachment` as soon as the HostedCluster
 object exists. The DHCP, DNS, and proxy services are needed while workers
 bootstrap; do not wait for the hosted cluster to become Available.
 
+The attachment is also the association used for shared DNS and proxy routing.
+After KubeVirt workers exist, the controller discovers their source addresses
+from CAPI Machines. This enables the source-scoped `kubernetes.*` aliases; it
+does not delay the fully qualified API route.
+
 ```yaml title="infra-example-hcp.yaml"
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: Infra
@@ -221,6 +226,8 @@ Run these from a client attached to the VLAN, not from a management-cluster pod:
 ```bash
 dig @192.0.2.3 +short api.example-hcp.clusters.example.com
 # 192.0.2.4
+dig @192.0.2.3 +short kubernetes.default.svc
+# 192.0.2.4 after Machine address propagation
 dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.example.com
 # 192.0.2.200
 

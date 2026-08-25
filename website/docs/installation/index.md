@@ -40,6 +40,9 @@ UBI9-based):
 make container-build IMAGE_TAG_BASE=registry.example.com/oooi
 ```
 
+`make container-build` reads `IMAGE_TAG_BASE` for the ko repository. The
+resulting image digest can be used for the operator and component image fields.
+
 See [Build images](build-images.md).
 
 ## Verify the installation

@@ -44,6 +44,10 @@ kubectl -n clusters get infra <name> \
 kubectl -n clusters get infraattachment <name> \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 
+# Source ranges for one KubeVirt attachment's Kubernetes aliases
+kubectl -n clusters get proxyserver <infra>-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="<attachment>-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+
 # Child workloads
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver
 kubectl -n clusters get pods -l app.kubernetes.io/managed-by 2>/dev/null || \

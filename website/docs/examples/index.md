@@ -97,9 +97,8 @@ the VLAN via explicit hostnames you add yourself.
 
 ## Full hosted cluster stack
 
-This configuration uses the same HostedCluster/NodePool and Infra relationships
-as the repository's KubeVirt lab manifest, with documentation-only names and
-addresses:
+This configuration shows a complete HostedCluster/NodePool attachment with
+documentation-only names and addresses:
 
 ```yaml
 apiVersion: hostedcluster.densityops.com/v1alpha1
@@ -182,6 +181,18 @@ Resulting addressing on the VLAN:
 
 Plus one hosting-cluster MetalLB VIP for `<infra>-proxy-external` (OAuth).
 
+When the KubeVirt worker Machines report addresses in `192.0.2.0/24`, the
+shared proxy also receives one source-scoped backend for the four
+`kubernetes.*` aliases. Inspect the generated ranges with:
+
+```bash
+kubectl -n clusters get proxyserver example-hcp-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="example-hcp-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+```
+
+The aliases are omitted until those Machine addresses are available. Fully
+qualified `api.example-hcp.clusters.example.com` remains the bootstrap path.
+
 ## Public OAuth VIP
 
 The minimal delta that puts OAuth on a public VIP when the HostedCluster uses
@@ -213,7 +224,8 @@ Behavior notes:
 
 | File | Shows |
 |---|---|
-| `config/samples/hostedcluster_v1alpha1_infra.yaml` | Bare Infra scaffold |
+| `config/samples/hostedcluster_v1alpha1_infra.yaml` | Infra scaffold |
+| `config/samples/hostedcluster_v1alpha1_infraclusterattachment.yaml` | Attachment scaffold |
 | `config/samples/hostedcluster_v1alpha1_dhcpserver.yaml` etc. | Individual child CRs |
 | Hosted-cluster ExternalDNS sample | The repository includes a lab-specific manifest; adapt its structure, not its identifiers |
 | `config/samples/openshift-example.yaml` | OpenShift-flavored example |

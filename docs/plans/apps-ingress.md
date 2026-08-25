@@ -56,12 +56,17 @@ message. The parent Infra reports aggregate attachment counts.
 On every attachment event, the Infra controller lists active attachments and
 rebuilds the shared child specs deterministically. Each valid attachment adds
 the five fully qualified HCP names and, when its apps status is Ready, the
-wildcard apps names. Duplicate HostedCluster references and duplicate domains
-exclude both conflicting attachments and set the Infra Ready condition false.
+wildcard apps names. KubeVirt attachments with CAPI Machine addresses inside
+the Infra CIDR also add a source-scoped backend for `kubernetes`,
+`kubernetes.default`, `kubernetes.default.svc`, and
+`kubernetes.default.svc.cluster.local`. Duplicate HostedCluster references,
+duplicate domains, and duplicate source IPs are reported instead of silently
+resolved; only the conflicting routes are excluded.
 
-There is no implicit single-cluster binding and no unqualified Kubernetes SNI
-alias. Removing an attachment removes its records and backends on the next
-Infra reconciliation.
+There is no implicit single-cluster binding. Removing an attachment removes its
+records and backends on the next Infra reconciliation. Alias discovery watches
+HyperShift NodePools for membership and CAPI Machines for address changes; it
+does not require a remote VMI informer.
 
 ### Cleanup
 

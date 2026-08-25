@@ -1,800 +1,222 @@
-# Proxy Setup for Hosted Control Planes
+# Envoy proxy setup
 
-## Overview
+oooi runs Envoy as a Layer-4, TLS-passthrough gateway between an isolated VLAN
+and HostedCluster Services on the management-cluster pod network. The proxy
+reads the TLS ClientHello SNI value, selects a backend, and forwards encrypted
+TCP bytes. It does not load certificates or terminate TLS.
 
-The oooi operator provides an Envoy-based L4 proxy solution for OpenShift Hosted Control Planes (HCP) running on isolated secondary networks (VLANs) with OpenShift Virtualization. The proxy enables tenant workloads on isolated VLANs to access management cluster services using SNI-based routing.
+In the normal workflow, `Infra` creates one shared `ProxyServer` and each
+`InfraClusterAttachment` contributes its control-plane routes. A direct
+`ProxyServer` is useful for component-level testing, but it does not provide
+the attachment aggregation or source-scoped Kubernetes aliases.
 
-### Architecture
+## Network and listeners
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│  Secondary Network (VLAN 100)        Management Cluster Pod Network       │
-│                                                                            │
-│  ┌─────────────┐                                                          │
-│  │  Tenant VM  │                                                          │
-│  │ 192.168.100 │                                                          │
-│  │    .50      │                                                          │
-│  └──────┬──────┘                                                          │
-│         │ TLS SNI: api.cluster.example.com                                │
-│         │ Dest: 192.168.100.4:6443                                        │
-│         ▼                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐             │
-│  │              Envoy Proxy Pod                            │             │
-│  │  ┌──────────────────────┐  ┌────────────────────────┐   │             │
-│  │  │  Envoy Container     │  │  Manager Container     │   │             │
-│  │  │  - Port 443 (SNI)    │  │  - xDS Control Plane   │   │             │
-│  │  │  - Port 6443 (SNI)   │  │  - Dynamic config      │   │             │
-│  │  │  - Multus eth1       │  │  - Watches ProxyServer │   │             │
-│  │  │    192.168.100.4     │  │    CRD                 │   │             │
-│  │  └──────────┬───────────┘  └────────────────────────┘   │             │
-│  └─────────────┼──────────────────────────────────────────┘             │
-│                │ Route based on SNI hostname                             │
-│                ▼                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │               Management Cluster Services                        │    │
-│  │  ┌──────────────────┐  ┌─────────────────┐  ┌────────────────┐  │    │
-│  │  │ kube-apiserver   │  │ oauth-openshift │  │ ignition-server│  │    │
-│  │  │ svc:6443         │  │ svc:443         │  │ svc:443        │  │    │
-│  │  └──────────────────┘  └─────────────────┘  └────────────────┘  │    │
-│  │  ┌──────────────────┐  ┌─────────────────────────────────────┐  │    │
-│  │  │ konnectivity     │  │       Other HCP Services            │  │    │
-│  │  │ svc:8090         │  │                                     │  │    │
-│  │  └──────────────────┘  └─────────────────────────────────────┘  │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-└───────────────────────────────────────────────────────────────────────────┘
+The proxy pod has a default pod-network interface and a static Multus
+interface. Its VLAN address is `infraComponents.proxy.serverIP`.
+
+| Listener | Traffic | Matching |
+|---|---|---|
+| `443` | OAuth, Ignition, konnectivity, aliases, and apps HTTPS | TLS inspector plus SNI; aliases also require a source range |
+| `6443` | API and API-int | Plain TCP for a single API backend; SNI-aware when multiple backends are present |
+| `80` | Apps HTTP when enabled | Plain TCP |
+| `9901` | Envoy admin and metrics | Pod-network Service only; not exposed by the external Service |
+| `18000` | Manager-to-Envoy xDS | Pod-local manager sidecar connection |
+
+The generated API routes are:
+
+```text
+api.<cluster>.<baseDomain>:6443          -> kube-apiserver:6443
+api-int.<cluster>.<baseDomain>:6443      -> kube-apiserver:6443
+oauth.<cluster>.<baseDomain>:443         -> oauth-openshift:6443
+ignition.<cluster>.<baseDomain>:443      -> ignition-server-proxy:443
+konnectivity.<cluster>.<baseDomain>:443  -> konnectivity-server:8091
 ```
 
-### Key Features
+The target Services run in the attachment's resolved control-plane namespace.
+The default is `<HostedCluster namespace>-<HostedCluster name>`.
 
-- **SNI-Based Routing**: Uses TLS Server Name Indication (SNI) to route traffic to backend services
-- **Dynamic Configuration**: xDS-based control plane for real-time configuration updates
-- **Multi-Protocol Support**: Handles HTTPS, TLS, and plain TCP traffic
-- **Isolated Networks**: Bridges traffic between Multus secondary networks and pod networks
-- **OpenShift Compatible**: Works with OpenShift SCCs and Hosted Control Planes
-- **High Availability**: Supports multiple replicas with consistent configuration
+## Source-scoped Kubernetes aliases
 
-## Why is the Proxy Needed?
+The shared proxy supports these aliases for KubeVirt worker traffic:
 
-When OpenShift Hosted Control Planes run on isolated VLANs using KubeVirt VMs with `attach-default-network: false`, the VMs cannot directly reach Kubernetes Services on the pod network. The proxy solves this by:
-
-1. **Attaching to Both Networks**: Proxy pod has both Multus secondary interface (VLAN) and default pod network
-2. **Privileged Port Binding**: Binds to standard ports (443, 6443) that HCP components expect
-3. **SNI Inspection**: Routes TLS traffic based on hostname without terminating TLS
-4. **Service Discovery**: Automatically routes to correct backend services in management cluster
-
-## ProxyServer CRD
-
-The `ProxyServer` custom resource defines the proxy configuration:
-
-```yaml
-apiVersion: hostedcluster.densityops.com/v1alpha1
-kind: ProxyServer
-metadata:
-  name: mycluster-proxy
-  namespace: hosted-clusters
-spec:
-  # Network configuration (REQUIRED)
-  networkConfig:
-    # IP address for proxy on secondary network (REQUIRED)
-    serverIP: "192.168.100.4"
-    
-    # Multus NetworkAttachmentDefinition name (defaults to parent namespace if not set)
-    networkAttachmentName: "tenant-vlan-100"
-    networkAttachmentNamespace: "hosted-clusters"
-  
-  # Backend service definitions (REQUIRED)
-  backends:
-    - name: "kube-apiserver-external"
-      hostname: "api.mycluster.example.com"
-      port: 6443
-      targetService: "kube-apiserver"
-      targetPort: 6443
-      targetNamespace: "clusters-mycluster"
-      protocol: "TCP"  # TCP or HTTPS
-      timeoutSeconds: 300
-    
-    - name: "oauth-openshift"
-      hostname: "oauth-openshift.apps.mycluster.example.com"
-      port: 443
-      targetService: "oauth-openshift"
-      targetPort: 443
-      targetNamespace: "clusters-mycluster"
-      protocol: "TCP"
-  
-  # Optional: Envoy container image (defaults to v1.36.4)
-  proxyImage: "envoyproxy/envoy:v1.36.4"
-  
-  # Optional: Manager container image (defaults to latest)
-  managerImage: "quay.io/cldmnky/oooi:latest"
-  
-  # Optional: Proxy listening port (defaults to 443)
-  port: 443
-  
-  # Optional: xDS control plane port (defaults to 18000)
-  xdsPort: 18000
-  
-  # Optional: Envoy log level (defaults to info)
-  # Values: trace, debug, info, warning, error, critical
-  logLevel: "info"
+```text
+kubernetes
+kubernetes.default
+kubernetes.default.svc
+kubernetes.default.svc.cluster.local
 ```
 
-## Backend Configuration
+All aliases resolve to the shared VLAN proxy address. The Infra controller
+builds one generated backend per eligible attachment and sets
+`ProxyBackend.sourcePrefixRanges` to the worker `/32` addresses. Discovery uses
+the management-cluster objects below:
 
-Each backend in the `backends` array defines a route:
+1. A HyperShift `NodePool` identifies KubeVirt membership for the HostedCluster.
+2. CAPI `Machine` objects carry the
+   `hypershift.openshift.io/nodePool=<namespace>/<name>` annotation linking
+   them to that pool.
+3. CAPK mirrors VMI interface addresses to `Machine.status.addresses`.
+4. oooi keeps only addresses inside `Infra.spec.networkConfig.cidr`,
+   deduplicates and sorts them, and emits the source ranges. Validate CAPK's
+   interface selection and address refresh behavior for the target release.
 
-### Required Fields
+The NodePool and Machine watches are management-cluster watches. oooi does not
+need a remote VMI informer for an external KubeVirt infrastructure cluster.
+Aliases are omitted while a KubeVirt NodePool has no usable in-CIDR address and
+are rebuilt after Machine address updates. The generated field is capped at
+256 source ranges.
 
-- **name**: Unique identifier for this backend
-- **hostname**: SNI hostname to match (e.g., "api.cluster.example.com")
-- **port**: Port the proxy listens on for this backend
-- **targetService**: Kubernetes Service name in management cluster
-- **targetPort**: Port on the target Service
-- **targetNamespace**: Namespace of the target Service
+Source ranges select a route; they are not authentication. A privileged client
+that spoofs another worker's VLAN address may select another attachment. Use
+network-level anti-spoofing controls when the VLAN is not fully trusted.
 
-### Optional Fields
+## Generated configuration
 
-- **protocol**: "TCP" (default) or "HTTPS"
-- **timeoutSeconds**: Connection timeout (default: 300)
-
-### Common HCP Backends
-
-A typical OpenShift Hosted Control Plane requires these backends:
-
-1. **kube-apiserver (external)**: External API server access
-   - Hostname: `api.<cluster>.<domain>`
-   - Port: 6443
-   
-2. **kube-apiserver (internal)**: Internal API server access
-   - Hostname: `api-int.<cluster>.<domain>`
-   - Port: 6443
-
-3. **oauth-openshift**: OAuth server for authentication
-   - Hostname: `oauth-openshift.apps.<cluster>.<domain>`
-   - Port: 443
-
-4. **ignition-server**: Machine Config Server for node ignition
-   - Hostname: `ignition-server.<cluster>.<domain>`
-   - Port: 443
-
-5. **konnectivity-server**: Konnectivity for API server to node communication
-   - Hostname: `konnectivity-server.<cluster>.<domain>`
-   - Port: 8090 or 443
-
-See [config/samples/hostedcluster_v1alpha1_proxyserver.yaml](../config/samples/hostedcluster_v1alpha1_proxyserver.yaml) for complete examples.
-
-## Deployment Methods
-
-### Method 1: Standalone ProxyServer (Recommended for Testing)
-
-Deploy only the proxy component:
-
-```bash
-# Create NetworkAttachmentDefinition
-kubectl apply -f - <<EOF
-apiVersion: k8s.cni.cncf.io/v1
-kind: NetworkAttachmentDefinition
-metadata:
-  name: tenant-vlan-100
-  namespace: hosted-clusters
-spec:
-  config: |
-    {
-      "cniVersion": "0.3.1",
-      "type": "macvlan",
-      "master": "eth1",
-      "mode": "bridge",
-      "ipam": {
-        "type": "static"
-      }
-    }
-EOF
-
-# Create ProxyServer
-kubectl apply -f config/samples/hostedcluster_v1alpha1_proxyserver.yaml
-
-# Verify deployment
-kubectl get proxyservers -n hosted-clusters
-kubectl get pods -n hosted-clusters -l app=proxy-server
-```
-
-### Method 2: Via Infra CRD (Recommended for Production)
-
-Deploy complete infrastructure stack (DHCP + DNS + Proxy):
-
-```yaml
-apiVersion: hostedcluster.densityops.com/v1alpha1
-kind: Infra
-metadata:
-  name: mycluster-infra
-  namespace: hosted-clusters
-spec:
-  networkConfig:
-    cidr: "192.168.100.0/24"
-    gateway: "192.168.100.1"
-    networkAttachmentDefinition: "tenant-vlan-100"
-    dnsServers:
-      - "8.8.8.8"
-  
-  infraComponents:
-    dhcp:
-      enabled: true
-      serverIP: "192.168.100.2"
-      rangeStart: "192.168.100.10"
-      rangeEnd: "192.168.100.250"
-    
-    dns:
-      enabled: true
-      serverIP: "192.168.100.3"
-    
-    proxy:
-      enabled: true
-      serverIP: "192.168.100.4"
-      proxyImage: "envoyproxy/envoy:v1.36.4"
-```
-
-Create one attachment for each hosted cluster that should use the shared
-stack. The attachment carries the cluster DNS identity and control-plane
-reference used to generate the DNS records and SNI routes:
+An attachment is configured through `InfraClusterAttachment`, not by editing
+the generated child:
 
 ```yaml
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: InfraClusterAttachment
 metadata:
-  name: mycluster
-  namespace: hosted-clusters
+  name: example-hcp
+  namespace: clusters
 spec:
   infraRef:
-    name: mycluster-infra
+    name: tenant-vlan100
   hostedClusterRef:
-    name: mycluster
+    name: example-hcp
     namespace: clusters
   dns:
-    clusterName: mycluster
-    baseDomain: example.com
+    clusterName: example-hcp
+    baseDomain: clusters.example.com
 ```
 
-The Infra controller automatically creates the shared ProxyServer and
-aggregates every attachment's routes into it.
-
-## OpenShift Deployment
-
-**Critical**: The proxy requires privileged port binding (443, 6443) which needs special Security Context Constraints (SCC) in OpenShift.
-
-### Quick Start with anyuid SCC
+Inspect the result with:
 
 ```bash
-# Create namespace
-oc new-project hosted-clusters
-
-# Grant anyuid SCC to service account
-oc adm policy add-scc-to-user anyuid -z default -n hosted-clusters
-
-# Deploy operator
-make deploy IMG=quay.io/cldmnky/oooi:latest
-
-# Create ProxyServer or Infra resource
-oc apply -f config/samples/openshift-example.yaml
-
-# Verify SCC is applied
-oc get pod <proxy-pod-name> -n hosted-clusters -o jsonpath='{.metadata.annotations.openshift\.io/scc}'
-# Should output: anyuid
+kubectl -n clusters get proxyserver tenant-vlan100-proxy
+kubectl -n clusters get proxyserver tenant-vlan100-proxy \
+  -o jsonpath='{range .spec.backends[*]}{.name}{" "}{.hostname}{" "}{.port}{"\n"}{end}'
+kubectl -n clusters get proxyserver tenant-vlan100-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="example-hcp-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
 ```
 
-### Production Deployment with Custom SCC
+The `ProxyServer` status `backendCount` describes successfully configured
+backends. `Infra.status.componentStatus.proxyReady` describes reconciliation of
+a valid child configuration, not Deployment availability; use `rollout status`
+for the workload.
 
-For production, create a custom SCC instead of using anyuid:
+## Public hosting-cluster Service
 
-```bash
-# Create custom SCC
-oc apply -f - <<EOF
-apiVersion: security.openshift.io/v1
-kind: SecurityContextConstraints
-metadata:
-  name: oooi-proxy
-allowHostDirVolumePlugin: false
-allowHostIPC: false
-allowHostNetwork: false
-allowHostPID: false
-allowHostPorts: false
-allowPrivilegeEscalation: true
-allowPrivilegedContainer: false
-runAsUser:
-  type: RunAsAny  # Required for binding to ports 443, 6443
-seLinuxContext:
-  type: MustRunAs
-fsGroup:
-  type: RunAsAny
-supplementalGroups:
-  type: RunAsAny
-volumes:
-- configMap
-- downwardAPI
-- emptyDir
-- persistentVolumeClaim
-- projected
-- secret
-EOF
+Set `infraComponents.proxy.externalService.enabled: true` to create
+`<infra>-proxy-external`, a hosting-cluster `LoadBalancer` Service selecting
+the same Envoy pod. It exposes only the configured proxy ingress port, not
+`9901`, xDS, or backend ports:
 
-# Bind SCC to service account
-oc adm policy add-scc-to-user oooi-proxy -z default -n hosted-clusters
-```
-
-See [openshift-scc-requirements.md](openshift-scc-requirements.md) for detailed SCC documentation.
-
-## How It Works
-
-### xDS Control Plane
-
-The proxy uses Envoy's **xDS (Discovery Service) protocol** for dynamic configuration:
-
-1. **Manager Container**: Runs the xDS control plane
-   - Watches ProxyServer CRD for changes
-   - Discovers backend Service endpoints using Kubernetes API
-   - Generates Envoy configuration (Listeners, Clusters, Routes, Endpoints)
-   - Serves configuration via gRPC on port 18000
-
-2. **Envoy Container**: Runs Envoy proxy
-   - Connects to manager's xDS server
-   - Receives dynamic configuration updates
-   - Routes traffic based on SNI hostnames
-   - Reports metrics and health status
-
-### SNI-Based Routing
-
-When a TLS connection arrives:
-
-1. **TLS ClientHello**: Client sends TLS handshake with SNI hostname
-2. **SNI Inspection**: Envoy reads SNI field without terminating TLS
-3. **Route Lookup**: Matches SNI hostname against backend configuration
-4. **Forward**: Proxies connection to matched backend Service
-5. **Passthrough**: Backend Service terminates TLS, not the proxy
-
-This allows the proxy to route encrypted traffic without access to TLS certificates.
-
-### Network Topology
-
-```
-Tenant VM (192.168.100.50)
-    ↓ TLS + SNI: api.cluster.com
-    ↓ Dest: 192.168.100.4:6443
-Proxy Multus Interface (eth1: 192.168.100.4)
-    ↓ SNI inspection → match "api.cluster.com"
-    ↓ Route to: kube-apiserver.clusters-mycluster.svc:6443
-Proxy Pod Network Interface (eth0: 10.244.x.x)
-    ↓
-Management Cluster Service (10.96.x.x:6443)
-    ↓
-Backend Pod (10.244.y.y:6443)
-```
-
-The proxy acts as a bridge between the isolated VLAN and the pod network.
-
-## Configuration Updates
-
-The proxy supports **hot reloads** without downtime:
-
-```bash
-# Update backend configuration
-kubectl edit proxyserver mycluster-proxy -n hosted-clusters
-
-# Changes are automatically detected by manager
-# Manager generates new Envoy config
-# Envoy receives config via xDS and applies it
-# No pod restart required
-```
-
-Changes that trigger hot reload:
-- Adding/removing backends
-- Changing backend service names or namespaces
-- Updating timeouts or protocols
-
-Changes that require restart:
-- Changing `networkConfig.serverIP`
-- Changing `port` or `xdsPort`
-- Changing container images
-
-## Monitoring and Observability
-
-### Proxy Status
-
-Check ProxyServer status:
-
-```bash
-kubectl get proxyserver mycluster-proxy -n hosted-clusters -o yaml
-
-# Look for status conditions:
-status:
-  conditions:
-  - type: Ready
-    status: "True"
-    reason: DeploymentReady
-    message: "Proxy deployment is ready"
-  - type: ConfigurationValid
-    status: "True"
-    reason: ConfigApplied
-    message: "Envoy configuration applied successfully"
-```
-
-### Pod Logs
-
-**Manager logs** (xDS control plane):
-```bash
-kubectl logs -n hosted-clusters deployment/proxy-server-mycluster-proxy -c manager
-
-# Look for:
-# - "Discovered endpoints for service X"
-# - "Generated Envoy configuration"
-# - "xDS snapshot pushed to Envoy"
-```
-
-**Envoy logs** (proxy):
-```bash
-kubectl logs -n hosted-clusters deployment/proxy-server-mycluster-proxy -c envoy
-
-# Look for:
-# - "upstream cluster X: added"
-# - "listener 0.0.0.0:443: ready"
-# - "connection to backend X established"
-```
-
-Increase Envoy log verbosity:
 ```yaml
-spec:
-  logLevel: "debug"  # or "trace" for maximum verbosity
+infraComponents:
+  proxy:
+    serverIP: 192.0.2.4
+    externalService:
+      enabled: true
+      addressPoolName: hosting-public-pool
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
+      labels:
+        external-dns.example.com/publish: "yes"
 ```
 
-### Metrics
+`addressPoolName` becomes the standard MetalLB Service annotation. Labels and
+annotations are reconciled by oooi. `publishAttachmentOAuths: true` appends
+the OAuth names of Ready attachments to the hostname annotation, preserving
+user-provided names first and sorting generated names. oooi does not write
+public DNS records; use an ExternalDNS instance that watches the hosting
+cluster Service.
 
-Envoy exposes Prometheus metrics on port 9901:
+## TLS and fallback behavior
+
+The Envoy listener uses `tls_inspector` for SNI-based listeners. A TLS
+connection with a fully qualified SNI name matches the attachment's backend.
+The backend Service, not Envoy, presents the certificate.
+
+The 443 listener also adds a legacy konnectivity fallback when a non-source-
+scoped konnectivity backend exists. It is intended for clients that connect
+without a hostname, but its nil filter-chain match is a true catch-all: an
+unmatched SNI or source range can also reach that backend. Do not treat the
+fallback as an alias route or as an access-control boundary. Alias clients must
+use the required SNI and an address in the generated source range. Validate the
+deployed Envoy version and inspect access logs before relying on unmatched
+traffic behavior for a security policy.
+
+## OpenShift permissions
+
+Ports below 1024 require the OpenShift integration flag and the scoped
+privileged SCC binding created by oooi:
 
 ```bash
-# Port-forward to access metrics
-kubectl port-forward -n hosted-clusters deployment/proxy-server-mycluster-proxy 9901:9901
-
-# Query metrics
-curl http://localhost:9901/stats/prometheus
-
-# Key metrics:
-# - envoy_cluster_upstream_cx_active: Active connections per backend
-# - envoy_cluster_upstream_cx_total: Total connections per backend
-# - envoy_listener_downstream_cx_active: Active client connections
-# - envoy_listener_downstream_cx_total: Total client connections
+go run ./main.go manager --enable-openshift=true
 ```
 
-### Health Checks
+The proxy Deployment must also be attached to a working NAD with static IPAM.
+The NAD name is `networkConfig.networkAttachmentDefinition`; its namespace is
+`networkAttachmentNamespace`, or the Infra namespace when omitted. The static
+IP is supplied through the generated Multus annotation.
 
-Check Envoy admin interface:
+Verify the pod network and SCC:
 
 ```bash
-kubectl port-forward -n hosted-clusters deployment/proxy-server-mycluster-proxy 9901:9901
-
-# Cluster status
-curl http://localhost:9901/clusters
-
-# Configuration dump
-curl http://localhost:9901/config_dump
-
-# Stats
-curl http://localhost:9901/stats
+kubectl -n clusters get pod -l app=proxy-server -o wide
+kubectl -n clusters get pod <proxy-pod> \
+  -o jsonpath='{.metadata.annotations.k8s\.v1\.cni\.cncf\.io/network-status}'
+kubectl -n clusters logs deploy/tenant-vlan100-proxy -c envoy
+kubectl -n clusters logs deploy/tenant-vlan100-proxy -c manager
 ```
 
 ## Troubleshooting
 
-### Pod Fails to Start
+### No route or wrong backend
 
-**Symptom**: Pod stuck in `CreateContainerConfigError` or `CrashLoopBackOff`
-
-**Common causes**:
-
-1. **NetworkAttachmentDefinition not found**
-   ```bash
-   # Check if NAD exists
-   kubectl get network-attachment-definitions -n hosted-clusters
-   
-   # Verify namespace matches
-   kubectl get proxyserver mycluster-proxy -o jsonpath='{.spec.networkConfig.networkAttachmentNamespace}'
-   ```
-
-2. **OpenShift SCC not applied**
-   ```bash
-   # Check pod events
-   kubectl describe pod <proxy-pod-name> -n hosted-clusters
-   
-   # Look for: "unable to validate against any security context constraint"
-   # Solution: Apply anyuid or custom SCC (see OpenShift Deployment section)
-   ```
-
-3. **Image pull errors**
-   ```bash
-   # Check image pull status
-   kubectl describe pod <proxy-pod-name> -n hosted-clusters | grep -A5 "Image"
-   
-   # Verify image exists
-   docker pull envoyproxy/envoy:v1.36.4
-   ```
-
-### Connection Refused / Timeout
-
-**Symptom**: Clients cannot connect to proxy, connection times out or refused
-
-**Diagnostics**:
-
-1. **Verify proxy is listening**
-   ```bash
-   # Exec into proxy pod
-   kubectl exec -it -n hosted-clusters deployment/proxy-server-mycluster-proxy -c envoy -- sh
-   
-   # Check listeners
-   netstat -tlnp | grep -E "443|6443"
-   # Should show: 0.0.0.0:443 LISTEN, 0.0.0.0:6443 LISTEN
-   ```
-
-2. **Verify secondary network IP**
-   ```bash
-   # Get pod details
-   kubectl get pod <proxy-pod-name> -n hosted-clusters -o yaml | grep -A5 "k8s.v1.cni.cncf.io/network-status"
-   
-   # Should show IP matching spec.networkConfig.serverIP
-   ```
-
-3. **Check backend service exists**
-   ```bash
-   # List backends from ProxyServer
-   kubectl get proxyserver mycluster-proxy -o jsonpath='{.spec.backends[*].targetService}'
-   
-   # Verify each service exists
-   kubectl get service -n <targetNamespace> <targetService>
-   ```
-
-4. **Test from VLAN network**
-   ```bash
-   # From a pod/VM on the same VLAN
-   curl -vk https://192.168.100.4:443
-   # Should get TLS error (expected - need valid SNI)
-   
-   # Test with proper SNI
-   curl -vk --resolve api.cluster.com:443:192.168.100.4 https://api.cluster.com:443
-   ```
-
-### Wrong Backend / Routing Error
-
-**Symptom**: Traffic routed to wrong backend or "no healthy upstream"
-
-**Diagnostics**:
-
-1. **Verify SNI hostname configuration**
-   ```bash
-   # List backend hostnames
-   kubectl get proxyserver mycluster-proxy -o jsonpath='{range .spec.backends[*]}{.hostname}{"\n"}{end}'
-   
-   # Verify client is using correct SNI hostname
-   openssl s_client -connect 192.168.100.4:443 -servername api.cluster.com
-   ```
-
-2. **Check Envoy configuration**
-   ```bash
-   kubectl port-forward -n hosted-clusters deployment/proxy-server-mycluster-proxy 9901:9901
-   
-   # Dump listeners (should show SNI filters)
-   curl http://localhost:9901/config_dump | jq '.configs[1].dynamic_listeners'
-   
-   # Dump clusters (should show backend services)
-   curl http://localhost:9901/config_dump | jq '.configs[3].dynamic_active_clusters'
-   ```
-
-3. **Check manager logs for xDS errors**
-   ```bash
-   kubectl logs -n hosted-clusters deployment/proxy-server-mycluster-proxy -c manager --tail=100
-   
-   # Look for:
-   # - "failed to discover endpoints"
-   # - "service not found"
-   # - "invalid configuration"
-   ```
-
-### Performance Issues
-
-**Symptom**: Slow connections, high latency, connection drops
-
-**Diagnostics**:
-
-1. **Check resource usage**
-   ```bash
-   kubectl top pod -n hosted-clusters -l app=proxy-server
-   
-   # If CPU/memory is high, adjust resources:
-   kubectl edit proxyserver mycluster-proxy
-   # Add resources section under deployment template
-   ```
-
-2. **Check connection limits**
-   ```bash
-   # Get active connections
-   kubectl exec -n hosted-clusters deployment/proxy-server-mycluster-proxy -c envoy -- sh -c "curl -s localhost:9901/stats | grep cx_active"
-   
-   # If approaching limits, scale proxy:
-   kubectl scale deployment proxy-server-mycluster-proxy --replicas=3 -n hosted-clusters
-   ```
-
-3. **Review timeout settings**
-   ```bash
-   # Check backend timeouts
-   kubectl get proxyserver mycluster-proxy -o jsonpath='{range .spec.backends[*]}{.name}: {.timeoutSeconds}s{"\n"}{end}'
-   
-   # Increase if needed:
-   kubectl edit proxyserver mycluster-proxy
-   # Set timeoutSeconds: 600 for long-running connections
-   ```
-
-### xDS Communication Failure
-
-**Symptom**: Envoy logs show "gRPC config stream closed" or "no healthy upstream"
-
-**Diagnostics**:
-
-1. **Verify manager is running**
-   ```bash
-   kubectl logs -n hosted-clusters deployment/proxy-server-mycluster-proxy -c manager --tail=50
-   
-   # Should show: "xDS server listening on :18000"
-   ```
-
-2. **Check xDS port connectivity**
-   ```bash
-   kubectl exec -n hosted-clusters deployment/proxy-server-mycluster-proxy -c envoy -- sh -c "nc -zv localhost 18000"
-   # Should show: Connection to localhost 18000 port [tcp/*] succeeded!
-   ```
-
-3. **Verify RBAC permissions**
-   ```bash
-   # Manager needs permissions to read Services and Endpoints
-   kubectl auth can-i get services --as=system:serviceaccount:hosted-clusters:default -n clusters-mycluster
-   kubectl auth can-i get endpoints --as=system:serviceaccount:hosted-clusters:default -n clusters-mycluster
-   
-   # If false, check RBAC in config/rbac/role.yaml
-   ```
-
-## Security Considerations
-
-### Running as Root
-
-The proxy runs with `runAsNonRoot: false` to bind to privileged ports (443, 6443). This is safe because:
-
-1. **Network Isolation**: Proxy runs on isolated secondary network (VLAN), not pod network
-2. **No Host Access**: Uses `allowHostNetwork: false`, `allowHostPorts: false`
-3. **Limited Capabilities**: No additional capabilities like CAP_SYS_ADMIN
-4. **TLS Passthrough**: Doesn't terminate TLS, can't decrypt traffic
-5. **No Data Storage**: Stateless proxy, no persistent volumes
-
-### Alternative: Non-Privileged Ports
-
-If your security policy requires non-root, you can:
-
-1. **Use high ports** (e.g., 8443, 8090)
-2. **Update HCP components** to connect to proxy on high ports
-3. **Remove runAsNonRoot: false** from security context
-
-However, this requires reconfiguring all HCP components, which may not be practical.
-
-### TLS Passthrough vs Termination
-
-The proxy uses **TLS passthrough** (SNI inspection) rather than TLS termination:
-
-**Advantages**:
-- Proxy doesn't need TLS certificates
-- End-to-end encryption maintained
-- Simpler certificate management
-- No certificate rotation needed
-
-**Limitations**:
-- Can't inspect traffic content
-- Can't add authentication/authorization
-- Relies on SNI field in TLS handshake
-
-## Advanced Configuration
-
-### Multiple Replicas for High Availability
-
-Scale proxy for redundancy:
-
-```yaml
-apiVersion: hostedcluster.densityops.com/v1alpha1
-kind: ProxyServer
-metadata:
-  name: mycluster-proxy
-spec:
-  # ... other config ...
-  
-  # Add replica count (requires updating controller)
-  replicas: 3
-```
-
-**Note**: Current implementation doesn't support replica configuration in CRD. To scale manually:
+Check the generated hostname, target namespace, and source ranges:
 
 ```bash
-kubectl scale deployment proxy-server-mycluster-proxy --replicas=3 -n hosted-clusters
+kubectl -n clusters get proxyserver tenant-vlan100-proxy -o yaml
+kubectl -n <control-plane-namespace> get svc \
+  kube-apiserver oauth-openshift ignition-server-proxy konnectivity-server
 ```
 
-For HA, ensure:
-1. Multiple proxy pods share same `serverIP` (requires clustering or load balancing)
-2. Or use multiple ProxyServer resources with different IPs and client-side failover
+For an alias, check the CAPI Machine status and verify its address is inside
+the Infra CIDR. A missing alias backend is expected until that address is
+available. A `DuplicateSourceIP` Infra condition means two attachments claimed
+the same address; fully qualified routes are unaffected.
 
-### Custom Resource Limits
-
-Edit deployment to adjust resources:
+Use SNI explicitly from a VLAN client:
 
 ```bash
-kubectl edit deployment proxy-server-mycluster-proxy -n hosted-clusters
-
-# Add under containers:
-resources:
-  requests:
-    memory: "256Mi"
-    cpu: "500m"
-  limits:
-    memory: "1Gi"
-    cpu: "2000m"
+openssl s_client -connect 192.0.2.4:443 \
+  -servername api.example-hcp.clusters.example.com
+curl -k --resolve api.example-hcp.clusters.example.com:6443:192.0.2.4 \
+  https://api.example-hcp.clusters.example.com:6443/version
 ```
 
-### Custom Envoy Configuration
+### Envoy or manager is not ready
 
-For advanced Envoy features not exposed via CRD, you can:
+```bash
+kubectl -n clusters rollout status deployment/tenant-vlan100-proxy --timeout=5m
+kubectl -n clusters logs deployment/tenant-vlan100-proxy -c manager --tail=100
+kubectl -n clusters logs deployment/tenant-vlan100-proxy -c envoy --tail=100
+kubectl -n clusters port-forward deployment/tenant-vlan100-proxy 9901:9901
+curl http://127.0.0.1:9901/config_dump
+```
 
-1. Fork the operator
-2. Modify `internal/controller/proxy_server_controller.go`
-3. Add custom Envoy filters or listeners in the xDS configuration generation
-4. Rebuild and deploy custom operator image
-
-## Integration with Hosted Control Planes
-
-### Complete HCP Deployment
-
-For a full OpenShift Hosted Control Plane deployment:
-
-1. **Deploy operator**:
-   ```bash
-   make deploy IMG=quay.io/cldmnky/oooi:latest
-   ```
-
-2. **Create Infra resource** (includes DHCP + DNS + Proxy):
-   ```bash
-   kubectl apply -f config/samples/hostedcluster_v1alpha1_infra.yaml
-   ```
-
-3. **Deploy HyperShift control plane**:
-   ```bash
-   hypershift create cluster kubevirt \
-     --name mycluster \
-     --namespace clusters \
-     --base-domain example.com \
-     --node-pool-replicas 3
-   ```
-
-4. **Configure HCP to use proxy**:
-   - Update HCP Services to use external IPs
-   - Configure DNS to point to proxy IP
-   - Update ignition config with proxy endpoints
-
-### DNS Integration
-
-The proxy works with the DNSServer component for complete split-horizon DNS:
-
-- **Internal clients** (pod network): DNS returns Service ClusterIP
-- **External clients** (VLAN): DNS returns proxy secondary network IP
-
-See [DNS_SETUP.md](DNS_SETUP.md) for DNS configuration.
+The admin port is intended for an authenticated local port-forward or an
+equivalent protected path; it is not part of the external LoadBalancer.
 
 ## References
 
-- **Envoy Documentation**: https://www.envoyproxy.io/docs/envoy/latest/
-- **Envoy xDS Protocol**: https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol
-- **OpenShift SCCs**: https://docs.openshift.com/container-platform/latest/authentication/managing-security-context-constraints.html
-- **Multus CNI**: https://github.com/k8snetworkplumbingwg/multus-cni
-- **HyperShift**: https://hypershift-docs.netlify.app/
-
-## Next Steps
-
-- Review [openshift-scc-requirements.md](openshift-scc-requirements.md) for OpenShift deployment
-- Review [DNS_SETUP.md](DNS_SETUP.md) for split-horizon DNS configuration
-- See [config/samples/](../config/samples/) for complete examples
-- Check [PLAN.md](../PLAN.md) for overall architecture and design decisions
+- [Envoy listener filter-chain matching](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/advanced/matching/matching_listener)
+- [TLS inspector](https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/listener_filters/tls_inspector)
+- [OpenShift SCCs](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/authentication/managing-pod-security-policies)
+- [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni)
+- [Multiple hosted clusters](../website/docs/guides/multi-cluster.md)

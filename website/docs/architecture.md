@@ -55,7 +55,7 @@ flowchart LR
     OPS -->|"installs MetalLB,<br/>creates LB Service"| VIP
     PRX -->|L4 to ClusterIPs| HCP
     ING -.->|backend of *.apps| VIP
-    OPS -.->|watches LB Services| EDNS
+    EDNS -.->|watches Services| ZONE
 ```
 
 Only two crossing points exist between VLAN and management cluster, both
@@ -113,8 +113,38 @@ sequenceDiagram
 - `api.<cluster>.<domain>:6443` → `controlPlaneNamespace/kube-apiserver`
 - `oauth|ignition|konnectivity.<cluster>.<domain>:443` → matching HCP Services
 
+For a KubeVirt worker, the shared proxy also supports these service aliases on
+port `443`:
+
+```text
+kubernetes
+kubernetes.default
+kubernetes.default.svc
+kubernetes.default.svc.cluster.local
+```
+
+The aliases resolve to the one VLAN proxy address. They are not globally
+ambiguous at the proxy: the Infra controller finds KubeVirt NodePools and their
+CAPI `Machine` objects, filters `Machine.status.addresses` to the shared
+`networkConfig.cidr`, and emits one Envoy backend per attachment with sorted
+`/32` `sourcePrefixRanges`. A Machine address outside that CIDR is ignored.
+The controller consumes the addresses exposed in Machine status; validate the
+CAPK address-selection and refresh behavior for the target release. Until an
+in-CIDR address is available, the attachment keeps its fully qualified routes
+but has no alias backend; the controller retries discovery.
+
+The source address is a routing selector, not an identity mechanism. A client
+that can spoof another worker's VLAN address can select another attachment, so
+use CNI, switch, or DHCP anti-spoofing controls when the VLAN is shared by
+untrusted tenants.
+
 Because Envoy never terminates TLS, certificates remain inside the hosted
 cluster and the proxy cannot inspect tenant traffic.
+
+On port `443`, the generated configuration also includes a legacy konnectivity
+fallback when a non-source-scoped konnectivity backend exists. It is intended
+for no-SNI clients, but the catch-all filter chain can receive unmatched SNI or
+source traffic too; it is not an alias route or an access-control boundary.
 
 ### Apps ingress (wildcard `*.apps`)
 
@@ -151,7 +181,9 @@ flowchart LR
 ```
 
 Both views answer identically for names *outside* the static zones — only the
-HCP endpoint and `*.apps` names differ per view.
+HCP endpoint, `*.apps`, and conditional Kubernetes alias names differ per view.
+The aliases still resolve to one shared proxy address; source matching happens
+after the TCP connection reaches Envoy.
 
 ## Security model
 
@@ -162,7 +194,7 @@ HCP endpoint and `*.apps` names differ per view.
 | External exposure | Optional `<infra>-proxy-external` LoadBalancer exposes **only** the configured ingress port — never admin or backend ports |
 | OpenShift SCC | With `--enable-openshift=true`, a scoped `privileged` SCC RoleBinding is created for the proxy ServiceAccount (privileged ports <1024) |
 | Control-plane policy | An ingress-only `allow-infrastructure` NetworkPolicy selects all pods in the control-plane namespace and allows traffic from namespaces labeled `hostedcluster.densityops.com/network-policy-group=infrastructure` |
-| Tenant isolation | No tenant-to-management routes; hosted clusters never need to reach hosting-cluster ingress |
+| Network scope | No general tenant route into the management network; Envoy permits only configured control-plane and apps backends |
 
 ## Status model
 

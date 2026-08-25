@@ -7,7 +7,8 @@ place, and while you create a hosted cluster. The recommended flow is:
 1. [Verify prerequisites](prerequisites.md) — cluster operators, network, IP plan, secrets.
 2. [Install oooi](../installation/deploy-operator.md) — CRDs plus the controller Deployment.
 3. Create the `HostedCluster` (and `NodePool`) for your KubeVirt workers.
-4. Apply an [`Infra`](../configuration/infra-reference.md) resource describing the VLAN.
+4. Apply an [`Infra`](../configuration/infra-reference.md) resource describing
+   the VLAN and an `InfraClusterAttachment` for each hosted cluster using it.
 5. [Verify](../operations/verify.md) from the VLAN, the pod network, and public DNS.
 
 !!! tip "Order matters"

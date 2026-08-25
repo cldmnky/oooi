@@ -32,6 +32,25 @@ Watch live queries while testing:
 kubectl -n clusters logs deploy/<infra>-dns -f
 ```
 
+### Kubernetes alias is missing or selects no backend
+
+The four unqualified aliases are conditional. Check that a matching KubeVirt
+NodePool exists and that its CAPI Machines have an address inside the shared
+Infra CIDR:
+
+```bash
+kubectl -n <hosted-cluster-namespace> get nodepool
+kubectl -n <control-plane-namespace> get machine -o yaml
+kubectl -n <infra-namespace> get proxyserver <infra>-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="<attachment>-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+```
+
+Addresses outside `networkConfig.cidr` are deliberately ignored. A pending
+Machine status causes the alias backend to be omitted while the fully qualified
+`api.<cluster>.<domain>` route remains available. If two attachments claim the
+same `/32`, inspect the Infra `Ready` condition for `DuplicateSourceIP`; only
+the conflicting alias routes are suppressed.
+
 ## Hosted cluster stuck installing
 
 Workers bootstrap through Envoy to Ignition. If

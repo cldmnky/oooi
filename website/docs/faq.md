@@ -9,9 +9,9 @@ needed when one OpenShift cluster hosts another on an isolated VLAN.
 
 ### Does oooi create hosted clusters?
 
-No. oooi consumes an existing `HostedCluster`; it provisions the *network
-infrastructure* the cluster needs. Create the HostedCluster with `hcp` or your
-own manifests, then apply `Infra`.
+No. oooi consumes an existing `HostedCluster` and `NodePool`; it provisions the
+network infrastructure the cluster needs. Create those resources with `hcp` or
+your own manifests, then apply an `Infra` and an `InfraClusterAttachment`.
 
 ### Does oooi terminate TLS?
 
@@ -55,11 +55,20 @@ Yes. Create one `Infra` for the network and one
 attachment's DNS records and SNI backends onto a single DHCP/DNS/proxy stack.
 See [Multiple hosted clusters on one VLAN](guides/multi-cluster.md).
 
-### Why does the proxy not answer kubernetes.default.svc?
+### How does the proxy route kubernetes.default.svc on a shared VLAN?
 
-Unqualified Kubernetes service names are ambiguous when several clusters share
-a proxy: they cannot be routed to one cluster safely. oooi generates only fully
-qualified names such as `api.<cluster>.<domain>`, which worker bootstrap uses.
+The shared DNS server maps `kubernetes`, `kubernetes.default`,
+`kubernetes.default.svc`, and `kubernetes.default.svc.cluster.local` to the
+shared proxy address. For KubeVirt attachments, the Infra controller discovers
+worker addresses through HyperShift NodePools and CAPI Machines, filters them
+to the Infra CIDR, and gives Envoy one `/32` source range per worker. The
+matching source range selects the attachment's `kube-apiserver` Service.
+
+The aliases are omitted while Machine addresses are unavailable, and a source
+address claimed by multiple attachments disables only the ambiguous alias
+routes. Fully qualified `api.<cluster>.<domain>` names remain the preferred
+bootstrap path. Source ranges are routing selectors, not authentication; VLAN
+anti-spoofing is still required for tenant isolation.
 
 ## Operations
 
@@ -73,11 +82,12 @@ plus the three-path verification in [Verification](operations/verify.md).
 
 ### What happens when I delete Infra?
 
-Everything it owns is garbage-collected: child CRs, Deployments, Services,
-ConfigMaps, ServiceAccounts, SCC RoleBindings, and the namespace NetworkPolicy.
-Delete each `InfraClusterAttachment` first to remove its hosted-cluster
-apps-ingress resources and control-plane NetworkPolicy. The HostedCluster
-itself is untouched until you delete it separately.
+Its owned child CRs, Deployments, Services, ConfigMaps, ServiceAccounts, and
+component RoleBindings are garbage-collected. Delete each
+`InfraClusterAttachment` first to remove its hosted-cluster apps-ingress
+resources and cross-namespace control-plane NetworkPolicy. Cluster-scoped DHCP
+reader RBAC also needs a cleanup check. The HostedCluster itself is untouched
+until you delete it separately.
 
 ### Where do public DNS records come from?
 
@@ -87,5 +97,6 @@ attaches the labels/annotations those integrations need. See the
 
 ### Is there a validating webhook?
 
-Not currently; invalid configurations surface as `Degraded` conditions with a
-message rather than being rejected at admission.
+Not currently. Schema-required and pattern-invalid fields are still rejected by
+the CRD; runtime configuration problems surface through status conditions and
+messages instead.

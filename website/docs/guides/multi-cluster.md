@@ -81,6 +81,31 @@ The generated records per attachment:
 - Envoy routes each fully qualified SNI name to that cluster's control-plane
   namespace, which defaults to `<hostedClusterRef.namespace>-<hostedClusterRef.name>`.
 
+### Kubernetes service aliases
+
+The shared DNS server publishes these aliases once, to the shared VLAN proxy
+address, when at least one KubeVirt attachment has a discovered worker source
+address:
+
+```text
+kubernetes
+kubernetes.default
+kubernetes.default.svc
+kubernetes.default.svc.cluster.local
+```
+
+Envoy disambiguates the aliases with each attachment's worker source `/32`
+ranges. The controller watches HyperShift `NodePool` objects for membership and
+CAPI `Machine` objects for lifecycle and address changes. It filters
+`Machine.status.addresses` to the `Infra.spec.networkConfig.cidr`. The
+controller consumes the addresses exposed by CAPK; validate which interfaces
+CAPK publishes and how quickly it refreshes them on the target release. If the
+Machine status is not populated yet, the alias backend is omitted and the fully
+qualified routes remain available while reconciliation retries.
+
+The source range is a routing condition, not authentication. Enforce source
+anti-spoofing in the CNI or switching layer when different tenants share a VLAN.
+
 ## Apps ingress per cluster
 
 Enable `spec.appsIngress` on each attachment independently. Every attachment
@@ -132,8 +157,10 @@ single Service annotation before relying on this.
 ## Fully qualified SNI names
 
 Every attachment contributes fully qualified SNI names such as
-`api.example-hcp-a.clusters.example.com`. Unqualified Kubernetes aliases are
-not generated because a shared proxy cannot safely route them to one cluster.
+`api.example-hcp-a.clusters.example.com`. Those names do not depend on source
+address discovery and are the recommended bootstrap path. The unqualified
+aliases above are the exception: they are source-scoped and are not emitted
+until the worker addresses are known.
 
 There is no implicit single-cluster binding. To serve a cluster, create an
 `InfraClusterAttachment`, even when the `Infra` has only one attachment.

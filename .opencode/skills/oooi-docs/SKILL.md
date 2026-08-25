@@ -71,8 +71,13 @@ Check these details whenever related content changes:
 - One attachment per HostedCluster; duplicate domains or duplicate hosted
   cluster references exclude both sides from routing with Degraded conditions —
   never describe silent conflict resolution.
-- Shared proxies answer fully qualified SNI names only; unqualified Kubernetes
-  aliases are never generated.
+- Shared proxies answer fully qualified SNI names for every attachment. For
+  KubeVirt attachments, the four unqualified Kubernetes aliases
+  (`kubernetes`, `kubernetes.default`, `kubernetes.default.svc`, and
+  `kubernetes.default.svc.cluster.local`) are emitted only when CAPI Machine
+  status contains worker addresses inside the shared Infra CIDR. Envoy scopes
+  those alias chains to the discovered worker source `/32`s; never describe
+  them as a global catch-all or as authentication.
 - `proxy.externalService.publishAttachmentOAuths` merges Ready attachments'
   oauth names into the hostname annotation (user names first, additions sorted).
 - New CRD files must be added to `config/crd/kustomization.yaml`; omissions
