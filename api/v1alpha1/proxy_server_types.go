@@ -141,6 +141,13 @@ type ProxyBackend struct {
 	// +kubebuilder:default=30
 	// +kubebuilder:validation:Minimum=1
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// SourcePrefixRanges restricts this backend to connections whose source IP
+	// is within one of the CIDRs. Empty means no source restriction (existing
+	// FQDN backends). Each entry must be CIDR, typically /32 for VM IPs.
+	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	SourcePrefixRanges []string `json:"sourcePrefixRanges,omitempty"`
 }
 
 // ProxyServerStatus defines the observed state of ProxyServer

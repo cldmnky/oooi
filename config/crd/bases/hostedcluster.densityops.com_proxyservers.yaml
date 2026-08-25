@@ -103,6 +103,15 @@ spec:
                       - TCP
                       - UDP
                       type: string
+                    sourcePrefixRanges:
+                      description: |-
+                        SourcePrefixRanges restricts this backend to connections whose source IP
+                        is within one of the CIDRs. Empty means no source restriction (existing
+                        FQDN backends). Each entry must be CIDR, typically /32 for VM IPs.
+                      items:
+                        type: string
+                      maxItems: 256
+                      type: array
                     targetNamespace:
                       description: TargetNamespace is the namespace where the target
                         service resides

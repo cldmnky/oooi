@@ -40,6 +40,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	kubevirtv1 "kubevirt.io/api/core/v1"
+
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 )
 
@@ -66,6 +68,7 @@ type InfraReconciler struct {
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dhcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=dnsservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=hostedcluster.densityops.com,resources=proxyservers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -288,12 +291,14 @@ type attachmentView struct {
 	appsConfig            hostedclusterv1alpha1.AppsIngressConfig
 	appsExternalIP        string // wildcard DNS answer; empty until the VIP exists
 	appsEndpoint          string // IP or hostname used for Envoy apps backends
+	sourceCIDRs           []string
 	ready                 bool
 }
 
 const (
 	reasonDuplicateHostname    = "DuplicateHostname"
 	reasonDuplicateHostedClust = "DuplicateHostedCluster"
+	reasonDuplicateSourceIP    = "DuplicateSourceIP"
 )
 
 // aggregation is the resolved per-cluster view set for one reconcile pass,
@@ -345,6 +350,72 @@ func attachmentFromAttachment(att *hostedclusterv1alpha1.InfraClusterAttachment)
 		view.appsExternalIP = status.ExternalIP // hostname-only endpoints have no A record
 	}
 	return view
+}
+
+// resolveAttachmentSourceCIDRs discovers VM IPs in the attachment's
+// control-plane namespace that lie within infraCIDR and returns them as /32
+// CIDRs. Empty infraCIDR or no matching VMIs returns nil.
+func (r *InfraReconciler) resolveAttachmentSourceCIDRs(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, infraCIDR string) []string {
+	if infraCIDR == "" {
+		return nil
+	}
+	_, cidrNet, err := net.ParseCIDR(infraCIDR)
+	if err != nil {
+		return nil
+	}
+	cpns := att.Spec.ControlPlaneNamespace
+	if cpns == "" {
+		hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
+		cpns = hcRef.Namespace + "-" + hcRef.Name
+	}
+	vmiList := &kubevirtv1.VirtualMachineInstanceList{}
+	if err := r.List(ctx, vmiList, client.InNamespace(cpns)); err != nil {
+		// No list permission or namespace missing -> treat as no source IPs.
+		return nil
+	}
+	seen := map[string]bool{}
+	var cidrs []string
+	for _, vmi := range vmiList.Items {
+		for _, iface := range vmi.Status.Interfaces {
+			ips := iface.IPs
+			if iface.IP != "" {
+				ips = append(ips, iface.IP)
+			}
+			for _, ipStr := range ips {
+				ip := net.ParseIP(strings.TrimSpace(ipStr))
+				if ip == nil || !cidrNet.Contains(ip) {
+					continue
+				}
+				cidr := ip.String() + "/32"
+				if !seen[cidr] {
+					seen[cidr] = true
+					cidrs = append(cidrs, cidr)
+				}
+			}
+		}
+	}
+	sort.Strings(cidrs)
+	return cidrs
+}
+
+// aliasBackendsForView builds source-IP scoped kubernetes.* backends for one
+// attached cluster. Returns nil when no sourceCIDRs are available.
+func aliasBackendsForView(view attachmentView, prefix string) []hostedclusterv1alpha1.ProxyBackend {
+	if len(view.sourceCIDRs) == 0 || !validDomain(view.domain) {
+		return nil
+	}
+	return []hostedclusterv1alpha1.ProxyBackend{{
+		Name:               prefix + "kube-apiserver-kubernetes-hostname",
+		Hostname:           "kubernetes",
+		AlternateHostnames: []string{"kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local", "kubernetes." + view.domain},
+		SourcePrefixRanges: view.sourceCIDRs,
+		Port:               443,
+		TargetService:      "kube-apiserver",
+		TargetPort:         6443,
+		TargetNamespace:    view.controlPlaneNamespace,
+		Protocol:           "TCP",
+		TimeoutSeconds:     30,
+	}}
 }
 
 // aggregateAttachments resolves every InfraClusterAttachment targeting infra
@@ -402,12 +473,38 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 		seenHC[hcKey] = att.Name
 		seenDomain[domain] = att.Name
 	}
+	// Resolve source CIDRs for remaining attachments and detect duplicate source IPs.
+	cidrsByAttachment := map[string][]string{}
+	seenSourceCIDR := map[string]string{}
 	for i := range mine {
 		att := &mine[i]
 		if excluded[att.Name] {
 			continue
 		}
-		agg.views = append(agg.views, attachmentFromAttachment(att))
+		cidrs := r.resolveAttachmentSourceCIDRs(ctx, att, infra.Spec.NetworkConfig.CIDR)
+		cidrsByAttachment[att.Name] = cidrs
+		for _, cidr := range cidrs {
+			if owner, ok := seenSourceCIDR[cidr]; ok {
+				if !excluded[att.Name] || !excluded[owner] {
+					excluded[att.Name] = true
+					excluded[owner] = true
+					agg.conflicts = append(agg.conflicts,
+						fmt.Sprintf("attachments %q and %q share source CIDR %q", owner, att.Name, cidr))
+					agg.degradedReason = reasonDuplicateSourceIP
+				}
+			} else {
+				seenSourceCIDR[cidr] = att.Name
+			}
+		}
+	}
+	for i := range mine {
+		att := &mine[i]
+		if excluded[att.Name] {
+			continue
+		}
+		view := attachmentFromAttachment(att)
+		view.sourceCIDRs = cidrsByAttachment[att.Name]
+		agg.views = append(agg.views, view)
 	}
 	sort.Slice(agg.conflicts, func(i, j int) bool { return agg.conflicts[i] < agg.conflicts[j] })
 	return agg, nil
@@ -608,6 +705,18 @@ func (r *InfraReconciler) dnsServerForInfra(infra *hostedclusterv1alpha1.Infra, 
 			appendUniqueEntry(&staticEntries, "*.apps."+view.domain, view.appsExternalIP)
 		}
 	}
+	hasAlias := false
+	for _, view := range views {
+		if len(view.sourceCIDRs) > 0 {
+			hasAlias = true
+			break
+		}
+	}
+	if hasAlias {
+		for _, alias := range []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local"} {
+			appendUniqueEntry(&staticEntries, alias, externalProxyIP)
+		}
+	}
 
 	// The reconciler does not create a DNS child without an attachment, but keep
 	// the generated object schema-valid for direct callers and updates.
@@ -790,6 +899,7 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 		prefix := backendNamePrefix(view)
 		backends = append(backends, hcpBackendsForView(view, prefix)...)
 		backends = append(backends, appsBackendsForView(view, prefix)...)
+		backends = append(backends, aliasBackendsForView(view, prefix)...)
 	}
 
 	externalService := proxySpec.ExternalService
@@ -906,6 +1016,43 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			enqueueInfra(queue, e.Object)
 		},
 	}
+	enqueueInfraForVMI := func(ctx context.Context, obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+		vmi, ok := obj.(*kubevirtv1.VirtualMachineInstance)
+		if !ok {
+			return
+		}
+		// Find attachments whose control-plane namespace matches the VMI namespace.
+		attList := &hostedclusterv1alpha1.InfraClusterAttachmentList{}
+		if err := r.List(ctx, attList); err != nil {
+			return
+		}
+		for _, att := range attList.Items {
+			cpns := att.Spec.ControlPlaneNamespace
+			if cpns == "" {
+				hcRef := normalizeHostedClusterRef(att.Spec.HostedClusterRef)
+				cpns = hcRef.Namespace + "-" + hcRef.Name
+			}
+			if cpns == vmi.Namespace {
+				q.Add(reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: att.Spec.InfraRef.Name, Namespace: att.Namespace},
+				})
+			}
+		}
+	}
+	vmiHandler := handler.Funcs{
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueInfraForVMI(ctx, e.Object, q)
+		},
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueInfraForVMI(ctx, e.ObjectNew, q)
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueInfraForVMI(ctx, e.Object, q)
+		},
+		GenericFunc: func(ctx context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueInfraForVMI(ctx, e.Object, q)
+		},
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.Infra{}).
 		Owns(&hostedclusterv1alpha1.DHCPServer{}).
@@ -914,6 +1061,10 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&hostedclusterv1alpha1.InfraClusterAttachment{},
 			attachmentHandler,
+		).
+		Watches(
+			&kubevirtv1.VirtualMachineInstance{},
+			vmiHandler,
 		).
 		Named("infra").
 		Complete(r)

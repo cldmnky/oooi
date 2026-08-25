@@ -35,6 +35,8 @@ import (
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 	"github.com/cldmnky/oooi/internal/controller"
+
+	kubevirtv1 "kubevirt.io/api/core/v1"
 )
 
 var (
@@ -59,6 +61,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(hostedclusterv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 
 	// Add flags to the manager command
