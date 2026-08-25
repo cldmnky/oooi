@@ -126,8 +126,8 @@ single Service annotation before relying on this.
 
 | Symptom | Reason | Resolution |
 |---|---|---|
-| `Ready=False`, reason `DuplicateHostname` | Two attachments declare the same domain | Remove or rename one attachment's `dns` values |
-| `Ready=False`, reason `DuplicateHostedCluster` | Two attachments reference the same HostedCluster | Keep one attachment per HostedCluster |
+| `Infra Ready=False`, reason `DuplicateHostname` | Two attachments declare the same domain | Remove or rename one attachment's `dns` values |
+| `Infra Ready=False`, reason `DuplicateHostedCluster` | Two attachments reference the same HostedCluster | Keep one attachment per HostedCluster |
 | Attachment stuck without `Ready` | Its control-plane namespace does not exist yet | Create the HostedCluster first; HyperShift creates `<ns>-<name>` |
 | ProxyServer unchanged after edits | A conflict excluded every attachment; last-known-good routing is kept | Fix the conflict listed in the Infra condition message |
 

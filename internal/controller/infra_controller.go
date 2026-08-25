@@ -437,6 +437,11 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 	sort.Slice(mine, func(i, j int) bool { return mine[i].Name < mine[j].Name })
 
 	agg := &aggregation{total: int32(len(mine))}
+	for i := range mine {
+		if meta.IsStatusConditionTrue(mine[i].Status.Conditions, phaseReady) {
+			agg.ready++
+		}
+	}
 	if len(mine) == 0 {
 		agg.views = []attachmentView{legacyAttachmentView(infra)}
 		return agg, nil
@@ -476,9 +481,6 @@ func (r *InfraReconciler) aggregateAttachments(ctx context.Context, infra *hoste
 			continue
 		}
 		agg.views = append(agg.views, attachmentFromAttachment(att))
-		if meta.IsStatusConditionTrue(att.Status.Conditions, phaseReady) {
-			agg.ready++
-		}
 	}
 	sort.Slice(agg.conflicts, func(i, j int) bool { return agg.conflicts[i] < agg.conflicts[j] })
 	return agg, nil

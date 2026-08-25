@@ -357,7 +357,7 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 			Scheme: k8sClient.Scheme(),
 			HostedClusterClientFactory: func(context.Context, *hostedclusterv1alpha1.InfraClusterAttachment, string, string) (client.Client, error) {
 				factoryCalled = true
-				return nil, nil
+				return k8sClient, nil
 			},
 		}
 		reconcileAttachment(r, "defaults") // finalizer add pass
@@ -377,7 +377,7 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 
 		Expect(k8sClient.Delete(ctx, &got)).To(Succeed())
 		reconcileAttachment(r, "defaults") // cleanup pass removes finalizer
-		Expect(factoryCalled).To(BeFalse(), "disabled apps ingress must not contact a HostedCluster API during cleanup")
+		Expect(factoryCalled).To(BeTrue(), "attachment cleanup must contact the HostedCluster API even when apps ingress is disabled")
 
 		Eventually(func() bool {
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: "defaults", Namespace: "default"}, &hostedclusterv1alpha1.InfraClusterAttachment{})
@@ -401,6 +401,7 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 
 	It("rejects apps ingress without MetalLB settings", func() {
 		createInfraForAttachment()
+		ensureNamespace(ctx, "clusters-badapps")
 		att := makeAttachment("badapps", infraName, "badapps", "example.com", "")
 		att.Spec.AppsIngress = hostedclusterv1alpha1.AppsIngressConfig{Enabled: true}
 		Expect(k8sClient.Create(ctx, att)).To(Succeed())
@@ -414,6 +415,11 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		Expect(got.Status.AppsIngressStatus.Reason).To(Equal(reasonAttachmentInvalidConfig))
 		cond := meta.FindStatusCondition(got.Status.Conditions, "Ready")
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+
+		var policy networkingv1.NetworkPolicy
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "allow-infrastructure", Namespace: "clusters-badapps",
+		}, &policy)).To(Succeed())
 	})
 
 	It("reconciles the control-plane policy alongside apps ingress", func() {

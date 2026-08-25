@@ -132,24 +132,36 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 		target.APIServerService = defaultAPIServerServiceName
 	}
 
+	policyResult := ctrl.Result{}
+	if err := r.ensureControlPlaneNetworkPolicy(ctx, target); err != nil {
+		var nsPending *namespacePendingError
+		if !stderrors.As(err, &nsPending) {
+			return ctrl.Result{}, err
+		}
+		log.Info("Waiting for control-plane namespace", "namespace", nsPending.namespace)
+		policyResult = ctrl.Result{RequeueAfter: 30 * time.Second}
+	}
+
 	if att.Spec.AppsIngress.Enabled {
 		if att.Spec.AppsIngress.MetalLB.AddressPoolName == "" ||
 			att.Spec.AppsIngress.MetalLB.IPAddressPoolRange == "" {
-			return r.setAppsIngressStatusAndFinish(ctx, att, target,
+			err := r.setAppsIngressStatusAndFinish(ctx, att, target,
 				hostedclusterv1alpha1.AppsIngressStatus{
 					Phase:   PhaseDegraded,
 					Reason:  reasonAttachmentInvalidConfig,
 					Message: "appsIngress requires metallb.addressPoolName and metallb.ipAddressPoolRange",
 				})
-		}
-		result := reconcileAppsIngressCore(ctx, r.hostedFactory(att, target), target, &att.Status.AppsIngressStatus)
-		if err := r.ensureControlPlaneNetworkPolicy(ctx, target); err != nil {
-			var nsPending *namespacePendingError
-			if !stderrors.As(err, &nsPending) {
+			if err != nil {
 				return ctrl.Result{}, err
 			}
-			log.Info("Waiting for control-plane namespace", "namespace", nsPending.namespace)
-			result = ctrl.Result{RequeueAfter: 30 * time.Second}
+			if policyResult.RequeueAfter > 0 {
+				return policyResult, nil
+			}
+			return ctrl.Result{}, nil
+		}
+		result := reconcileAppsIngressCore(ctx, r.hostedFactory(att, target), target, &att.Status.AppsIngressStatus)
+		if policyResult.RequeueAfter > 0 {
+			result = policyResult
 		}
 		if err := r.updateStatusCommon(ctx, att, target); err != nil {
 			return ctrl.Result{}, err
@@ -158,16 +170,11 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 	}
 	att.Status.AppsIngressStatus = hostedclusterv1alpha1.AppsIngressStatus{}
 
-	if err := r.ensureControlPlaneNetworkPolicy(ctx, target); err != nil {
-		var nsPending *namespacePendingError
-		if stderrors.As(err, &nsPending) {
-			log.Info("Waiting for control-plane namespace", "namespace", nsPending.namespace)
-			if err := r.updateAttachmentStatusWithRetry(ctx, att); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	if policyResult.RequeueAfter > 0 {
+		if err := r.updateAttachmentStatusWithRetry(ctx, att); err != nil {
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
+		return policyResult, nil
 	}
 
 	return r.setStatusReady(ctx, att, target)
@@ -249,23 +256,21 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 		target.APIServerService = defaultAPIServerServiceName
 	}
 
-	if target.Config.Enabled {
-		factory := r.hostedFactory(att, target)
-		hostedClient, err := factory(ctx)
-		if err != nil {
-			// The hosted cluster may already be gone — or its API may not exist at
-			// all (e.g. HyperShift removed with attachments left behind). Both mean
-			// there is nothing left to clean up.
-			if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
-				log.Info("Hosted cluster API unavailable during cleanup; skipping hosted cleanup", "ref", target.HostedClusterRef, "cause", err.Error())
-			} else {
-				log.Error(err, "Failed to build hosted-cluster client during cleanup; requeueing", "ref", target.HostedClusterRef)
-				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-			}
-		} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
-			log.Error(err, "Failed hosted-cluster cleanup; requeueing")
+	factory := r.hostedFactory(att, target)
+	hostedClient, err := factory(ctx)
+	if err != nil {
+		// The hosted cluster may already be gone — or its API may not exist at
+		// all (e.g. HyperShift removed with attachments left behind). Both mean
+		// there is nothing left to clean up.
+		if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			log.Info("Hosted cluster API unavailable during cleanup; skipping hosted cleanup", "ref", target.HostedClusterRef, "cause", err.Error())
+		} else {
+			log.Error(err, "Failed to build hosted-cluster client during cleanup; requeueing", "ref", target.HostedClusterRef)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
+	} else if err := cleanupMetalLBInstallation(ctx, hostedClient, target.Config); err != nil {
+		log.Error(err, "Failed hosted-cluster cleanup; requeueing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	policy := &networkingv1.NetworkPolicy{
@@ -287,17 +292,14 @@ func (r *InfraClusterAttachmentReconciler) reconcileDelete(ctx context.Context, 
 	return ctrl.Result{}, nil
 }
 
-func (r *InfraClusterAttachmentReconciler) setAppsIngressStatusAndFinish(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, target appsIngressTarget, status hostedclusterv1alpha1.AppsIngressStatus) (ctrl.Result, error) {
+func (r *InfraClusterAttachmentReconciler) setAppsIngressStatusAndFinish(ctx context.Context, att *hostedclusterv1alpha1.InfraClusterAttachment, target appsIngressTarget, status hostedclusterv1alpha1.AppsIngressStatus) error {
 	previous := att.Status.AppsIngressStatus
 	status.LastSyncTime = previous.LastSyncTime
 	if status.Phase != previous.Phase || status.Reason != previous.Reason || status.Message != previous.Message {
 		status.LastSyncTime = metav1.Now()
 	}
 	att.Status.AppsIngressStatus = status
-	if err := r.updateStatusCommon(ctx, att, target); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	return r.updateStatusCommon(ctx, att, target)
 }
 
 // setStatusReady records a successful reconciliation with no apps ingress.
