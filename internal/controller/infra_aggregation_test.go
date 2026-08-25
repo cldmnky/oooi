@@ -413,6 +413,36 @@ var _ = Describe("InfraClusterAttachment Controller", func() {
 		cond := meta.FindStatusCondition(got.Status.Conditions, "Ready")
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	})
+
+	It("reconciles the control-plane policy alongside apps ingress", func() {
+		createInfraForAttachment()
+		ensureNamespace(ctx, "clusters-apps")
+		att := makeAttachment("apps", infraName, "apps", "example.com", "clusters-apps")
+		att.Spec.AppsIngress = hostedclusterv1alpha1.AppsIngressConfig{
+			Enabled: true,
+			MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
+				AddressPoolName:    "apps-pool",
+				IPAddressPoolRange: "192.0.2.10-192.0.2.20",
+			},
+		}
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		r := &InfraClusterAttachmentReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			HostedClusterClientFactory: func(context.Context, *hostedclusterv1alpha1.InfraClusterAttachment, string, string) (client.Client, error) {
+				return k8sClient, nil
+			},
+		}
+		reconcileAttachment(r, "apps") // finalizer add pass
+		reconcileAttachment(r, "apps") // apps ingress and policy pass
+
+		var policy networkingv1.NetworkPolicy
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "allow-infrastructure", Namespace: "clusters-apps",
+		}, &policy)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &policy)).To(Succeed())
+	})
 })
 
 var _ = Describe("Shared external Service OAuth policy", func() {

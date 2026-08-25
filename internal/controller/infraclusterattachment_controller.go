@@ -142,6 +142,14 @@ func (r *InfraClusterAttachmentReconciler) Reconcile(ctx context.Context, req ct
 				})
 		}
 		result := reconcileAppsIngressCore(ctx, r.hostedFactory(att, target), target, &att.Status.AppsIngressStatus)
+		if err := r.ensureControlPlaneNetworkPolicy(ctx, target); err != nil {
+			var nsPending *namespacePendingError
+			if !stderrors.As(err, &nsPending) {
+				return ctrl.Result{}, err
+			}
+			log.Info("Waiting for control-plane namespace", "namespace", nsPending.namespace)
+			result = ctrl.Result{RequeueAfter: 30 * time.Second}
+		}
 		if err := r.updateStatusCommon(ctx, att, target); err != nil {
 			return ctrl.Result{}, err
 		}
