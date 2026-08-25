@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/workqueue"
@@ -1092,7 +1093,7 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			enqueueInfraForVMI(ctx, e.Object, q)
 		},
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&hostedclusterv1alpha1.Infra{}).
 		Owns(&hostedclusterv1alpha1.DHCPServer{}).
 		Owns(&hostedclusterv1alpha1.DNSServer{}).
@@ -1100,7 +1101,19 @@ func (r *InfraReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&hostedclusterv1alpha1.InfraClusterAttachment{},
 			attachmentHandler,
-		).
+		)
+
+	// Source-IP alias discovery watches VirtualMachineInstances. Clusters
+	// without the kubevirt.io CRDs must still run the operator; aliases are
+	// simply not generated there, so skip the watch instead of failing start.
+	if _, err := mgr.GetRESTMapper().RESTMapping(
+		schema.GroupKind{Group: "kubevirt.io", Kind: "VirtualMachineInstance"}, "v1",
+	); err != nil {
+		logf.Log.Info("kubevirt.io/v1 VirtualMachineInstance not served; kubernetes.* source-IP aliases disabled", "cause", err.Error())
+		return builder.Named("infra").Complete(r)
+	}
+	logf.Log.Info("watching kubevirt.io VirtualMachineInstances for source-IP alias discovery")
+	return builder.
 		Watches(
 			&kubevirtv1.VirtualMachineInstance{},
 			vmiHandler,
