@@ -797,4 +797,350 @@ spec:
 			Expect(getJSONPath("infra", mcInfraName, `{.status.attachments.total}`)).To(Equal("1"))
 		})
 	})
+
+	Context("Kubernetes source-IP aliases via NodePool and Machine", Ordered, func() {
+		const (
+			aliasInfraName = "alias-infra"
+			aliasDomain    = "clusters.example.com"
+			aliasAlpha     = "alias-alpha"
+			aliasBeta      = "alias-beta"
+		)
+
+		kubectlApply := func(manifest string) {
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		getJSONPathResult := func(resource, name, resourceNamespace, path string) (string, error) {
+			cmd := exec.Command("kubectl", "get", resource, name, "-n", resourceNamespace,
+				"-o", fmt.Sprintf("jsonpath=%s", path))
+			out, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+			return strings.TrimSpace(out), err
+		}
+
+		deleteResource := func(resource, name, resourceNamespace string) {
+			cmd := exec.Command("kubectl", "delete", resource, name, "-n", resourceNamespace,
+				"--ignore-not-found=true", "--wait=false")
+			_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		attachmentYAML := func(name, clusterName, controlPlaneNamespace string) string {
+			return fmt.Sprintf(`
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: %[1]s
+  namespace: %[4]s
+spec:
+  infraRef:
+    name: %[5]s
+  hostedClusterRef:
+    name: %[2]s
+    namespace: clusters
+  dns:
+    clusterName: %[2]s
+    baseDomain: %[6]s
+  controlPlaneNamespace: %[3]s
+`, name, clusterName, controlPlaneNamespace, namespace, aliasInfraName, aliasDomain)
+		}
+
+		nodePoolYAML := func(name, clusterName, platformType string) string {
+			return fmt.Sprintf(`
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  name: %s
+  namespace: clusters
+spec:
+  clusterName: %s
+  platform:
+    type: %s
+`, name, clusterName, platformType)
+		}
+
+		machineYAML := func(name, controlPlaneNamespace, nodePoolName string) string {
+			return fmt.Sprintf(`
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    hypershift.openshift.io/nodePool: clusters/%s
+spec: {}
+`, name, controlPlaneNamespace, nodePoolName)
+		}
+
+		patchMachineStatus := func(name, controlPlaneNamespace string, ips ...string) {
+			addresses := make([]string, 0, len(ips))
+			for _, ip := range ips {
+				addresses = append(addresses, fmt.Sprintf(`{"address":%q,"type":"InternalIP"}`, ip))
+			}
+			patch := fmt.Sprintf(`{"status":{"addresses":[%s]}}`, strings.Join(addresses, ","))
+			cmd := exec.Command("kubectl", "patch", "machine", name, "-n", controlPlaneNamespace,
+				"--subresource=status", "--type=merge", "-p", patch)
+			_, err := utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		backendNamesPath := `{.spec.backends[*].name}`
+		allDNSHostnamesPath := `{range .spec.staticEntries[*]}{.hostname}{"\n"}{end}`
+		reasonPath := `{.status.conditions[?(@.type=="Ready")].reason}`
+		sourceRangesPath := func(backendName string) string {
+			return fmt.Sprintf(`{.spec.backends[?(@.name=="%s")].sourcePrefixRanges[*]}`, backendName)
+		}
+
+		BeforeAll(func() {
+			By("creating namespaces for the management-cluster NodePools and CAPI Machines")
+			kubectlApply(`
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusters
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusters-alias-alpha
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusters-alias-beta
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusters-alias-filter
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusters-alias-pending
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusters-alias-aws
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusters-alias-duplicate
+`)
+
+			By("creating an isolated shared Infra for source-IP alias scenarios")
+			kubectlApply(fmt.Sprintf(`
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: Infra
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  networkConfig:
+    cidr: "192.168.101.0/24"
+    gateway: "192.168.101.1"
+    networkAttachmentDefinition: "test-vlan-200"
+    dnsServers:
+      - "8.8.8.8"
+  infraComponents:
+    dns:
+      enabled: true
+      serverIP: "192.168.101.3"
+    proxy:
+      enabled: true
+      serverIP: "192.168.101.4"
+      proxyImage: "envoyproxy/envoy:v1.36.4"
+      managerImage: "%s"
+`, aliasInfraName, namespace, projectImage))
+		})
+
+		AfterAll(func() {
+			attachments := []string{
+				aliasAlpha, aliasBeta, "alias-filter", "alias-pending", "alias-aws", "alias-duplicate",
+			}
+			By("removing source-IP alias attachments")
+			for _, name := range attachments {
+				deleteResource("infraclusterattachment", name, namespace)
+				cmd := exec.Command("kubectl", "wait", "--for=delete",
+					"infraclusterattachment/"+name, "-n", namespace, "--timeout=5s")
+				_, waitErr := utils.RunWithTimeout(8*time.Second, cmd)
+				if waitErr != nil {
+					cmd = exec.Command("kubectl", "patch", "infraclusterattachment", name,
+						"-n", namespace, "--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
+					_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+				}
+			}
+
+			By("removing source-IP alias Machines and NodePools")
+			for _, item := range []struct {
+				name      string
+				namespace string
+			}{
+				{name: "alias-alpha-machine", namespace: "clusters-alias-alpha"},
+				{name: "alias-beta-machine", namespace: "clusters-alias-beta"},
+				{name: "alias-filter-machine", namespace: "clusters-alias-filter"},
+				{name: "alias-pending-machine", namespace: "clusters-alias-pending"},
+				{name: "alias-aws-machine", namespace: "clusters-alias-aws"},
+				{name: "alias-duplicate-machine", namespace: "clusters-alias-duplicate"},
+			} {
+				deleteResource("machine", item.name, item.namespace)
+			}
+			for _, name := range []string{
+				"alias-alpha-np", "alias-beta-np", "alias-filter-np", "alias-pending-np", "alias-aws-np", "alias-duplicate-np",
+			} {
+				deleteResource("nodepool", name, "clusters")
+			}
+			for _, name := range []string{
+				"clusters-alias-alpha", "clusters-alias-beta", "clusters-alias-filter", "clusters-alias-pending",
+				"clusters-alias-aws", "clusters-alias-duplicate",
+			} {
+				cmd := exec.Command("kubectl", "delete", "namespace", name, "--ignore-not-found=true", "--wait=false")
+				_, _ = utils.RunWithTimeout(cleanupCommandTimeout, cmd)
+			}
+
+			By("deleting the source-IP alias Infra")
+			deleteResource("infra", aliasInfraName, namespace)
+		})
+
+		BeforeEach(func() {
+			By("ensuring the baseline Alpha and Beta aliases exist")
+			kubectlApply(
+				nodePoolYAML("alias-alpha-np", aliasAlpha, "KubeVirt") + "---\n" +
+					nodePoolYAML("alias-beta-np", aliasBeta, "KubeVirt") + "---\n" +
+					attachmentYAML(aliasAlpha, aliasAlpha, "clusters-alias-alpha") + "---\n" +
+					attachmentYAML(aliasBeta, aliasBeta, "clusters-alias-beta") + "---\n" +
+					machineYAML("alias-alpha-machine", "clusters-alias-alpha", "alias-alpha-np") + "---\n" +
+					machineYAML("alias-beta-machine", "clusters-alias-beta", "alias-beta-np"),
+			)
+			patchMachineStatus("alias-alpha-machine", "clusters-alias-alpha", "10.0.0.5", "192.168.101.50")
+			patchMachineStatus("alias-beta-machine", "clusters-alias-beta", "192.168.101.51")
+		})
+
+		It("creates source-IP-scoped aliases from KubeVirt NodePools and Machines", func() {
+			By("waiting for source-IP-scoped alias backends and DNS records")
+			Eventually(func(g Gomega) {
+				names, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace, backendNamesPath)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(names).To(ContainSubstring(aliasAlpha + "-kubernetes-hostname"))
+				g.Expect(names).To(ContainSubstring(aliasBeta + "-kubernetes-hostname"))
+
+				alphaRanges, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace,
+					sourceRangesPath(aliasAlpha+"-kubernetes-hostname"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.Fields(alphaRanges)).To(Equal([]string{"192.168.101.50/32"}))
+				betaRanges, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace,
+					sourceRangesPath(aliasBeta+"-kubernetes-hostname"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.Fields(betaRanges)).To(Equal([]string{"192.168.101.51/32"}))
+
+				hostnames, err := getJSONPathResult("dnsserver", aliasInfraName+"-dns", namespace, allDNSHostnamesPath)
+				g.Expect(err).NotTo(HaveOccurred())
+				hostnameList := strings.Fields(hostnames)
+				for _, expected := range []string{
+					"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local",
+				} {
+					count := 0
+					for _, actual := range hostnameList {
+						if actual == expected {
+							count++
+						}
+					}
+					g.Expect(count).To(Equal(1), "DNS alias %q should be published once", expected)
+				}
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+		})
+
+		It("filters Machine addresses by CIDR and follows address updates", func() {
+			kubectlApply(
+				nodePoolYAML("alias-filter-np", "alias-filter", "KubeVirt") + "---\n" +
+					attachmentYAML("alias-filter", "alias-filter", "clusters-alias-filter") + "---\n" +
+					machineYAML("alias-filter-machine", "clusters-alias-filter", "alias-filter-np"),
+			)
+			patchMachineStatus("alias-filter-machine", "clusters-alias-filter", "10.0.0.10", "192.168.101.60")
+
+			By("verifying management or OVNK addresses are excluded")
+			Eventually(func(g Gomega) {
+				ranges, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace,
+					sourceRangesPath("alias-filter-kubernetes-hostname"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.Fields(ranges)).To(Equal([]string{"192.168.101.60/32"}))
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+
+			By("patching Machine.status.addresses to simulate VM movement")
+			patchMachineStatus("alias-filter-machine", "clusters-alias-filter", "192.168.101.61")
+
+			By("waiting for the Machine update watch to replace the source range")
+			Eventually(func(g Gomega) {
+				ranges, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace,
+					sourceRangesPath("alias-filter-kubernetes-hostname"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.Fields(ranges)).To(Equal([]string{"192.168.101.61/32"}))
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+		})
+
+		It("recovers pending pools and ignores non-KubeVirt pools", func() {
+			By("creating a KubeVirt NodePool without a Machine address")
+			kubectlApply(
+				nodePoolYAML("alias-pending-np", "alias-pending", "KubeVirt") + "---\n" +
+					attachmentYAML("alias-pending", "alias-pending", "clusters-alias-pending"),
+			)
+			Eventually(func(g Gomega) {
+				names, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace, backendNamesPath)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(names).To(ContainSubstring("alias-pending-kube-apiserver"))
+				g.Expect(names).NotTo(ContainSubstring("alias-pending-kubernetes-hostname"))
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+
+			By("adding the delayed Machine address")
+			kubectlApply(machineYAML("alias-pending-machine", "clusters-alias-pending", "alias-pending-np"))
+			patchMachineStatus("alias-pending-machine", "clusters-alias-pending", "192.168.101.62")
+			Eventually(func(g Gomega) {
+				names, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace, backendNamesPath)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(names).To(ContainSubstring("alias-pending-kubernetes-hostname"))
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+
+			By("ignoring a Machine belonging to a non-KubeVirt NodePool")
+			kubectlApply(
+				nodePoolYAML("alias-aws-np", "alias-aws", "AWS") + "---\n" +
+					attachmentYAML("alias-aws", "alias-aws", "clusters-alias-aws") + "---\n" +
+					machineYAML("alias-aws-machine", "clusters-alias-aws", "alias-aws-np"),
+			)
+			patchMachineStatus("alias-aws-machine", "clusters-alias-aws", "192.168.101.63")
+			Eventually(func(g Gomega) {
+				names, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace, backendNamesPath)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(names).To(ContainSubstring("alias-aws-kube-apiserver"))
+				g.Expect(names).NotTo(ContainSubstring("alias-aws-kubernetes-hostname"))
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+		})
+
+		It("degrades only aliases that claim a duplicate source IP", func() {
+			By("creating a second KubeVirt attachment with beta's source IP")
+			kubectlApply(
+				nodePoolYAML("alias-duplicate-np", "alias-duplicate", "KubeVirt") + "---\n" +
+					attachmentYAML("alias-duplicate", "alias-duplicate", "clusters-alias-duplicate") + "---\n" +
+					machineYAML("alias-duplicate-machine", "clusters-alias-duplicate", "alias-duplicate-np"),
+			)
+			patchMachineStatus("alias-duplicate-machine", "clusters-alias-duplicate", "192.168.101.51")
+
+			Eventually(func(g Gomega) {
+				reason, err := getJSONPathResult("infra", aliasInfraName, namespace, reasonPath)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("DuplicateSourceIP"))
+
+				names, err := getJSONPathResult("proxyserver", aliasInfraName+"-proxy", namespace, backendNamesPath)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(names).To(ContainSubstring("alias-beta-kube-apiserver"))
+				g.Expect(names).To(ContainSubstring("alias-duplicate-kube-apiserver"))
+				g.Expect(names).To(ContainSubstring("alias-alpha-kubernetes-hostname"))
+				g.Expect(names).NotTo(ContainSubstring("alias-beta-kubernetes-hostname"))
+				g.Expect(names).NotTo(ContainSubstring("alias-duplicate-kubernetes-hostname"))
+			}, multiClusterWait, 2*time.Second).Should(Succeed())
+		})
+	})
 })

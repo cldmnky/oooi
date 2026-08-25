@@ -119,6 +119,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= oooi-test-e2e
+E2E_KUBECONFIG ?= $(LOCALBIN)/$(KIND_CLUSTER).kubeconfig
 
 # E2E test configuration for CNI plugins
 CALICO_VERSION ?= v3.29.1
@@ -138,29 +139,28 @@ setup-test-e2e: kind ## Set up a Kind cluster with OVN-Kubernetes and Multus CNI
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Ensuring CNI setup..."; \
-			$(MAKE) install-cni-plugins; \
-			$(MAKE) install-calico; \
-			$(MAKE) install-multus; \
-			$(MAKE) create-test-nads; \
-			;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)' with Calico and Multus CNI..."; \
-			if [ "$(PODMAN_AVAILABLE)" = "true" ] && [ "$(PODMAN_RUNTIME)" = "true" ]; then \
-				echo "Using podman runtime..."; \
-				$(KIND) create cluster --name $(KIND_CLUSTER) --config hack/kind-config-podman.yaml; \
-			else \
-				$(KIND) create cluster --name $(KIND_CLUSTER) --config hack/kind-config.yaml; \
-			fi; \
-			echo "Waiting for cluster to be ready..."; \
-			sleep 10; \
-			$(MAKE) install-cni-plugins; \
-			$(MAKE) install-calico; \
-			$(MAKE) install-multus; \
-			$(MAKE) create-test-nads; \
-		esac
+	@set -e; \
+	export KUBECONFIG="$(E2E_KUBECONFIG)"; \
+	mkdir -p "$$(dirname "$$KUBECONFIG")"; \
+	if $(KIND) get clusters | grep -Fxq "$(KIND_CLUSTER)"; then \
+		echo "Kind cluster '$(KIND_CLUSTER)' already exists. Ensuring CNI setup..."; \
+	else \
+		echo "Creating Kind cluster '$(KIND_CLUSTER)' with Calico and Multus CNI..."; \
+		if [ "$(PODMAN_AVAILABLE)" = "true" ] && [ "$(PODMAN_RUNTIME)" = "true" ]; then \
+			echo "Using podman runtime..."; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --config hack/kind-config-podman.yaml; \
+		else \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --config hack/kind-config.yaml; \
+		fi; \
+		echo "Waiting for cluster to be ready..."; \
+		sleep 10; \
+	fi; \
+	$(KIND) export kubeconfig --name $(KIND_CLUSTER); \
+	$(MAKE) install-cni-plugins; \
+	$(MAKE) install-calico; \
+	$(MAKE) install-multus
+	@KUBECONFIG="$(E2E_KUBECONFIG)" $(MAKE) install-test-e2e-crds
+	@KUBECONFIG="$(E2E_KUBECONFIG)" $(MAKE) create-test-nads
 
 .PHONY: install-cni-plugins
 install-cni-plugins: ## Install additional CNI plugins (ipvlan, macvlan, etc.) in the Kind cluster
@@ -185,6 +185,13 @@ install-multus: ## Install Multus CNI thin plugin in the Kind cluster
 	kubectl wait --for=condition=ready pod -l app=multus -n kube-system --timeout=300s || true
 	@echo "Multus CNI installed successfully"
 
+.PHONY: install-test-e2e-crds
+install-test-e2e-crds: ## Install the HyperShift and CAPI CRD stubs used by Kind e2e tests
+	@echo "Installing NodePool and Machine CRD stubs..."
+	kubectl apply -f test/e2e/crds/nodepools.crd.yaml -f test/e2e/machines-status.crd.yaml
+	kubectl wait --for=condition=Established crd/nodepools.hypershift.openshift.io crd/machines.cluster.x-k8s.io --timeout=60s
+	@echo "NodePool and Machine CRD stubs installed successfully"
+
 .PHONY: create-test-nads
 create-test-nads: ## Create test NetworkAttachmentDefinitions for secondary networks
 	@echo "Creating oooi-system namespace if it doesn't exist..."
@@ -196,7 +203,7 @@ create-test-nads: ## Create test NetworkAttachmentDefinitions for secondary netw
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
 	@status=0; \
-	E2E_IMAGE="$(E2E_IMAGE_FOR_TEST)" KIND_CLUSTER=$(KIND_CLUSTER) CERT_MANAGER_INSTALL_SKIP=true \
+	E2E_IMAGE="$(E2E_IMAGE_FOR_TEST)" KIND_CLUSTER=$(KIND_CLUSTER) KUBECONFIG="$(E2E_KUBECONFIG)" CERT_MANAGER_INSTALL_SKIP=true \
 		go test ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) -ginkgo.v \
 		$(if $(E2E_FOCUS),-ginkgo.focus "$(E2E_FOCUS)",) || status=$$?; \
 	$(MAKE) cleanup-test-e2e; \
@@ -205,11 +212,13 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+	@rm -f "$(E2E_KUBECONFIG)"
 
 .PHONY: cleanup-test-e2e-deep
 cleanup-test-e2e-deep: ## Deep cleanup including removal of cached images and volumes
 	@echo "Performing deep cleanup of e2e test environment..."
 	@$(KIND) delete cluster --name $(KIND_CLUSTER) || true
+	@rm -f "$(E2E_KUBECONFIG)"
 	@docker system prune -f || true
 	@podman system prune -f || true
 	@echo "Deep cleanup completed"
