@@ -1,0 +1,57 @@
+# InfraClusterAttachment attaches one HostedCluster to the shared VLAN
+# infrastructure owned by an Infra resource. Create one attachment per hosted
+# cluster; all attachments referencing the same Infra share its DHCP, DNS,
+# and proxy services.
+#
+# Prerequisites:
+# - An Infra named "infra-sample" exists in the same namespace.
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: example-hcp-a
+  namespace: default
+spec:
+  infraRef:
+    name: infra-sample
+  hostedClusterRef:
+    name: example-hcp-a
+    namespace: clusters
+  dns:
+    # Records generated on the shared DNSServer/ProxyServer:
+    # api|api-int|oauth|ignition|konnectivity.<clusterName>.<baseDomain>
+    clusterName: example-hcp-a
+    baseDomain: clusters.example.com
+  # Optional: defaults to "<hostedClusterRef.namespace>-<hostedClusterRef.name>"
+  # controlPlaneNamespace: clusters-example-hcp-a
+  appsIngress:
+    enabled: true
+    metallb:
+      addressPoolName: example-hcp-a-apps
+      # Must be disjoint from every other attachment sharing this Infra.
+      ipAddressPoolRange: 192.0.2.200-192.0.2.209
+    service:
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: "*.apps.example-hcp-a.clusters.example.com."
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: example-hcp-b
+  namespace: default
+spec:
+  infraRef:
+    name: infra-sample
+  hostedClusterRef:
+    name: example-hcp-b
+    namespace: clusters
+  dns:
+    clusterName: example-hcp-b
+    baseDomain: clusters.example.com
+  appsIngress:
+    enabled: true
+    metallb:
+      addressPoolName: example-hcp-b-apps
+      ipAddressPoolRange: 192.0.2.210-192.0.2.219
+    service:
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: "*.apps.example-hcp-b.clusters.example.com."

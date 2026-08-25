@@ -1,0 +1,517 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"strings"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
+)
+
+func makeAttachment(name, infraName, clusterName, baseDomain, cpns string) *hostedclusterv1alpha1.InfraClusterAttachment {
+	return &hostedclusterv1alpha1.InfraClusterAttachment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: hostedclusterv1alpha1.InfraClusterAttachmentSpec{
+			InfraRef:         hostedclusterv1alpha1.InfraReference{Name: infraName},
+			HostedClusterRef: hostedclusterv1alpha1.HostedClusterReference{Name: name, Namespace: "clusters"},
+			DNS: hostedclusterv1alpha1.AttachmentDNSConfig{
+				ClusterName: clusterName,
+				BaseDomain:  baseDomain,
+			},
+			ControlPlaneNamespace: cpns,
+		},
+	}
+}
+
+func ensureNamespace(ctx context.Context, name string) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
+	if errors.IsNotFound(err) {
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+	} else {
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+var _ = Describe("Infra multi-cluster aggregation", func() {
+	ctx := context.Background()
+
+	var reconciler *InfraReconciler
+	const infraName = "shared-vlan"
+	infraKey := types.NamespacedName{Name: infraName, Namespace: "default"}
+
+	createSharedInfra := func() {
+		spec := hostedclusterv1alpha1.InfraSpec{
+			NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+				CIDR:                        "192.168.100.0/24",
+				Gateway:                     "192.168.100.1",
+				NetworkAttachmentDefinition: "vlan100",
+			},
+			InfraComponents: hostedclusterv1alpha1.InfraComponents{
+				DHCP: hostedclusterv1alpha1.DHCPConfig{
+					Enabled:    true,
+					ServerIP:   "192.168.100.2",
+					RangeStart: "192.168.100.10",
+					RangeEnd:   "192.168.100.200",
+				},
+				DNS: hostedclusterv1alpha1.DNSConfig{
+					Enabled:  true,
+					ServerIP: "192.168.100.3",
+				},
+				Proxy: hostedclusterv1alpha1.ProxyConfig{
+					Enabled:  true,
+					ServerIP: "192.168.100.4",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, &hostedclusterv1alpha1.Infra{
+			ObjectMeta: metav1.ObjectMeta{Name: infraName, Namespace: "default"},
+			Spec:       spec,
+		})).To(Succeed())
+	}
+
+	reconcileInfra := func() {
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: infraKey})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	getDNS := func() hostedclusterv1alpha1.DNSServer {
+		var dns hostedclusterv1alpha1.DNSServer
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: infraName + "-dns", Namespace: "default"}, &dns)).To(Succeed())
+		return dns
+	}
+
+	getProxy := func() hostedclusterv1alpha1.ProxyServer {
+		var proxy hostedclusterv1alpha1.ProxyServer
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: infraName + "-proxy", Namespace: "default"}, &proxy)).To(Succeed())
+		return proxy
+	}
+
+	getInfra := func() hostedclusterv1alpha1.Infra {
+		var infra hostedclusterv1alpha1.Infra
+		Expect(k8sClient.Get(ctx, infraKey, &infra)).To(Succeed())
+		return infra
+	}
+
+	AfterEach(func() {
+		// Remove attachments first, then the Infra, mirroring documented teardown.
+		var atts hostedclusterv1alpha1.InfraClusterAttachmentList
+		Expect(k8sClient.List(ctx, &atts, client.InNamespace("default"))).To(Succeed())
+		for i := range atts.Items {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &atts.Items[i]))).To(Succeed())
+		}
+		infra := &hostedclusterv1alpha1.Infra{ObjectMeta: metav1.ObjectMeta{Name: infraName, Namespace: "default"}}
+		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, infra))).To(Succeed())
+
+		// envtest has no GC; delete the reconciler-created children explicitly.
+		for _, n := range []string{infraName + "-dhcp", infraName + "-dns", infraName + "-proxy"} {
+			for _, obj := range []client.Object{
+				&hostedclusterv1alpha1.DHCPServer{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: "default"}},
+				&hostedclusterv1alpha1.DNSServer{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: "default"}},
+				&hostedclusterv1alpha1.ProxyServer{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: "default"}},
+			} {
+				_ = k8sClient.Delete(ctx, obj)
+			}
+		}
+	})
+
+	BeforeEach(func() {
+		reconciler = &InfraReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	})
+
+	It("aggregates two attachments into one shared child set regardless of creation order", func() {
+		createSharedInfra()
+		// Deliberately out of alphabetical order to prove deterministic output.
+		Expect(k8sClient.Create(ctx, makeAttachment("bravo", infraName, "bravo", "example.com", "clusters-bravo"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeAttachment("alpha", infraName, "alpha", "example.com", "clusters-alpha"))).To(Succeed())
+
+		reconcileInfra()
+
+		By("creating exactly one child per component")
+		prefix := infraName + "-"
+		countWithPrefix := func(names []string) int {
+			c := 0
+			for _, nm := range names {
+				if strings.HasPrefix(nm, prefix) {
+					c++
+				}
+			}
+			return c
+		}
+
+		var dhcs hostedclusterv1alpha1.DHCPServerList
+		var dnss hostedclusterv1alpha1.DNSServerList
+		var prxs hostedclusterv1alpha1.ProxyServerList
+		Expect(k8sClient.List(ctx, &dhcs)).To(Succeed())
+		Expect(k8sClient.List(ctx, &dnss)).To(Succeed())
+		Expect(k8sClient.List(ctx, &prxs)).To(Succeed())
+
+		dhcpNames := make([]string, 0, len(dhcs.Items))
+		for i := range dhcs.Items {
+			dhcpNames = append(dhcpNames, dhcs.Items[i].Name)
+		}
+		dnsNames := make([]string, 0, len(dnss.Items))
+		for i := range dnss.Items {
+			dnsNames = append(dnsNames, dnss.Items[i].Name)
+		}
+		prxNames := make([]string, 0, len(prxs.Items))
+		for i := range prxs.Items {
+			prxNames = append(prxNames, prxs.Items[i].Name)
+		}
+		Expect(countWithPrefix(dhcpNames)).To(Equal(1), "one DHCPServer for this Infra")
+		Expect(countWithPrefix(dnsNames)).To(Equal(1), "one DNSServer for this Infra")
+		Expect(countWithPrefix(prxNames)).To(Equal(1), "one ProxyServer for this Infra")
+
+		By("publishing static records for both cluster domains")
+		dns := getDNS()
+		hostnames := map[string]string{}
+		for _, e := range dns.Spec.StaticEntries {
+			hostnames[e.Hostname] = e.IP
+		}
+		Expect(hostnames).To(HaveKeyWithValue("api.alpha.example.com", "192.168.100.4"))
+		Expect(hostnames).To(HaveKeyWithValue("konnectivity.bravo.example.com", "192.168.100.4"))
+
+		By("routing SNI backends to each control-plane namespace")
+		proxy := getProxy()
+		byName := map[string]hostedclusterv1alpha1.ProxyBackend{}
+		for _, b := range proxy.Spec.Backends {
+			byName[b.Name] = b
+		}
+		Expect(byName).To(HaveKey("alpha-kube-apiserver"))
+		Expect(byName["alpha-kube-apiserver"].TargetNamespace).To(Equal("clusters-alpha"))
+		Expect(byName).To(HaveKey("bravo-konnectivity-server"))
+		Expect(byName["bravo-konnectivity-server"].TargetNamespace).To(Equal("clusters-bravo"))
+
+		By("omitting ambiguous unqualified Kubernetes aliases")
+		for _, b := range proxy.Spec.Backends {
+			for _, alt := range b.AlternateHostnames {
+				Expect(alt).NotTo(Equal("kubernetes.default"))
+			}
+		}
+		Expect(byName).NotTo(HaveKey("kube-apiserver-kubernetes-hostname"))
+
+		By("summarizing attachment readiness")
+		summary := getInfra().Status.Attachments
+		Expect(summary).NotTo(BeNil())
+		Expect(summary.Total).To(Equal(int32(2)))
+		Expect(summary.Ready).To(Equal(int32(0)))
+		Expect(getInfra().Status.ComponentStatus.ProxyReady).To(BeTrue())
+	})
+
+	It("marks conflicting domains Degraded and excludes both", func() {
+		createSharedInfra()
+		Expect(k8sClient.Create(ctx, makeAttachment("first", infraName, "dupe", "collide.example.com", "clusters-first"))).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeAttachment("second", infraName, "dupe", "collide.example.com", "clusters-second"))).To(Succeed())
+
+		reconcileInfra()
+
+		cond := meta.FindStatusCondition(getInfra().Status.Conditions, "Ready")
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(reasonDuplicateHostname))
+		Expect(cond.Message).To(ContainSubstring("first"))
+		Expect(cond.Message).To(ContainSubstring("second"))
+		Expect(getInfra().Status.ComponentStatus.ProxyReady).To(BeFalse())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: infraName + "-dns", Namespace: "default",
+		}, &hostedclusterv1alpha1.DNSServer{})).To(MatchError(ContainSubstring("not found")))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: infraName + "-proxy", Namespace: "default",
+		}, &hostedclusterv1alpha1.ProxyServer{})).To(MatchError(ContainSubstring("not found")))
+	})
+
+	It("excludes terminating attachments from desired records", func() {
+		createSharedInfra()
+		Expect(k8sClient.Create(ctx, makeAttachment("active", infraName, "active", "example.com", "clusters-active"))).To(Succeed())
+		terminating := makeAttachment("terminating", infraName, "terminating", "example.com", "clusters-terminating")
+		terminating.Finalizers = []string{"test.finalizer"}
+		Expect(k8sClient.Create(ctx, terminating)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, terminating)).To(Succeed())
+
+		reconcileInfra()
+
+		dns := getDNS()
+		for _, entry := range dns.Spec.StaticEntries {
+			Expect(entry.Hostname).NotTo(ContainSubstring("terminating.example.com"))
+		}
+		Expect(dns.Spec.StaticEntries).To(ContainElement(HaveField("Hostname", "api.active.example.com")))
+		Expect(getInfra().Status.Attachments.Total).To(Equal(int32(1)))
+
+		// Release the test finalizer so the shared cleanup can remove the object.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "terminating", Namespace: "default"}, terminating)).To(Succeed())
+		terminating.Finalizers = nil
+		Expect(k8sClient.Update(ctx, terminating)).To(Succeed())
+	})
+
+})
+
+var _ = Describe("InfraClusterAttachment Controller", func() {
+	ctx := context.Background()
+
+	const infraName = "att-infra"
+
+	createInfraForAttachment := func() {
+		Expect(k8sClient.Create(ctx, &hostedclusterv1alpha1.Infra{
+			ObjectMeta: metav1.ObjectMeta{Name: infraName, Namespace: "default"},
+			Spec: hostedclusterv1alpha1.InfraSpec{
+				NetworkConfig: hostedclusterv1alpha1.NetworkConfig{
+					CIDR:                        "192.168.100.0/24",
+					Gateway:                     "192.168.100.1",
+					NetworkAttachmentDefinition: "vlan100",
+				},
+			},
+		})).To(Succeed())
+	}
+
+	reconcileAttachment := func(r *InfraClusterAttachmentReconciler, name string) {
+		_, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	AfterEach(func() {
+		var atts hostedclusterv1alpha1.InfraClusterAttachmentList
+		Expect(k8sClient.List(ctx, &atts, client.InNamespace("default"))).To(Succeed())
+		for i := range atts.Items {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &atts.Items[i]))).To(Succeed())
+		}
+		infra := &hostedclusterv1alpha1.Infra{ObjectMeta: metav1.ObjectMeta{Name: infraName, Namespace: "default"}}
+		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, infra))).To(Succeed())
+	})
+
+	getAttachment := func(name string) hostedclusterv1alpha1.InfraClusterAttachment {
+		var att hostedclusterv1alpha1.InfraClusterAttachment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, &att)).To(Succeed())
+		return att
+	}
+
+	It("derives defaults, adds a finalizer, and reports Ready", func() {
+		createInfraForAttachment()
+		ensureNamespace(ctx, "clusters-defaults")
+
+		att := makeAttachment("defaults", infraName, "example-hcp", "example.com", "")
+		att.Spec.ControlPlaneNamespace = "" // exercise derivation
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		factoryCalled := false
+		r := &InfraClusterAttachmentReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			HostedClusterClientFactory: func(context.Context, *hostedclusterv1alpha1.InfraClusterAttachment, string, string) (client.Client, error) {
+				factoryCalled = true
+				return k8sClient, nil
+			},
+		}
+		reconcileAttachment(r, "defaults") // finalizer add pass
+		reconcileAttachment(r, "defaults") // main pass
+
+		got := getAttachment("defaults")
+		Expect(got.Status.Domain).To(Equal("example-hcp.example.com"))
+		Expect(got.Status.ControlPlaneNamespace).To(Equal("clusters-defaults"))
+		cond := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+		var policy networkingv1.NetworkPolicy
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "allow-infrastructure", Namespace: "clusters-defaults",
+		}, &policy)).To(Succeed())
+
+		Expect(k8sClient.Delete(ctx, &got)).To(Succeed())
+		reconcileAttachment(r, "defaults") // cleanup pass removes finalizer
+		Expect(factoryCalled).To(BeFalse(), "attachment cleanup must not contact the HostedCluster API when apps ingress is disabled")
+
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: "defaults", Namespace: "default"}, &hostedclusterv1alpha1.InfraClusterAttachment{})
+			return errors.IsNotFound(err)
+		}).Should(BeTrue())
+	})
+
+	It("removes the finalizer when the derived control-plane namespace is absent", func() {
+		createInfraForAttachment()
+		att := makeAttachment("missing-namespace", infraName, "example-hcp", "example.com", "")
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileAttachment(r, "missing-namespace") // finalizer add pass
+		reconcileAttachment(r, "missing-namespace") // namespace-pending pass
+
+		got := getAttachment("missing-namespace")
+		Expect(k8sClient.Delete(ctx, &got)).To(Succeed())
+		reconcileAttachment(r, "missing-namespace")
+
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: "missing-namespace", Namespace: "default",
+			}, &hostedclusterv1alpha1.InfraClusterAttachment{})
+			return errors.IsNotFound(err)
+		}).Should(BeTrue())
+	})
+
+	It("reports InfraNotFound when the referenced Infra is missing", func() {
+		att := makeAttachment("orphan", "missing-infra", "orphan", "example.com", "")
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileAttachment(r, "orphan")
+		reconcileAttachment(r, "orphan")
+
+		cond := meta.FindStatusCondition(getAttachment("orphan").Status.Conditions, "Ready")
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(reasonAttachmentInfraNotFound))
+	})
+
+	It("rejects apps ingress without MetalLB settings", func() {
+		createInfraForAttachment()
+		ensureNamespace(ctx, "clusters-badapps")
+		att := makeAttachment("badapps", infraName, "badapps", "example.com", "")
+		att.Spec.AppsIngress = hostedclusterv1alpha1.AppsIngressConfig{Enabled: true}
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		r := &InfraClusterAttachmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileAttachment(r, "badapps")
+		reconcileAttachment(r, "badapps")
+
+		got := getAttachment("badapps")
+		Expect(got.Status.AppsIngressStatus.Phase).To(Equal(PhaseDegraded))
+		Expect(got.Status.AppsIngressStatus.Reason).To(Equal(reasonAttachmentInvalidConfig))
+		cond := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+
+		var policy networkingv1.NetworkPolicy
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "allow-infrastructure", Namespace: "clusters-badapps",
+		}, &policy)).To(Succeed())
+	})
+
+	It("reconciles the control-plane policy alongside apps ingress", func() {
+		createInfraForAttachment()
+		ensureNamespace(ctx, "clusters-apps")
+		att := makeAttachment("apps", infraName, "apps", "example.com", "clusters-apps")
+		att.Spec.AppsIngress = hostedclusterv1alpha1.AppsIngressConfig{
+			Enabled: true,
+			MetalLB: hostedclusterv1alpha1.AppsIngressMetalLB{
+				AddressPoolName:    "apps-pool",
+				IPAddressPoolRange: "192.0.2.10-192.0.2.20",
+			},
+		}
+		Expect(k8sClient.Create(ctx, att)).To(Succeed())
+
+		r := &InfraClusterAttachmentReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			HostedClusterClientFactory: func(context.Context, *hostedclusterv1alpha1.InfraClusterAttachment, string, string) (client.Client, error) {
+				return k8sClient, nil
+			},
+		}
+		reconcileAttachment(r, "apps") // finalizer add pass
+		reconcileAttachment(r, "apps") // apps ingress and policy pass
+
+		var policy networkingv1.NetworkPolicy
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "allow-infrastructure", Namespace: "clusters-apps",
+		}, &policy)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &policy)).To(Succeed())
+	})
+})
+
+var _ = Describe("Shared external Service OAuth policy", func() {
+	makeView := func(name, domain, cpns string, ready bool) attachmentView {
+		return attachmentView{
+			name:                  name,
+			ready:                 ready,
+			hostedClusterRef:      hostedclusterv1alpha1.HostedClusterReference{Name: name, Namespace: "clusters"},
+			controlPlaneNamespace: cpns,
+			domain:                domain,
+		}
+	}
+
+	infraWithExternal := func(publish bool) *hostedclusterv1alpha1.Infra {
+		return &hostedclusterv1alpha1.Infra{
+			ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "default"},
+			Spec: hostedclusterv1alpha1.InfraSpec{
+				NetworkConfig: hostedclusterv1alpha1.NetworkConfig{NetworkAttachmentDefinition: "vlan"},
+				InfraComponents: hostedclusterv1alpha1.InfraComponents{
+					Proxy: hostedclusterv1alpha1.ProxyConfig{
+						ServerIP: "192.0.2.4",
+						ExternalService: hostedclusterv1alpha1.ProxyExternalService{
+							Enabled:                 true,
+							AddressPoolName:         "public-pool",
+							PublishAttachmentOAuths: publish,
+							Annotations: map[string]string{
+								"external-dns.alpha.kubernetes.io/hostname": "custom-oauth.example.com.",
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	It("appends Ready attachment oauth names to the shared VIP annotation", func() {
+		infra := infraWithExternal(true)
+		views := []attachmentView{
+			makeView("bravo", "bravo.example.com", "clusters-bravo", true),
+			makeView("alpha", "alpha.example.com", "clusters-alpha", false), // not Ready
+		}
+		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
+		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
+			To(Equal("custom-oauth.example.com.,oauth.bravo.example.com"))
+	})
+
+	It("does not modify the annotation unless publishing is enabled", func() {
+		infra := infraWithExternal(false)
+		views := []attachmentView{makeView("a", "a.example.com", "clusters-a", true)}
+		proxy := (&InfraReconciler{}).proxyServerForInfra(infra, views)
+		Expect(proxy.Spec.ExternalService.Annotations["external-dns.alpha.kubernetes.io/hostname"]).
+			To(Equal("custom-oauth.example.com."))
+	})
+
+	It("deduplicates case-insensitively and preserves user ordering", func() {
+		out := mergeOAuthHostnames(map[string]string{
+			hostnameAnnotationKey: "OAuth.A.example.com., extra.example.com",
+		}, []string{" oauth.a.example.com ", "oauth.b.example.com"})
+		Expect(out[hostnameAnnotationKey]).
+			To(Equal("OAuth.A.example.com.,extra.example.com,oauth.b.example.com"))
+	})
+
+	It("normalizes omitted HostedCluster namespaces for routing defaults", func() {
+		att := makeAttachment("defaulted", "shared-vlan", "defaulted", "example.com", "")
+		att.Spec.HostedClusterRef.Namespace = ""
+
+		view := attachmentFromAttachment(att)
+
+		Expect(view.hostedClusterRef.Namespace).To(Equal("clusters"))
+		Expect(view.controlPlaneNamespace).To(Equal("clusters-defaulted"))
+	})
+
+})

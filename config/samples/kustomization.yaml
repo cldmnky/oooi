@@ -1,6 +1,7 @@
 ## Append samples of your project ##
 resources:
 - hostedcluster_v1alpha1_infra.yaml
+- hostedcluster_v1alpha1_infraclusterattachment.yaml
 - hostedcluster_v1alpha1_dhcpserver.yaml
 - hostedcluster_v1alpha1_dnsserver.yaml
 - hostedcluster_v1alpha1_proxyserver.yaml

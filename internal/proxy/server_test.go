@@ -364,12 +364,19 @@ func TestXDSServer_buildEnvoyResources(t *testing.T) {
 				assert.NotNil(t, listenerProto.Address)
 				assert.NotEmpty(t, listenerProto.FilterChains)
 
-				// Check if this is a plain TCP port (6443) - should not have TLS inspector
+				// Check if this is a plain TCP port (80, or single-backend 6443) - should not have TLS inspector
 				port := listenerProto.Address.GetSocketAddress().GetPortValue()
-				if port == 6443 {
-					// Plain TCP ports should not have TLS inspector
+				switch port {
+				case 80:
 					assert.Empty(t, listenerProto.ListenerFilters, "plain TCP port should not have TLS inspector")
-				} else {
+				case 6443:
+					// Single-backend 6443 remains plain TCP; multi-backend 6443 is SNI-routed with TLS inspector
+					if len(listenerProto.FilterChains) == 1 && listenerProto.FilterChains[0].FilterChainMatch == nil {
+						assert.Empty(t, listenerProto.ListenerFilters, "plain TCP port should not have TLS inspector")
+					} else {
+						assert.NotEmpty(t, listenerProto.ListenerFilters, "SNI-routed 6443 should have TLS inspector")
+					}
+				default:
 					// Other ports should have TLS inspector
 					assert.NotEmpty(t, listenerProto.ListenerFilters, "non-plain-TCP port should have TLS inspector")
 				}

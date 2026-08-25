@@ -34,10 +34,6 @@ type InfraSpec struct {
 	// (DHCP, DNS, Proxy) that bridge the isolated VLAN to the control plane.
 	// +optional
 	InfraComponents InfraComponents `json:"infraComponents,omitempty"`
-
-	// AppsIngress defines optional configuration for hosted cluster *.apps ingress handling.
-	// +optional
-	AppsIngress AppsIngressConfig `json:"appsIngress,omitempty"`
 }
 
 // NetworkConfig defines the secondary network parameters for the isolated VLAN.
@@ -129,16 +125,6 @@ type DNSConfig struct {
 	// +optional
 	ServerIP string `json:"serverIP,omitempty"`
 
-	// BaseDomain is the base domain for the hosted cluster (e.g., "example.com").
-	// Used to construct FQDNs for API server and routes.
-	// +optional
-	BaseDomain string `json:"baseDomain,omitempty"`
-
-	// ClusterName is the name of the hosted cluster.
-	// Used to construct FQDNs (e.g., "api.<clusterName>.<baseDomain>").
-	// +optional
-	ClusterName string `json:"clusterName,omitempty"`
-
 	// Image is the container image for CoreDNS.
 	// +optional
 	Image string `json:"image,omitempty"`
@@ -162,17 +148,6 @@ type ProxyConfig struct {
 	// or a ClusterIP address. Used by DNS default view for management cluster pod access.
 	// +optional
 	InternalProxyService string `json:"internalProxyService,omitempty"`
-
-	// ControlPlaneNamespace is the namespace where the hosted control plane
-	// services are running (e.g., "clusters-<clustername>").
-	// +optional
-	ControlPlaneNamespace string `json:"controlPlaneNamespace,omitempty"`
-
-	// APIServerService is the name of the Kubernetes API server service
-	// in the control plane namespace.
-	// +optional
-	// +kubebuilder:default="kube-apiserver"
-	APIServerService string `json:"apiServerService,omitempty"`
 
 	// ProxyImage is the container image for Envoy proxy.
 	// +optional
@@ -214,6 +189,15 @@ type ProxyExternalService struct {
 	// integrations such as external-dns.alpha.kubernetes.io/hostname.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// PublishAttachmentOAuths appends the oauth.<cluster>.<baseDomain> name of
+	// every Ready InfraClusterAttachment on this Infra to this Service's
+	// external-dns.alpha.kubernetes.io/hostname annotation as a
+	// comma-separated list, merged with any value already configured. This
+	// publishes each attached cluster's OAuth endpoint through the shared
+	// proxy VIP. Only effective when Enabled is true.
+	// +optional
+	PublishAttachmentOAuths bool `json:"publishAttachmentOAuths,omitempty"`
 }
 
 // AppsIngressConfig defines optional configuration for hosted cluster *.apps domain ingress handling.
@@ -222,15 +206,6 @@ type AppsIngressConfig struct {
 	// +optional
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled"`
-
-	// BaseDomain is the base domain for the hosted cluster's apps ingress.
-	// Example: "apps.example.com" where *.apps.<cluster>.apps.example.com will be routable.
-	// +optional
-	BaseDomain string `json:"baseDomain,omitempty"`
-
-	// HostedClusterRef references the HostedCluster for which apps ingress is being configured.
-	// +optional
-	HostedClusterRef HostedClusterReference `json:"hostedClusterRef,omitempty"`
 
 	// MetalLB contains configuration for the user-managed MetalLB installation.
 	// +optional
@@ -284,7 +259,7 @@ type AppsIngressService struct {
 	Name string `json:"name,omitempty"`
 
 	// Namespace is the namespace where the service will be created.
-	// Default: "clusters-<hostedcluster-name>"
+	// Default: "openshift-ingress"
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
@@ -335,13 +310,26 @@ type InfraStatus struct {
 	// +optional
 	ComponentStatus ComponentStatus `json:"componentStatus,omitempty"`
 
-	// AppsIngressStatus tracks the status of apps ingress configuration.
-	// +optional
-	AppsIngressStatus AppsIngressStatus `json:"appsIngressStatus,omitempty"`
-
 	// ObservedGeneration reflects the generation of the most recently observed Infra.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Attachments summarizes the InfraClusterAttachment resources targeting
+	// this Infra. Empty when none exist.
+	// +optional
+	Attachments *AttachmentsSummary `json:"attachments,omitempty"`
+}
+
+// AttachmentsSummary aggregates the state of the InfraClusterAttachments
+// referencing an Infra resource.
+type AttachmentsSummary struct {
+	// Total is the number of attachments targeting this Infra.
+	// +optional
+	Total int32 `json:"total,omitempty"`
+
+	// Ready is the number of attachments whose Ready condition is True.
+	// +optional
+	Ready int32 `json:"ready,omitempty"`
 }
 
 // ComponentStatus tracks the readiness of infrastructure components.
@@ -354,7 +342,8 @@ type ComponentStatus struct {
 	// +optional
 	DNSReady bool `json:"dnsReady,omitempty"`
 
-	// ProxyReady indicates whether the Envoy proxy is ready.
+	// ProxyReady indicates that a valid ProxyServer configuration was reconciled.
+	// It does not indicate Deployment availability.
 	// +optional
 	ProxyReady bool `json:"proxyReady,omitempty"`
 }
@@ -387,6 +376,26 @@ type AppsIngressStatus struct {
 	// Message provides a human-readable message explaining the current status.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// AppliedServiceName records the last hosted ingress Service name managed
+	// by oooi so disabling or changing apps ingress can clean it up.
+	// +optional
+	AppliedServiceName string `json:"appliedServiceName,omitempty"`
+
+	// AppliedServiceNamespace records the namespace of the last hosted ingress
+	// Service managed by oooi.
+	// +optional
+	AppliedServiceNamespace string `json:"appliedServiceNamespace,omitempty"`
+
+	// AppliedAddressPoolName records the last MetalLB IPAddressPool managed by
+	// oooi.
+	// +optional
+	AppliedAddressPoolName string `json:"appliedAddressPoolName,omitempty"`
+
+	// AppliedL2AdvertisementName records the last MetalLB L2Advertisement
+	// managed by oooi.
+	// +optional
+	AppliedL2AdvertisementName string `json:"appliedL2AdvertisementName,omitempty"`
 }
 
 // +kubebuilder:object:root=true

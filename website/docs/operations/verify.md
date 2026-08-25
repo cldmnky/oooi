@@ -17,7 +17,7 @@ kubectl -n clusters get infra <name> \
   -o jsonpath='ready={.status.conditions[?(@.type=="Ready")].status}{"\n"}'
 kubectl -n clusters get infra <name> \
   -o jsonpath='{.status.componentStatus}{"\n"}'
-kubectl -n clusters get infra <name> \
+kubectl -n clusters get infraattachment <name> \
   -o jsonpath='{.status.appsIngressStatus.phase}{" "}{.status.appsIngressStatus.reason}{" ip="}{.status.appsIngressStatus.externalIP}{"\n"}'
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver
 kubectl -n clusters rollout status deployment/<name>-dhcp --timeout=5m
@@ -36,6 +36,9 @@ Use a real VLAN client or a VLAN-attached probe. With DNS at `.3`:
 ```bash
 dig @192.0.2.3 +short api.example-hcp.clusters.example.com
 # → proxy serverIP, e.g. 192.0.2.4
+
+dig @192.0.2.3 +short kubernetes.default.svc
+# → the same proxy serverIP when a KubeVirt Machine source address is ready
 
 dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.example.com
 # → apps VIP, e.g. 192.0.2.200
@@ -60,6 +63,18 @@ curl -k -o /dev/null -w '%{http_code}\n' \
 | Ignition `/` | `404` | Normal at the root path; backend reached |
 | konnectivity plain HTTP | `415` | Backend reached; expects a different protocol |
 
+For a source-scoped alias, verify the generated ranges before interpreting a
+failure as a DNS failure:
+
+```bash
+kubectl -n clusters get proxyserver <infra>-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="<attachment>-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+```
+
+The result should contain the worker's VLAN address as a `/32`. Addresses are
+not populated until CAPK has copied the VMI interface address to CAPI Machine
+status. Check the fully qualified API name while that propagation is pending.
+
 ## 3. From the pod network
 
 The same names must resolve to the **proxy Service ClusterIP**:
@@ -81,7 +96,7 @@ Once ExternalDNS has converged:
 
 ```bash
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
-# → current .status.appsIngressStatus.externalIP
+# → current InfraClusterAttachment.status.appsIngressStatus.externalIP
 
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 # → current <infra>-proxy-external EXTERNAL-IP

@@ -25,17 +25,18 @@ Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
 
     Configure the Red Hat External DNS Operator `ExternalDNS` resource with
     provider credentials and a label filter such as
-    `external-dns.example.com/publish=yes`. Then make sure the `Infra` resource
-    carries matching metadata. Confirm that the Operator version and supported
+    `external-dns.example.com/publish=yes`. Then make sure the
+    `InfraClusterAttachment` carries matching metadata. Confirm that the Operator version and supported
     providers match your OpenShift Container Platform release.
 
     ```yaml
-    appsIngress:
-      service:
-        annotations:
-          external-dns.alpha.kubernetes.io/hostname: "*.apps.mycluster.example.com."
-        labels:
-          external-dns.example.com/publish: "yes"
+    spec:
+      appsIngress:
+        service:
+          annotations:
+            external-dns.alpha.kubernetes.io/hostname: "*.apps.mycluster.example.com."
+          labels:
+            external-dns.example.com/publish: "yes"
     ```
 
 === "Dedicated Deployment with a hosted-cluster kubeconfig"
@@ -99,12 +100,11 @@ flowchart LR
    `9901` and backend ports stay ClusterIP-only:
 
    ```yaml
-   infraComponents:
-     proxy:
-       enabled: true
-       serverIP: 192.0.2.4
-       controlPlaneNamespace: clusters-example-hcp
-       externalService:
+    infraComponents:
+      proxy:
+        enabled: true
+        serverIP: 192.0.2.4
+        externalService:
          enabled: true
          addressPoolName: hosting-public-pool            # hosting-cluster IPAddressPool
          annotations:

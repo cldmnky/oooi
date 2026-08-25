@@ -188,19 +188,14 @@ func TestProxyConfig_Fields(t *testing.T) {
 
 func TestAppsIngressConfig_Fields(t *testing.T) {
 	config := AppsIngressConfig{
-		Enabled:    true,
-		BaseDomain: "apps.example.com",
-		HostedClusterRef: HostedClusterReference{
-			Name:      "mycluster",
-			Namespace: "clusters",
-		},
+		Enabled: true,
 		MetalLB: AppsIngressMetalLB{
 			AddressPoolName:    "lab-network",
 			IPAddressPoolRange: "10.202.64.221-10.202.64.240",
 		},
 		Service: AppsIngressService{
 			Name:      "oooi-ingress",
-			Namespace: "clusters-mycluster",
+			Namespace: "openshift-ingress",
 		},
 		Ports: AppsIngressPorts{
 			HTTP:  80,
@@ -210,12 +205,6 @@ func TestAppsIngressConfig_Fields(t *testing.T) {
 
 	if !config.Enabled {
 		t.Error("AppsIngress should be enabled")
-	}
-	if config.BaseDomain == "" {
-		t.Error("BaseDomain should be set")
-	}
-	if config.HostedClusterRef.Name == "" {
-		t.Error("HostedClusterRef.Name should be set")
 	}
 	if config.MetalLB.AddressPoolName == "" {
 		t.Error("MetalLB.AddressPoolName should be set")

@@ -35,6 +35,8 @@ import (
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
 	"github.com/cldmnky/oooi/internal/controller"
+
+	kubevirtv1 "kubevirt.io/api/core/v1"
 )
 
 var (
@@ -59,6 +61,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(hostedclusterv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 
 	// Add flags to the manager command
@@ -222,6 +225,13 @@ func runManager(cmd *cobra.Command, args []string) {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Infra")
+		os.Exit(1)
+	}
+	if err := (&controller.InfraClusterAttachmentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "InfraClusterAttachment")
 		os.Exit(1)
 	}
 	if err := (&controller.DHCPServerReconciler{

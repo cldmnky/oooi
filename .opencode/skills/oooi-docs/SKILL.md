@@ -52,14 +52,36 @@ Check these details whenever related content changes:
   `Infra`; explain their lifecycle separately.
 - If `networkAttachmentNamespace` is omitted, the reconciler uses the `Infra`
   namespace. It does not fall back to `default`.
-- `Infra` currently routes API traffic to `kube-apiserver` even though the API
-  exposes `apiServerService`.
+- `InfraClusterAttachment` supplies the per-cluster control-plane namespace and
+  optional API Service name; shared Infra configuration has no cluster-specific
+  routing fields.
 - The default DHCP and DNS component image is the oooi image. The proxy uses
   the Envoy image plus an oooi manager sidecar.
 - `make container-build` uses `IMAGE_TAG_BASE`, not a caller-provided
   `KO_DOCKER_REPO`.
 - `make run` does not forward arbitrary arguments. Use `go run ./main.go
   manager <flags>` for manager flags.
+
+## Multi-cluster ownership rules
+
+- `Infra` is network-scoped and is the only writer of the shared DHCPServer,
+  DNSServer, and ProxyServer. Never document attachments writing those children.
+- Cluster-specific DNS, control-plane, and apps-ingress settings belong on
+  `InfraClusterAttachment`; there is no implicit single-cluster binding.
+- One attachment per HostedCluster; duplicate domains or duplicate hosted
+  cluster references exclude both sides from routing with Degraded conditions —
+  never describe silent conflict resolution.
+- Shared proxies answer fully qualified SNI names for every attachment. For
+  KubeVirt attachments, the four unqualified Kubernetes aliases
+  (`kubernetes`, `kubernetes.default`, `kubernetes.default.svc`, and
+  `kubernetes.default.svc.cluster.local`) are emitted only when CAPI Machine
+  status contains worker addresses inside the shared Infra CIDR. Envoy scopes
+  those alias chains to the discovered worker source `/32`s; never describe
+  them as a global catch-all or as authentication.
+- `proxy.externalService.publishAttachmentOAuths` merges Ready attachments'
+  oauth names into the hostname annotation (user names first, additions sorted).
+- New CRD files must be added to `config/crd/kustomization.yaml`; omissions
+  surface in E2E as an unsynced informer cache, not as a manifest error.
 
 ## Example policy
 

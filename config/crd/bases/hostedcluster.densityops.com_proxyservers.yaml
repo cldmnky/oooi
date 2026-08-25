@@ -103,6 +103,15 @@ spec:
                       - TCP
                       - UDP
                       type: string
+                    sourcePrefixRanges:
+                      description: |-
+                        SourcePrefixRanges restricts this backend to connections whose source IP
+                        is within one of the CIDRs. Empty means no source restriction (existing
+                        FQDN backends). Each entry must be CIDR, typically /32 for VM IPs.
+                      items:
+                        type: string
+                      maxItems: 256
+                      type: array
                     targetNamespace:
                       description: TargetNamespace is the namespace where the target
                         service resides
@@ -168,6 +177,15 @@ spec:
                       Labels are reconciled onto the proxy Service. Use these to select the
                       Service from ExternalDNS.
                     type: object
+                  publishAttachmentOAuths:
+                    description: |-
+                      PublishAttachmentOAuths appends the oauth.<cluster>.<baseDomain> name of
+                      every Ready InfraClusterAttachment on this Infra to this Service's
+                      external-dns.alpha.kubernetes.io/hostname annotation as a
+                      comma-separated list, merged with any value already configured. This
+                      publishes each attached cluster's OAuth endpoint through the shared
+                      proxy VIP. Only effective when Enabled is true.
+                    type: boolean
                 type: object
               logLevel:
                 default: info

@@ -55,7 +55,7 @@ flowchart LR
     OPS -->|"installs MetalLB,<br/>creates LB Service"| VIP
     PRX -->|L4 to ClusterIPs| HCP
     ING -.->|backend of *.apps| VIP
-    OPS -.->|watches LB Services| EDNS
+    EDNS -.->|watches Services| ZONE
 ```
 
 Only two crossing points exist between VLAN and management cluster, both
@@ -68,18 +68,21 @@ narrowly scoped:
 
 ## Components
 
-The user-facing API is the `Infra` custom resource. oooi reconciles it into
-child custom resources in the same namespace; each child manages its own
-Deployment, Services, ConfigMap, ServiceAccount, SCC RoleBinding, and Multus
-attachment.
+The user-facing API has two scopes. `Infra` describes the shared VLAN stack;
+`InfraClusterAttachment` binds one HostedCluster to that stack and carries its
+DNS, control-plane, and optional apps-ingress settings. oooi reconciles the
+shared child custom resources in the Infra namespace; each child manages its
+own Deployment, Services, ConfigMap, ServiceAccount, SCC RoleBinding, and
+Multus attachment.
 
 | Component | Child CR | Image | Role |
 |---|---|---|---|
-| `InfraReconciler` | — | `registry.example.com/oooi` | Validates input, creates children, drives apps-ingress automation, aggregates status |
+| `InfraReconciler` | — | `registry.example.com/oooi` | Creates shared children, aggregates attachment routes, and reports shared status |
+| `InfraClusterAttachmentReconciler` | — | `registry.example.com/oooi` | Binds one HostedCluster, manages its control-plane policy, and drives optional apps ingress |
 | DHCP | `DHCPServer` | oooi image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
 | DNS | `DNSServer` | oooi image (CoreDNS component) | Split-horizon views; static HCP answers; upstream forwarding |
 | Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
-| Apps ingress | (part of Infra) | MetalLB operator | Installs MetalLB into the hosted cluster, allocates and advertises the wildcard VIP |
+| Apps ingress | `InfraClusterAttachment` | MetalLB operator | Installs MetalLB into the attached hosted cluster, allocates and advertises its wildcard VIP |
 
 ### Ownership and garbage collection
 
@@ -110,10 +113,42 @@ sequenceDiagram
 - `api.<cluster>.<domain>:6443` → `controlPlaneNamespace/kube-apiserver`
 - `oauth|ignition|konnectivity.<cluster>.<domain>:443` → matching HCP Services
 
+For a KubeVirt worker, the shared proxy also supports these service aliases on
+port `443`:
+
+```text
+kubernetes
+kubernetes.default
+kubernetes.default.svc
+kubernetes.default.svc.cluster.local
+```
+
+The aliases resolve to the one VLAN proxy address. They are not globally
+ambiguous at the proxy: the Infra controller finds KubeVirt NodePools and their
+CAPI `Machine` objects, filters `Machine.status.addresses` to the shared
+`networkConfig.cidr`, and emits one Envoy backend per attachment with sorted
+`/32` `sourcePrefixRanges`. A Machine address outside that CIDR is ignored.
+The controller consumes the addresses exposed in Machine status; validate the
+CAPK address-selection and refresh behavior for the target release. Until an
+in-CIDR address is available, the attachment keeps its fully qualified routes
+but has no alias backend; the controller retries discovery.
+
+The source address is a routing selector, not an identity mechanism. A client
+that can spoof another worker's VLAN address can select another attachment, so
+use CNI, switch, or DHCP anti-spoofing controls when the VLAN is shared by
+untrusted tenants.
+
 Because Envoy never terminates TLS, certificates remain inside the hosted
 cluster and the proxy cannot inspect tenant traffic.
 
+On port `443`, the generated configuration also includes a legacy konnectivity
+fallback when a non-source-scoped konnectivity backend exists. It is intended
+for no-SNI clients, but the catch-all filter chain can receive unmatched SNI or
+source traffic too; it is not an alias route or an access-control boundary.
+
 ### Apps ingress (wildcard `*.apps`)
+
+For an attachment with `spec.appsIngress.enabled: true`:
 
 1. oooi waits for a Ready hosted worker (OLM's MetalLB bundle-unpack Job needs
    schedulable capacity).
@@ -123,7 +158,7 @@ cluster and the proxy cannot inspect tenant traffic.
    cluster's `openshift-ingress` namespace, selector fixed to the default
    IngressController deployment.
 4. Reads the allocated IP from Service status and publishes it as
-   `.status.appsIngressStatus.externalIP`.
+   `InfraClusterAttachment.status.appsIngressStatus.externalIP`.
 5. Adds the `*.apps.<cluster>.<domain>` answers to both DNS views and adds
    wildcard SNI backends to Envoy pointing at the VIP.
 
@@ -146,7 +181,9 @@ flowchart LR
 ```
 
 Both views answer identically for names *outside* the static zones — only the
-HCP endpoint and `*.apps` names differ per view.
+HCP endpoint, `*.apps`, and conditional Kubernetes alias names differ per view.
+The aliases still resolve to one shared proxy address; source matching happens
+after the TCP connection reaches Envoy.
 
 ## Security model
 
@@ -157,7 +194,7 @@ HCP endpoint and `*.apps` names differ per view.
 | External exposure | Optional `<infra>-proxy-external` LoadBalancer exposes **only** the configured ingress port — never admin or backend ports |
 | OpenShift SCC | With `--enable-openshift=true`, a scoped `privileged` SCC RoleBinding is created for the proxy ServiceAccount (privileged ports <1024) |
 | Control-plane policy | An ingress-only `allow-infrastructure` NetworkPolicy selects all pods in the control-plane namespace and allows traffic from namespaces labeled `hostedcluster.densityops.com/network-policy-group=infrastructure` |
-| Tenant isolation | No tenant-to-management routes; hosted clusters never need to reach hosting-cluster ingress |
+| Network scope | No general tenant route into the management network; Envoy permits only configured control-plane and apps backends |
 
 ## Status model
 
@@ -168,6 +205,9 @@ child Deployments for runtime availability:
 status:
   conditions:              # Ready / ReconciliationSucceeded / Degraded ...
   componentStatus:         # dhcpReady, dnsReady, proxyReady
+
+# On the corresponding InfraClusterAttachment:
+status:
   appsIngressStatus:
     phase:                 # Pending | Ready | Degraded
     reason:                # WaitingForHostedClusterNodes, WaitingForExternalIP, ...

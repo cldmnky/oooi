@@ -34,6 +34,15 @@ flowchart TB
 - Only names in the static zones differ between views; all other queries are
   forwarded identically to `networkConfig.dnsServers`.
 
+For a shared `Infra`, the VLAN view publishes the same proxy address for the
+four Kubernetes aliases `kubernetes`, `kubernetes.default`,
+`kubernetes.default.svc`, and `kubernetes.default.svc.cluster.local`. The
+default view uses the resolved proxy Service ClusterIP when
+`internalProxyService` is configured. DNS cannot choose a hosted cluster for
+these names; Envoy uses the worker source IP after the connection arrives.
+The alias records are omitted until a KubeVirt worker address inside the Infra
+CIDR is available.
+
 ## Configuring
 
 ### Upstream resolvers
@@ -75,6 +84,9 @@ From a **VLAN client** (`192.0.2.3` is the DNSServer):
 ```bash
 dig @192.0.2.3 +short api.example-hcp.clusters.example.com
 # → 192.0.2.4   (proxy.serverIP)
+
+dig @192.0.2.3 +short kubernetes.default.svc
+# → 192.0.2.4   (published when the worker source range is known)
 
 dig @192.0.2.3 +short console-openshift-console.apps.example-hcp.clusters.example.com
 # → MetalLB VIP, e.g. 192.0.2.200

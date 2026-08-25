@@ -1,159 +1,188 @@
-# DNS Setup for Hosted Control Planes
+# Split-horizon DNS setup
 
-## Overview
+oooi's `DNSServer` runs CoreDNS with two source-based views for a shared
+secondary network:
 
-The oooi operator provides a dual-view split-horizon DNS solution for OpenShift Hosted Control Planes (HCP) running on isolated secondary networks (VLANs) with OpenShift Virtualization.
+- VLAN clients receive the Envoy secondary-network IP.
+- Management-cluster clients receive the proxy Service ClusterIP when
+  `internalProxyService` is configured.
+- Names outside oooi's static records are forwarded to the configured upstream
+  resolvers.
 
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Secondary Network (VLAN)         Pod Network               │
-│  ┌─────────┐                      ┌─────────────┐           │
-│  │   VM    │                      │  Mgmt Pod   │           │
-│  └────┬────┘                      └──────┬──────┘           │
-│       │ Query: api.cluster.com           │ Query            │
-│       ▼                                  ▼                  │
-│  ┌─────────────────────────────────────────────┐            │
-│  │        DNSServer (CoreDNS)                  │            │
-│  │  ┌──────────────┐    ┌───────────────────┐  │            │
-│  │  │ Multus View  │    │  Default View     │  │            │
-│  │  │ CIDR match   │    │  Pod network      │  │            │
-│  │  └──────┬───────┘    └────────┬──────────┘  │            │
-│  └─────────┼─────────────────────┼─────────────┘            │
-│            │ 192.168.100.10      │ envoy.svc:443            │
-│            ▼ (external)          ▼ (internal)               │
-│     ┌──────────────┐       ┌─────────────────┐              │
-│     │ Envoy Proxy  │       │ Envoy Service   │              │
-│     │ (Secondary)  │       │ (ClusterIP)     │              │
-│     └──────────────┘       └─────────────────┘              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Concepts
-
-**Dual-View DNS**: The DNSServer uses CoreDNS view plugin to provide different DNS resolution based on the source IP address:
-
-1. **Multus View** (Secondary Network/VMs):
-   - Matches queries from secondary network CIDR
-   - Resolves HCP endpoints to **external proxy IP** on secondary network
-   - Enables VMs to access hosted control plane services
-
-2. **Default View** (Pod Network):
-   - Matches queries from pod network (all other sources)
-   - Resolves HCP endpoints to **internal proxy service** (ClusterIP)
-   - Enables management cluster pods to access hosted control plane
+The Infra controller creates one shared `DNSServer` for each `Infra`. The
+cluster-specific names come from one `InfraClusterAttachment` per
+HostedCluster.
 
 ## Configuration
 
-### 1. Configure Infra Resource
-
-Add both external and internal proxy configuration to your Infra CR:
+The `Infra` owns the DNS server address, the VLAN CIDR, and upstream resolvers.
+The attachment owns the cluster domain:
 
 ```yaml
 apiVersion: hostedcluster.densityops.com/v1alpha1
 kind: Infra
 metadata:
-  name: my-cluster
+  name: tenant-vlan100
   namespace: clusters
 spec:
   networkConfig:
-    cidr: "192.168.100.0/24"
-    gateway: "192.168.100.1"
-    networkAttachmentDefinition: "vlan100"
-    dnsServers:  # Upstream DNS servers for CoreDNS to forward to
-      - "8.8.8.8"
-      - "8.8.4.4"
-  
+    cidr: 192.0.2.0/24
+    gateway: 192.0.2.1
+    networkAttachmentDefinition: vlan100
+    networkAttachmentNamespace: default
+    dnsServers:
+      - 198.51.100.53
   infraComponents:
-    # DHCP Configuration
     dhcp:
-      enabled: true
-      serverIP: "192.168.100.2"
-      rangeStart: "192.168.100.100"
-      rangeEnd: "192.168.100.200"
-      leaseTime: "1h"
-    
-    # DNS Configuration
+      serverIP: 192.0.2.2
+      rangeStart: 192.0.2.100
+      rangeEnd: 192.0.2.199
     dns:
-      enabled: true
-      serverIP: "192.168.100.3"
-      clusterName: "my-cluster"
-      baseDomain: "example.com"
-      image: "quay.io/cldmnky/oooi:latest"
-    
-    # Proxy Configuration with both external and internal
+      serverIP: 192.0.2.3
     proxy:
-      enabled: true
-      serverIP: "192.168.100.10"  # External proxy on secondary network
-      internalProxyService: "envoy-internal.clusters.svc.cluster.local"  # Internal proxy for pods
-      controlPlaneNamespace: "clusters-my-cluster"
+      serverIP: 192.0.2.4
+      internalProxyService: tenant-vlan100-proxy.clusters.svc.cluster.local
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: example-hcp
+  namespace: clusters
+spec:
+  infraRef:
+    name: tenant-vlan100
+  hostedClusterRef:
+    name: example-hcp
+    namespace: clusters
+  dns:
+    clusterName: example-hcp
+    baseDomain: clusters.example.com
 ```
 
-**Key Fields**:
-- `networkConfig.dnsServers`: **Upstream DNS servers** that CoreDNS forwards non-HCP queries to (e.g., 8.8.8.8, corporate DNS). Use the special value `resolv.conf` (or `node`) on networks without direct egress to public resolvers — CoreDNS then forwards to the management-cluster node's own nameservers instead of assuming internet access.
-- `infraComponents.dns.enabled`: When `true`, DHCP automatically configures clients to use the DNS server IP
-- `infraComponents.dns.serverIP`: IP address of CoreDNS server on secondary network (192.168.100.3)
-- `proxy.serverIP`: External Envoy proxy IP on secondary network (for VMs)
-- `proxy.internalProxyService`: Internal proxy service name or ClusterIP (for management pods)
+If `networkAttachmentNamespace` is omitted, oooi uses the `Infra` namespace.
+`dnsServers` is only for forwarding non-static names; when DNS is enabled, DHCP
+advertises `infraComponents.dns.serverIP` to workers automatically.
 
-**DNS Flow**:
-1. DHCP assigns VMs with DNS server = 192.168.100.3 (CoreDNS)
-2. CoreDNS resolves HCP domains (api.*, oauth.*) to proxy at 192.168.100.10
-3. CoreDNS forwards all other queries to upstream DNS (8.8.8.8, 8.8.4.4)
-4. VMs get both HCP access and external DNS resolution
+Use the literal `resolv.conf` when CoreDNS should inherit the node resolver:
 
-> **Upstream reachability**: if `forward . 8.8.8.8` times out from the DNS pod
-> (firewalled labs where only the node resolver can reach the internet), set
-> `networkConfig.dnsServers: ["resolv.conf"]`. The generated Corefile will
-> forward to the node's `/etc/resolv.conf` nameservers. Verify with:
-> `kubectl -n <ns> exec deploy/<name>-dns -c dns-server -- getent hosts kubernetes.io`
-> after temporarily pointing `/etc/resolv.conf` at the DNS pod — or simply run
-> a query for a non-static name through `<dns.serverIP>` from a VLAN client.
+```yaml
+spec:
+  networkConfig:
+    dnsServers:
+      - resolv.conf
+```
 
-### 2. Deploy the Infrastructure
+## Generated records
 
-Apply your Infra CR:
+For every valid attachment, the shared DNS server generates:
+
+```text
+api.<cluster>.<baseDomain>
+api-int.<cluster>.<baseDomain>
+oauth.<cluster>.<baseDomain>
+ignition.<cluster>.<baseDomain>
+konnectivity.<cluster>.<baseDomain>
+```
+
+From the VLAN these records point to `proxy.serverIP`. From the pod-network
+view they point to the resolved ClusterIP named by `internalProxyService`.
+When apps ingress is Ready, `*.apps.<cluster>.<baseDomain>` points to the
+attachment's MetalLB endpoint in the VLAN view and to the proxy ClusterIP in
+the pod-network view.
+
+### Kubernetes service aliases
+
+For KubeVirt workers, the shared DNS server also publishes these four names to
+the shared VLAN proxy IP when at least one usable worker source range exists:
+
+```text
+kubernetes
+kubernetes.default
+kubernetes.default.svc
+kubernetes.default.svc.cluster.local
+```
+
+The aliases have one DNS answer because all attachments share one proxy IP.
+Envoy selects the control plane from the source IP of the connection. The Infra
+controller obtains worker addresses from CAPI `Machine.status.addresses`,
+associated with KubeVirt NodePools by the
+`hypershift.openshift.io/nodePool` annotation, and retains only addresses in
+`networkConfig.cidr`. Each retained address becomes a `/32` source range.
+
+If Machine addresses have not propagated yet, the aliases are not emitted. The
+fully qualified records remain independent of alias discovery. If two
+attachments claim the same source address, only their ambiguous alias routes
+are suppressed and the Infra reports `DuplicateSourceIP`.
+
+Source-IP matching is not authentication. A client able to spoof another
+worker's VLAN address can select that attachment; enforce anti-spoofing in the
+CNI or switching layer where necessary.
+
+## How the views work
+
+```text
+VLAN client source in networkConfig.cidr
+  -> multus view
+  -> proxy.serverIP for static HCP and alias records
+
+Management-cluster pod source outside the CIDR
+  -> default view
+  -> internal proxy ClusterIP for static HCP records, if configured
+
+Any other name
+  -> configured upstream resolvers
+```
+
+The generated Corefile is stored in the `DNSServer` ConfigMap and reloads on
+the configured interval. The DNSServer status exposes the ConfigMap, Deployment,
+Service, and Service ClusterIP names.
+
+## Verification
+
+From a VLAN client, query the static proxy address:
 
 ```bash
-oc apply -f infra.yaml
+dig @192.0.2.3 +short api.example-hcp.clusters.example.com
+# 192.0.2.4
+
+dig @192.0.2.3 +short kubernetes.default.svc
+# 192.0.2.4 when a KubeVirt Machine source address is ready
+
+dig @192.0.2.3 +short www.example.net
+# Answer from the configured upstream resolver
 ```
 
-This creates:
-- DHCPServer CR (if enabled)
-- DNSServer CR with dual-view configuration
-- Deployment running CoreDNS with view plugin
-- Service exposing DNS on ClusterIP
-
-### 3. Verify DNSServer Status
-
-Check the DNSServer status to get the Service ClusterIP:
+From the pod network, query the DNSServer Service ClusterIP:
 
 ```bash
-# Get DNSServer status
-oc get dnsserver my-cluster-dns -n clusters -o yaml
-
-# Extract Service ClusterIP
-oc get dnsserver my-cluster-dns -n clusters -o jsonpath='{.status.serviceClusterIP}'
-# Example output: 172.30.42.135
+DNSCLUSTERIP=$(kubectl -n clusters get svc tenant-vlan100-dns \
+  -o jsonpath='{.spec.clusterIP}')
+kubectl run dnstest --rm -it --restart=Never \
+  --image=registry.example.com/diagnostics:latest -- \
+  nslookup api.example-hcp.clusters.example.com "$DNSCLUSTERIP"
 ```
 
-The status includes:
-- `serviceName`: Name of the DNS Service
-- `serviceClusterIP`: ClusterIP to use for OpenShift DNS operator
-- `configMapName`: Name of ConfigMap with Corefile
-- `deploymentName`: Name of the DNS Deployment
+The pod-network result should be the proxy Service ClusterIP, not the VLAN
+address. Use an image that contains `nslookup`.
 
-### 4. Configure OpenShift DNS Operator
-
-To enable management cluster pods to access HCP endpoints, configure the OpenShift DNS operator to forward HCP domain queries to your DNSServer:
+Inspect generated records and status with:
 
 ```bash
-# Edit the DNS operator configuration
-oc edit dns.operator/default
+kubectl -n clusters get dnsserver tenant-vlan100-dns -o yaml
+kubectl -n clusters get configmap tenant-vlan100-dns-dns-config \
+  -o jsonpath='{.data.Corefile}'
+kubectl -n clusters logs deploy/tenant-vlan100-dns
 ```
 
-Add a server entry for your hosted cluster domain:
+For a missing alias, inspect the NodePool, Machine addresses, and generated
+`ProxyServer.spec.backends[*].sourcePrefixRanges` before debugging DNS. See
+the [website verification guide](../website/docs/operations/verify.md) and
+[troubleshooting guide](../website/docs/operations/troubleshooting.md).
+
+## OpenShift DNS forwarding
+
+If cluster-wide pod DNS should forward the hosted domain to oooi, configure the
+OpenShift DNS operator with the `DNSServer` Service ClusterIP:
 
 ```yaml
 apiVersion: operator.openshift.io/v1
@@ -162,415 +191,28 @@ metadata:
   name: default
 spec:
   servers:
-  - name: hosted-cluster-dns
-    zones:
-    - my-cluster.example.com  # Your hosted cluster domain
-    forwardPlugin:
-      policy: Random
-      upstreams:
-      - 172.30.42.135:53  # ClusterIP from DNSServer status
+    - name: hosted-cluster-dns
+      zones:
+        - clusters.example.com
+      forwardPlugin:
+        policy: Random
+        upstreams:
+          - 198.18.0.10:53
 ```
 
-**Important**: Use the exact `serviceClusterIP` from the DNSServer status.
-
-## How It Works
-
-### CoreDNS View Plugin
-
-The DNSServer generates a Corefile using the CoreDNS view plugin:
-
-```corefile
-.:53 {
-    # View for secondary network (VMs)
-    view multus {
-        # Match queries from secondary network CIDR
-        expr incidr(client_ip(), '192.168.100.0/24')
-        
-        # HCP domain resolves to external proxy
-        my-cluster.example.com {
-            hosts {
-                192.168.100.10 api.my-cluster.example.com
-                192.168.100.10 api-int.my-cluster.example.com
-                192.168.100.10 oauth.my-cluster.example.com
-                192.168.100.10 ignition.my-cluster.example.com
-                192.168.100.10 konnectivity.my-cluster.example.com
-                fallthrough
-            }
-            forward . 8.8.8.8
-        }
-    }
-    
-    # View for pod network (management cluster)
-    view default {
-        # HCP domain resolves to internal proxy service
-        my-cluster.example.com {
-            hosts {
-                envoy-internal.clusters.svc.cluster.local api.my-cluster.example.com
-                envoy-internal.clusters.svc.cluster.local api-int.my-cluster.example.com
-                envoy-internal.clusters.svc.cluster.local oauth.my-cluster.example.com
-                envoy-internal.clusters.svc.cluster.local ignition.my-cluster.example.com
-                envoy-internal.clusters.svc.cluster.local konnectivity.my-cluster.example.com
-                fallthrough
-            }
-            forward . 8.8.8.8
-        }
-    }
-    
-    log
-    errors
-    reload 5s
-}
-```
-
-### DNS Resolution Flow
-
-**From VM on Secondary Network**:
-1. VM queries `api.my-cluster.example.com`
-2. Query reaches DNSServer on secondary network IP
-3. Source IP matches `192.168.100.0/24` CIDR
-4. **Multus view** matches → Returns `192.168.100.10` (external proxy)
-5. VM connects to external proxy on secondary network
-
-**From Management Cluster Pod**:
-1. Pod queries `api.my-cluster.example.com`
-2. OpenShift DNS forwards to DNSServer ClusterIP
-3. Source IP is from pod network (doesn't match secondary CIDR)
-4. **Default view** matches → Returns internal proxy service name
-5. Pod connects to internal proxy via ClusterIP service
-
-## Verification
-
-### Test DNS Resolution
-
-**From a test pod in the management cluster**:
-
-```bash
-# Create a test pod
-oc run test-dns --image=quay.io/quay/busybox -it --rm -- /bin/sh
-
-# Inside the pod, test DNS resolution
-nslookup api.my-cluster.example.com
-# Should resolve to internal proxy service or IP
-
-# Test connectivity
-wget -O- https://api.my-cluster.example.com:6443/healthz
-```
-
-**From a VM on the secondary network**:
-
-```bash
-# SSH to VM
-ssh core@<vm-ip>
-
-# Test DNS resolution
-nslookup api.my-cluster.example.com
-# Should resolve to 192.168.100.10 (external proxy)
-
-# Test connectivity
-curl -k https://api.my-cluster.example.com:6443/healthz
-```
-
-### Check DNSServer Logs
-
-```bash
-# View CoreDNS logs
-oc logs -n clusters deployment/my-cluster-dns-dns
-
-# Watch for DNS queries
-oc logs -n clusters deployment/my-cluster-dns-dns -f | grep api.my-cluster.example.com
-```
-
-### Verify Corefile Configuration
-
-```bash
-# Check the generated Corefile
-oc get configmap my-cluster-dns-dns-config -n clusters -o yaml
-
-# Look for view plugin configuration
-oc get configmap my-cluster-dns-dns-config -n clusters -o jsonpath='{.data.Corefile}'
-```
-
-## Troubleshooting
-
-### Management Pods Can't Resolve HCP Domain
-
-**Symptom**: Pods get NXDOMAIN or timeout when querying HCP endpoints
-
-**Check**:
-1. Verify OpenShift DNS operator configuration:
-   ```bash
-   oc get dns.operator/default -o yaml
-   ```
-   
-2. Ensure the zones and upstreams are correct
-
-3. Check OpenShift DNS pods for errors:
-   ```bash
-   oc logs -n openshift-dns ds/dns-default
-   ```
-
-4. Test direct query to DNSServer:
-   ```bash
-   oc run test --image=quay.io/quay/busybox -it --rm -- nslookup api.my-cluster.example.com <service-clusterip>
-   ```
-
-### VMs Can't Resolve HCP Domain
-
-**Symptom**: VMs on secondary network can't resolve or get wrong IP
-
-**Check**:
-1. Verify DHCP is providing correct DNS server:
-   ```bash
-   # On VM
-   cat /etc/resolv.conf
-   # Should show 192.168.100.3 (DNS ServerIP)
-   ```
-
-2. Test direct query to DNS server:
-   ```bash
-   nslookup api.my-cluster.example.com 192.168.100.3
-   ```
-
-3. Check DNSServer is bound to secondary network:
-   ```bash
-   oc get pod -n clusters -l app=dns-server -o yaml | grep "k8s.v1.cni.cncf.io/networks"
-   ```
-
-### Wrong Proxy IP Returned
-
-**Symptom**: DNS returns wrong proxy IP for client type
-
-**Check**:
-1. Verify view plugin CIDR matching:
-   ```bash
-   oc get configmap my-cluster-dns-dns-config -n clusters -o jsonpath='{.data.Corefile}' | grep incidr
-   ```
-
-2. Ensure secondary network CIDR is correct:
-   ```bash
-   oc get dnsserver my-cluster-dns -n clusters -o jsonpath='{.spec.networkConfig.secondaryNetworkCIDR}'
-   ```
-
-3. Check client source IP in DNS logs:
-   ```bash
-   oc logs -n clusters deployment/my-cluster-dns-dns | grep "client_ip"
-   ```
-
-### Internal Proxy Not Configured
-
-**Symptom**: Default view has no HCP records or only forwards to upstream
-
-**Check**:
-1. Verify InternalProxyService is set:
-   ```bash
-   oc get dnsserver my-cluster-dns -n clusters -o jsonpath='{.spec.networkConfig.internalProxyIP}'
-   ```
-
-2. If empty, update Infra CR with `proxy.internalProxyService`
-
-3. Check Corefile for default view hosts entries:
-   ```bash
-   oc get configmap my-cluster-dns-dns-config -n clusters -o jsonpath='{.data.Corefile}' | grep -A 20 "view default"
-   ```
-
-### Stale Public Wildcard Record (console/canary RouteHealth failures)
-
-**Symptom**: Hosted cluster `console`/`ingress` ClusterOperators degraded
-(`RouteHealth_FailedGet`) although the MetalLB VIP answers fine when probed
-directly; hosted pods resolve `*.apps.<cluster>.<domain>` to an old IP.
-
-**Cause**: The public DNS record for the apps wildcard still points at a
-previous LoadBalancer IP. The hosted ingress operator validates routes through
-public DNS, so a stale record blocks ClusterVersion convergence even though the
-VLAN-side split-horizon view is correct.
-
-**Fix**:
-1. Compare: `status.appsIngressStatus.externalIP` vs.
-   `dig +short console-openshift-console.apps.<cluster>.<domain> @<public-resolver>`.
-2. Update the record at your DNS provider (or let ExternalDNS inside the
-   hosted cluster manage it — see `docs/apps-ingress.md` "Public DNS ownership").
-3. Allow for TTL (typically 60s) and re-check the ClusterOperator conditions.
-
-**Prevention**: publish the wildcard via ExternalDNS with the Service labels/
-annotations from `spec.appsIngress.service`, so VIP changes propagate
-automatically.
-
-## Advanced Configuration
-
-### Custom DNS Entries
-
-To add custom DNS entries, update the Infra CR or create a DNSServer CR directly with additional staticEntries:
-
-```yaml
-apiVersion: hostedcluster.densityops.com/v1alpha1
-kind: DNSServer
-metadata:
-  name: my-cluster-dns
-  namespace: clusters
-spec:
-  networkConfig:
-    serverIP: "192.168.100.3"
-    proxyIP: "192.168.100.10"
-    internalProxyIP: "envoy-internal.clusters.svc.cluster.local"
-    secondaryNetworkCIDR: "192.168.100.0/24"
-  hostedClusterDomain: "my-cluster.example.com"
-  staticEntries:
-  - hostname: "api.my-cluster.example.com"
-    ip: "192.168.100.10"
-  - hostname: "custom.my-cluster.example.com"  # Custom entry
-    ip: "192.168.100.10"
-  upstreamDNS:
-  - "8.8.8.8"   # or "resolv.conf" to inherit the node's nameservers
-```
-
-### Changing DNS Port
-
-By default, DNS runs on port 53. To use a different port:
-
-```yaml
-spec:
-  infraComponents:
-    dns:
-      enabled: true
-      serverIP: "192.168.100.3"
-      # DNSPort is set automatically to 53, but can be customized in DNSServer CR
-```
-
-Note: Port 53 is privileged and requires the container to run as privileged.
-
-### Adjusting Cache and Reload
-
-Modify DNS caching and configuration reload intervals via DNSServer CR:
-
-```yaml
-spec:
-  cacheTTL: "30s"       # DNS response cache TTL
-  reloadInterval: "5s"  # How often to check for Corefile changes
-```
-
-## Integration with Other Components
-
-### DHCP Integration
-
-The DHCP server automatically configures VMs to use the DNS server:
-
-```yaml
-spec:
-  infraComponents:
-    dhcp:
-      enabled: true
-      serverIP: "192.168.100.2"
-    dns:
-      enabled: true
-      serverIP: "192.168.100.3"  # DHCP will advertise this as DNS server
-```
-
-### Envoy Proxy Integration
-
-The DNS setup relies on Envoy proxies being configured:
-
-- **External Proxy**: Deployed on secondary network with static IP
-- **Internal Proxy**: Service in management cluster for pod access
-
-Both proxies should route traffic to the actual HCP services in the control plane namespace.
-
-## Reference
-
-### Infra CR DNS Fields
-
-| Field | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `infraComponents.dns.enabled` | Enable DNS server | No | `false` |
-| `infraComponents.dns.serverIP` | Static IP for DNS on secondary network | Yes | - |
-| `infraComponents.dns.clusterName` | Hosted cluster name | Yes | - |
-| `infraComponents.dns.baseDomain` | Base domain for cluster | Yes | - |
-| `infraComponents.dns.image` | DNS container image | No | `quay.io/cldmnky/oooi:latest` |
-| `infraComponents.proxy.serverIP` | External proxy IP | Yes | - |
-| `infraComponents.proxy.internalProxyService` | Internal proxy service | No | - |
-
-### DNSServer CR Fields
-
-| Field | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `networkConfig.serverIP` | DNS server IP on secondary network | Yes | - |
-| `networkConfig.proxyIP` | External proxy IP for multus view | Yes | - |
-| `networkConfig.internalProxyIP` | Internal proxy for default view | No | - |
-| `networkConfig.secondaryNetworkCIDR` | CIDR for view matching | No | - |
-| `hostedClusterDomain` | HCP domain | Yes | - |
-| `staticEntries` | DNS A records | Yes | - |
-| `upstreamDNS` | Upstream DNS servers (`resolv.conf`/`node` sentinel inherits the node's nameservers) | No | `["8.8.8.8"]` |
-| `cacheTTL` | DNS cache TTL | No | `"30s"` |
-| `reloadInterval` | Config reload interval | No | `"5s"` |
-
-### DNSServer Status Fields
-
-| Field | Description |
-|-------|-------------|
-| `serviceName` | Name of the DNS Service |
-| `serviceClusterIP` | ClusterIP for OpenShift DNS forwarding |
-| `configMapName` | Name of ConfigMap with Corefile |
-| `deploymentName` | Name of DNS Deployment |
-| `conditions` | Status conditions |
-
-## Troubleshooting
-
-### DHCP Not Using DNS Server
-
-**Symptom**: VMs get 8.8.8.8 instead of the CoreDNS server IP
-
-**Solution**: Ensure `infraComponents.dns.enabled: true` in your Infra CR. When DNS is enabled, DHCP automatically uses the DNS server IP.
-
-```bash
-# Check DHCP configuration
-kubectl get dhcpserver <name> -n <namespace> -o jsonpath='{.spec.networkConfig.dnsServers}'
-# Should show: ["<dns-server-ip>"]
-
-# Check DNS is enabled in Infra
-kubectl get infra <name> -n <namespace> -o jsonpath='{.spec.infraComponents.dns.enabled}'
-# Should show: true
-```
-
-### DNS Not Forwarding to Upstream
-
-**Symptom**: CoreDNS resolves HCP domains but fails on external queries
-
-**Solution**: Set `networkConfig.dnsServers` in Infra CR with upstream DNS servers
-
-```bash
-# Check CoreDNS upstream configuration
-kubectl get dnsserver <name> -n <namespace> -o jsonpath='{.spec.upstreamDNS}'
-# Should show: ["8.8.8.8","8.8.4.4"] or your upstream servers
-
-# Check CoreDNS Corefile
-kubectl get configmap <name>-dns-config -n <namespace> -o jsonpath='{.data.Corefile}' | grep "forward ."
-# Should show: forward . 8.8.8.8 8.8.4.4 (or your servers)
-```
-
-### Complete DNS Flow Verification
-
-```bash
-# 1. Check Infra configuration
-kubectl get infra <name> -n <namespace> -o yaml
-
-# 2. Verify DHCP uses DNS server
-kubectl get dhcpserver <name>-dhcp -n <namespace> -o jsonpath='{.spec.networkConfig.dnsServers}'
-
-# 3. Verify DNS has upstream servers
-kubectl get dnsserver <name>-dns -n <namespace> -o jsonpath='{.spec.upstreamDNS}'
-
-# 4. Check DHCP ConfigMap
-kubectl get configmap <name>-dhcp-dhcp-config -n <namespace> -o yaml | grep dns
-
-# 5. Check CoreDNS Corefile
-kubectl get configmap <name>-dns-dns-config -n <namespace> -o jsonpath='{.data.Corefile}'
-
-# 6. Test DNS resolution from a pod
-kubectl run -it --rm debug --image=busybox --restart=Never -- nslookup api.<cluster>.<domain> <dns-server-ip>
-```
-
-## See Also
-
-- [PLAN.md](../PLAN.md) - Overall architecture and design
-- [OpenShift DNS Operator Documentation](https://docs.openshift.com/container-platform/latest/networking/dns-operator.html)
-- [CoreDNS View Plugin](https://coredns.io/plugins/view/)
-- [Red Hat Solution: Custom CoreDNS](https://access.redhat.com/solutions/6616721)
+Replace the example upstream with the current `DNSServer` Service ClusterIP.
+This is optional; direct queries to the DNSServer Service are sufficient for
+diagnostics.
+
+## Common failures
+
+- A timeout usually means the DNS Deployment is not Ready, the NAD is wrong,
+  or `serverIP` is not reachable from the VLAN.
+- A pod-network query returning the VLAN IP means the query did not reach the
+  intended default view or the client source is being seen incorrectly.
+- A missing alias usually means CAPI Machine status has no address inside the
+  Infra CIDR yet. Fully qualified names should still resolve.
+- Forwarded names fail when `dnsServers` are unreachable; use explicit resolver
+  IPs or `resolv.conf` as appropriate.
+- A stale public `*.apps` record is an ExternalDNS/provider issue, not a
+  DNSServer issue. Compare it with `appsIngressStatus.externalIP`.

@@ -6,6 +6,7 @@ resources:
 - bases/hostedcluster.densityops.com_dhcpservers.yaml
 - bases/hostedcluster.densityops.com_dnsservers.yaml
 - bases/hostedcluster.densityops.com_proxyservers.yaml
+- bases/hostedcluster.densityops.com_infraclusterattachments.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

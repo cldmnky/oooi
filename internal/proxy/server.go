@@ -41,6 +41,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -159,11 +160,12 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 		var fallbackClusterName string
 
 		// Port 6443 is used exclusively for kube-apiserver, so use plain TCP proxying
-		// without SNI/TLS inspection. This allows HAProxy health checks (plain HTTP)
-		// to reach the backend and get rejected gracefully by kube-apiserver rather
-		// than failing at the proxy level.
-		// Use plain TCP for kube-apiserver (6443) and apps HTTP (80) - no SNI/TLS inspector
-		usePlainTCP := port == 6443 || port == 80
+		// without SNI/TLS inspection when there is a single backend. This allows HAProxy
+		// health checks (plain HTTP) to reach the backend. For shared Infra with multiple
+		// kube-apiserver backends, we switch to SNI routing so each cluster's api.*
+		// hostname routes to its own control-plane namespace.
+		// Use plain TCP for apps HTTP (80) - no SNI/TLS inspector
+		usePlainTCP := port == 80 || (port == 6443 && len(backends) == 1)
 
 		// For plain TCP ports, we'll create a single catch-all filter chain
 		// after processing all backends, so track the primary cluster name
@@ -242,16 +244,30 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 					plainTCPCluster = clusterName
 				}
 			} else {
-				// For other ports (443), use SNI-based routing
+				// For other ports (443 or multi-backend 6443), use SNI-based routing
 				// Create filter chain with SNI match
 				// Include both primary hostname and any alternate hostnames
 				serverNames := []string{backend.Hostname}
 				serverNames = append(serverNames, backend.AlternateHostnames...)
 
+				var srcRanges []*core.CidrRange
+				for _, cidrStr := range backend.SourcePrefixRanges {
+					_, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidrStr))
+					if err != nil {
+						continue
+					}
+					ones, _ := ipNet.Mask.Size()
+					srcRanges = append(srcRanges, &core.CidrRange{
+						AddressPrefix: ipNet.IP.String(),
+						PrefixLen:     wrapperspb.UInt32(uint32(ones)),
+					})
+				}
+
 				filterChain := &listener.FilterChain{
 					FilterChainMatch: &listener.FilterChainMatch{
-						ServerNames:       serverNames,
-						TransportProtocol: "tls", // Require TLS with SNI
+						ServerNames:        serverNames,
+						TransportProtocol:  "tls", // Require TLS with SNI
+						SourcePrefixRanges: srcRanges,
 					},
 					Filters: []*listener.Filter{{
 						Name: wellknown.TCPProxy,
@@ -264,8 +280,8 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 
 				// Determine fallback cluster for IP-based TLS connections (e.g., 172.5.0.1:443)
 				// Fallback to konnectivity-server on port 443 so agents can connect
-				if port == 443 && backend.TargetService == "konnectivity-server" {
-					// Choose konnectivity-server cluster as fallback
+				if port == 443 && backend.TargetService == "konnectivity-server" && len(srcRanges) == 0 {
+					// Choose konnectivity-server cluster as fallback (only for non-source-scoped backends)
 					fallbackClusterName = clusterName
 				}
 			}

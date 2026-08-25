@@ -22,6 +22,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - secrets
   verbs:
   - get
@@ -40,10 +41,19 @@ rules:
   - update
   - watch
 - apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machines
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - hostedcluster.densityops.com
   resources:
   - dhcpservers
   - dnsservers
+  - infraclusterattachments
   - infras
   - proxyservers
   verbs:
@@ -59,6 +69,7 @@ rules:
   resources:
   - dhcpservers/finalizers
   - dnsservers/finalizers
+  - infraclusterattachments/finalizers
   - infras/finalizers
   - proxyservers/finalizers
   verbs:
@@ -68,6 +79,7 @@ rules:
   resources:
   - dhcpservers/status
   - dnsservers/status
+  - infraclusterattachments/status
   - infras/status
   - proxyservers/status
   verbs:
@@ -78,6 +90,7 @@ rules:
   - hypershift.openshift.io
   resources:
   - hostedclusters
+  - nodepools
   verbs:
   - get
   - list
@@ -98,10 +111,8 @@ rules:
   - create
   - delete
   - get
-  - list
   - patch
   - update
-  - watch
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

@@ -45,9 +45,10 @@ SNI passthrough traffic needed for the configured control-plane Services.
 
     ---
 
-    One `Infra` custom resource describes the VLAN and the hosted cluster. The
-    operator reconciles `DHCPServer`, `DNSServer`, and `ProxyServer` resources
-    and keeps them converged — with automatic garbage collection on delete.
+    One `Infra` custom resource describes the shared VLAN stack. Create an
+    `InfraClusterAttachment` for each hosted cluster that uses it. The operator
+    reconciles `DHCPServer`, `DNSServer`, and `ProxyServer` resources and keeps
+    them converged — with automatic garbage collection on delete.
 
 -   :material-ip-network-outline: __Static IPAM with KubeVirt awareness__
 
@@ -63,14 +64,17 @@ SNI passthrough traffic needed for the configured control-plane Services.
 
     Dual-view CoreDNS: VMs on the VLAN resolve `api.*`, `oauth.*`, and
     `*.apps.*` names to VLAN addresses; management-cluster pods resolve the same
-    names to internal ClusterIPs. Everything else is forwarded upstream.
+    names to internal ClusterIPs. KubeVirt worker aliases are published to the
+    shared proxy only when source addresses are known. Everything else is
+    forwarded upstream.
 
 -   :material-security-network: __TLS passthrough SNI proxy__
 
     ---
 
     Envoy routes by Server Name Indication without terminating TLS. Certificates
-    never leave the hosted cluster; the proxy sees only encrypted bytes.
+    never leave the hosted cluster; the proxy sees only encrypted bytes. On a
+    shared VLAN, `kubernetes.*` aliases are matched to worker source IPs.
 
 -   :material-apps: __Wildcard apps ingress automation__
 
@@ -113,6 +117,13 @@ flowchart LR
     N -.->|static answers| W
 ```
 
+For multiple hosted clusters, DNS gives every worker the same proxy address for
+the aliases `kubernetes`, `kubernetes.default`, `kubernetes.default.svc`, and
+`kubernetes.default.svc.cluster.local`. Envoy chooses the control plane from
+the worker's source `/32`. The controller obtains those addresses from CAPI
+`Machine.status.addresses`, filtered to the shared `Infra` CIDR; aliases remain
+omitted while the address data is unavailable.
+
 ## Documentation map
 
 | I want to… | Go to |
@@ -125,5 +136,6 @@ flowchart LR
 | Configure DNS views or upstream resolvers | [Split-horizon DNS](guides/split-horizon-dns.md) |
 | Expose consoles and routes (`*.apps`) | [Apps ingress and MetalLB](guides/apps-ingress.md) |
 | Publish OAuth / `*.apps` in public DNS | [Public DNS and OAuth publishing](guides/public-dns-oauth.md) |
+| Route several hosted clusters on one VLAN | [Multiple hosted clusters](guides/multi-cluster.md) |
 | Copy a working manifest | [Examples](examples/index.md) |
 | Verify or debug a running deployment | [Operations](operations/index.md) |

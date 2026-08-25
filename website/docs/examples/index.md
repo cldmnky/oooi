@@ -30,6 +30,14 @@ with your environment's values.
 
     [View](#public-oauth-vip)
 
+-   :material-hub-outline: __Multi-cluster VLAN__
+
+    ---
+
+    One shared Infra serving several hosted clusters via attachments.
+
+    [Read the guide](../guides/multi-cluster.md)
+
 </div>
 
 ## Minimal VLAN infrastructure
@@ -56,11 +64,23 @@ spec:
       rangeEnd: 192.0.2.199
     dns:
       serverIP: 192.0.2.3
-      clusterName: mycluster
-      baseDomain: example.com
     proxy:
       serverIP: 192.0.2.10
-      controlPlaneNamespace: clusters-mycluster
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: mycluster
+  namespace: clusters
+spec:
+  infraRef:
+    name: mycluster
+  hostedClusterRef:
+    name: mycluster
+    namespace: clusters
+  dns:
+    clusterName: mycluster
+    baseDomain: example.com
 ```
 
 What you get:
@@ -72,14 +92,13 @@ What you get:
 | `ProxyServer/mycluster-proxy` | `192.0.2.10` | SNI passthrough for `api` :6443 and HCP :443 |
 
 No `internalProxyService` → management pods get no static HCP answers.
-No `appsIngress` → no wildcard routing; consoles reachable only from the VLAN
-via explicit hostnames you add yourself.
+No attachment `appsIngress` → no wildcard routing; consoles reachable only from
+the VLAN via explicit hostnames you add yourself.
 
 ## Full hosted cluster stack
 
-This configuration uses the same HostedCluster/NodePool and Infra relationships
-as the repository's KubeVirt lab manifest, with documentation-only names and
-addresses:
+This configuration shows a complete HostedCluster/NodePool attachment with
+documentation-only names and addresses:
 
 ```yaml
 apiVersion: hostedcluster.densityops.com/v1alpha1
@@ -106,13 +125,9 @@ spec:
     dns:
       enabled: true
       serverIP: 192.0.2.3
-      clusterName: example-hcp
-      baseDomain: clusters.example.com
     proxy:
       enabled: true
       serverIP: 192.0.2.4
-      controlPlaneNamespace: clusters-example-hcp
-      apiServerService: kube-apiserver
       internalProxyService: example-hcp-proxy.clusters.svc.cluster.local
       externalService:
         enabled: true
@@ -121,11 +136,23 @@ spec:
           external-dns.alpha.kubernetes.io/hostname: oauth.example-hcp.clusters.example.com.
         labels:
           external-dns.example.com/publish: "yes"
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: example-hcp
+  namespace: clusters
+spec:
+  infraRef:
+    name: example-hcp
+  hostedClusterRef:
+    name: example-hcp
+    namespace: clusters
+  dns:
+    clusterName: example-hcp
+    baseDomain: clusters.example.com
   appsIngress:
     enabled: true
-    hostedClusterRef:
-      name: example-hcp
-      namespace: clusters
     metallb:
       addressPoolName: apps-pool
       ipAddressPoolRange: 192.0.2.200-192.0.2.220
@@ -153,6 +180,18 @@ Resulting addressing on the VLAN:
 ```
 
 Plus one hosting-cluster MetalLB VIP for `<infra>-proxy-external` (OAuth).
+
+When the KubeVirt worker Machines report addresses in `192.0.2.0/24`, the
+shared proxy also receives one source-scoped backend for the four
+`kubernetes.*` aliases. Inspect the generated ranges with:
+
+```bash
+kubectl -n clusters get proxyserver example-hcp-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="example-hcp-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+```
+
+The aliases are omitted until those Machine addresses are available. Fully
+qualified `api.example-hcp.clusters.example.com` remains the bootstrap path.
 
 ## Public OAuth VIP
 
@@ -185,7 +224,8 @@ Behavior notes:
 
 | File | Shows |
 |---|---|
-| `config/samples/hostedcluster_v1alpha1_infra.yaml` | Bare Infra scaffold |
+| `config/samples/hostedcluster_v1alpha1_infra.yaml` | Infra scaffold |
+| `config/samples/hostedcluster_v1alpha1_infraclusterattachment.yaml` | Attachment scaffold |
 | `config/samples/hostedcluster_v1alpha1_dhcpserver.yaml` etc. | Individual child CRs |
 | Hosted-cluster ExternalDNS sample | The repository includes a lab-specific manifest; adapt its structure, not its identifiers |
 | `config/samples/openshift-example.yaml` | OpenShift-flavored example |

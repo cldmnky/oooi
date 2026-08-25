@@ -5,6 +5,11 @@ namespaced, short name `infra`). Fields marked **Required** are enforced by the
 API schema or runtime validation; everything else is optional with the listed
 default.
 
+An `Infra` contains only shared VLAN and component configuration. Create an
+`InfraClusterAttachment` for every hosted cluster that should use the shared
+stack; without an attachment, no cluster-specific DNS or proxy routes are
+generated.
+
 ## spec.networkConfig
 
 Defines the secondary network. **Required.**
@@ -40,8 +45,6 @@ Split-horizon CoreDNS. `enabled` defaults to `true`.
 |---|---|---|---|
 | `enabled` | bool | `true` | Deploy the DNSServer child and workload. |
 | `serverIP` | string | *(empty)* | Static VLAN address of CoreDNS. |
-| `baseDomain` | string | *(empty)* | Base domain of the hosted cluster, e.g. `clusters.example.com`. |
-| `clusterName` | string | *(empty)* | Hosted cluster name; combined with `baseDomain` builds FQDNs (`api.<clusterName>.<baseDomain>`). |
 | `image` | string | oooi image | Override the image that runs the CoreDNS component. |
 
 Static answers generated per view:
@@ -52,6 +55,7 @@ Static answers generated per view:
 | `api-int.<cluster>.<domain>` | `proxy.serverIP` | `internalProxyService` |
 | `oauth.*`, `ignition.*`, `konnectivity.*` | `proxy.serverIP` | `internalProxyService` |
 | `*.apps.<cluster>.<domain>` (when apps ingress is Ready) | MetalLB external IP | proxy ClusterIP |
+| `kubernetes`, `kubernetes.default`, `kubernetes.default.svc`, `kubernetes.default.svc.cluster.local` (when a KubeVirt worker source range is known) | `proxy.serverIP` | `proxy.internalProxyService` ClusterIP |
 
 All other names are forwarded to `networkConfig.dnsServers`.
 
@@ -63,14 +67,14 @@ Envoy L4 SNI-passthrough gateway. `enabled` defaults to `true`.
 |---|---|---|---|
 | `enabled` | bool | `true` | Deploy the ProxyServer child and workload. |
 | `serverIP` | string | *(empty)* | Static VLAN address of Envoy. |
-| `controlPlaneNamespace` | string | *(empty)* | Management-cluster namespace hosting the control-plane Services (`clusters-<name>`). |
-| `apiServerService` | string | `kube-apiserver` | Reserved API field. `Infra` currently always routes API traffic to the `kube-apiserver` Service. |
 | `internalProxyService` | string | *(empty)* | DNS name **or** ClusterIP of the proxy Service used in the pod-network DNS view. Omit to hide HCP names from pods. Example: `<infra>-proxy.clusters.svc.cluster.local`. |
 | `proxyImage` | string | `envoyproxy/envoy:v1.36.4` | Envoy image. |
 | `managerImage` | string | oooi image | xDS manager sidecar image. |
 
-Port model: `6443` → API service; all other configured backends → `443`; Envoy
-admin `9901` remains internal (ClusterIP only).
+Generated control-plane backends use `6443` for API traffic and `443` for OAuth,
+Ignition, konnectivity, and Kubernetes aliases. Apps-ingress backends use the
+configured HTTP/HTTPS ports. Envoy admin `9901` remains internal (ClusterIP
+only).
 
 ### spec.infraComponents.proxy.externalService
 
@@ -84,43 +88,19 @@ selecting the same Envoy pod, exposing **only** the configured ingress port.
 | `addressPoolName` | string | *(empty)* | Set as annotation `metallb.universe.tf/address-pool` to pin a MetalLB pool. Empty = cluster default allocation. |
 | `labels` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. your ExternalDNS publish label. |
 | `annotations` | map[string]string | *(empty)* | Reconciled onto the Service metadata. Use e.g. `external-dns.alpha.kubernetes.io/hostname: oauth.<cluster>.<domain>.` |
+| `publishAttachmentOAuths` | bool | `false` | Append each Ready attachment's `oauth.<domain>` name to the hostname annotation as a comma-separated list. See [Multiple hosted clusters on one VLAN](../guides/multi-cluster.md). |
 
 Use this to put OAuth and other Route-published endpoints on a public VIP. See
 [Public DNS and OAuth publishing](../guides/public-dns-oauth.md).
-
-## spec.appsIngress
-
-Optional wildcard `*.apps` automation. All sub-fields optional; `enabled`
-defaults to `false`.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | bool | `false` | Enable apps-ingress automation. |
-| `baseDomain` | string | `<dns.clusterName>.<dns.baseDomain>` | Overrides the domain used for the wildcard. When set, oooi creates `*.apps.<baseDomain>`. |
-| `hostedClusterRef.name` | string | *(empty)* | HostedCluster whose ingress/MetalLB will be configured. Required when enabled. |
-| `hostedClusterRef.namespace` | string | `clusters` | Namespace of that HostedCluster. |
-| `metallb.addressPoolName` | string | *(empty)* | IPAddressPool created in the hosted cluster (`openshift-operators`). |
-| `metallb.ipAddressPoolRange` | string | *(empty)* | Required when apps ingress is enabled. Passed to the hosted-cluster `IPAddressPool` as `spec.addresses`; use a valid MetalLB range or CIDR that is unused, routable L2 space reachable from workers. |
-| `metallb.l2AdvertisementName` | string | `advertise-<addressPoolName>` | L2Advertisement resource name. |
-| `service.name` | string | `oooi-ingress` | LoadBalancer Service name created in the hosted cluster. |
-| `service.namespace` | string | `openshift-ingress` | Namespace for that Service. |
-| `service.labels` / `service.annotations` | map[string]string | *(empty)* | Merged into the Service on every reconcile; unrelated existing metadata preserved. The `metallb.universe.tf/address-pool` annotation is operator-owned — do not set it here. Intended for ExternalDNS hostname/publish metadata. |
-| `ports.http` / `ports.https` | int32 | `80` / `443` | Ports of the LoadBalancer Service and matching Envoy backends. |
-
-Behavior sequence and status phases are described in
-[Apps ingress and MetalLB](../guides/apps-ingress.md).
 
 ## status
 
 | Field | Description |
 |---|---|
 | `conditions[]` | Reconciliation status. `Ready=True` confirms that oooi provisioned the declared components; it does not confirm Deployment availability. |
-| `componentStatus.dhcpReady` / `.dnsReady` / `.proxyReady` | Provisioning booleans set when the corresponding component is enabled. Check Deployment status for runtime readiness. |
-| `appsIngressStatus.phase` | `Pending`, `Ready`, or `Degraded`. |
-| `appsIngressStatus.reason` | Machine-readable phase reason, e.g. `WaitingForHostedClusterNodes`, `WaitingForMetalLBCRDs`, `WaitingForExternalIP`, `ReconciliationSucceeded`, `HostedClusterAccessFailed`, `MetalLBInstallFailed`, `IngressServiceFailed`, `ExternalIPDiscoveryFailed`. |
-| `appsIngressStatus.message` | Human-readable detail when Degraded. |
-| `appsIngressStatus.externalIP` | VIP assigned by MetalLB (when reported as an IP). |
-| `appsIngressStatus.externalHostname` | Assigned hostname (cloud-style LBs). |
+| `componentStatus.dhcpReady` / `.dnsReady` | Provisioning booleans set when the corresponding component is enabled. Check Deployment status for runtime readiness. |
+| `componentStatus.proxyReady` | True when an enabled proxy has at least one valid aggregated backend; it does not indicate Deployment availability. |
+| `attachments.total` / `.ready` | Count of `InfraClusterAttachment` resources targeting this Infra, and how many are Ready. |
 | `observedGeneration` | Generation last reconciled. |
 
 ## Immutability notes
@@ -130,3 +110,50 @@ Behavior sequence and status phases are described in
 - Infra fields are mutable. Setting a component's `enabled` field to `false`
   stops its reconciliation but does not delete an existing child resource;
   delete that child explicitly when retiring the component.
+
+## InfraClusterAttachment reference
+
+`InfraClusterAttachment` (`hostedcluster.densityops.com/v1alpha1`, short names
+`infraattachment`, `ica`) attaches one HostedCluster to a shared `Infra`.
+Create it in the same namespace as the referenced `Infra`.
+
+### spec
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `infraRef.name` | string | — (**Required**) | Shared `Infra` in the same namespace. |
+| `hostedClusterRef.name` / `.namespace` | string | namespace: `clusters` (**Required**) | HyperShift HostedCluster to attach. One attachment per HostedCluster. |
+| `dns.clusterName` / `dns.baseDomain` | string | — (**Required**) | Build the cluster's FQDNs on the shared DNS and proxy. |
+| `controlPlaneNamespace` | string | `<hc-namespace>-<hc-name>` | Management-cluster namespace hosting this control plane. Must exist; HyperShift creates it. |
+| `apiServerService` | string | `kube-apiserver` | API Service used when the attachment controller builds a hosted-cluster client for apps ingress. Shared proxy API backends currently target `kube-apiserver`. |
+| `appsIngress` | object | *(empty)* | Per-cluster apps ingress. When enabled, MetalLB ranges must be disjoint across attachments sharing a VLAN. |
+
+### status
+
+| Field | Description |
+|---|---|
+| `conditions[]` | `Ready` reflects aggregation plus apps-ingress state. |
+| `domain` | Resolved `<clusterName>.<baseDomain>`. |
+| `controlPlaneNamespace` | Resolved control-plane namespace. |
+| `appsIngressStatus.*` | Apps-ingress phase, endpoint, last-sync, and applied-resource identity fields scoped to this cluster; applied identities let cleanup remove resources after a configuration change or disable. |
+
+### Source-scoped Kubernetes aliases
+
+For KubeVirt NodePools, the controller watches CAPI `Machine` objects in the
+management cluster. CAPK mirrors VMI interface addresses into
+`Machine.status.addresses`; oooi retains only addresses inside
+`spec.networkConfig.cidr`, deduplicates and sorts them, and emits `/32`
+`sourcePrefixRanges` on the generated alias backend. NodePool membership is
+used to associate Machines with the attachment, while Machine updates drive
+address changes.
+
+The aliases are omitted while a KubeVirt NodePool has no usable in-CIDR Machine
+address. A duplicate source address claimed by two attachments removes only the
+ambiguous alias routes and sets the Infra condition to `DuplicateSourceIP`; the
+fully qualified attachment routes remain available. Source matching is not
+anti-spoofing or tenant authentication.
+
+Conflicts are visible rather than resolved silently: duplicate domains or
+duplicate HostedCluster references exclude both attachments from routing and
+set the referenced Infra's `Ready` condition to `False`. See
+[Multiple hosted clusters on one VLAN](../guides/multi-cluster.md).

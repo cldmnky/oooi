@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 var (
 	// Optional Environment Variables:
 	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
+	// - E2E_IMAGE: Uses a prebuilt image and skips the image build step.
 	// These variables are useful if CertManager is already installed, avoiding
 	// re-installation and conflicts.
 	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
@@ -41,6 +43,9 @@ var (
 	// projectImage is the name of the image which will be built and loaded
 	// with the code source changes to be tested. Allow override via env var IMG.
 	projectImage = func() string {
+		if v := os.Getenv("E2E_IMAGE"); v != "" {
+			return v
+		}
 		if v := os.Getenv("IMG"); v != "" {
 			return v
 		}
@@ -59,6 +64,28 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	By("verifying e2e tests are connected to the requested Kind cluster")
+	kindCluster := os.Getenv("KIND_CLUSTER")
+	Expect(kindCluster).NotTo(BeEmpty(), "KIND_CLUSTER must be set; e2e tests are Kind-only")
+	Expect(os.Getenv("KUBECONFIG")).NotTo(BeEmpty(), "KUBECONFIG must be isolated for Kind e2e tests")
+	cmd := exec.Command("kubectl", "config", "current-context")
+	currentContext, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to determine the kubectl context")
+	Expect(strings.TrimSpace(currentContext)).To(Equal("kind-"+kindCluster),
+		"Refusing to run e2e tests outside the requested Kind cluster")
+
+	By("installing source-IP alias discovery CRD stubs")
+	cmd = exec.Command("kubectl", "apply",
+		"-f", "test/e2e/crds/nodepools.crd.yaml",
+		"-f", "test/e2e/machines-status.crd.yaml",
+	)
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to install NodePool and Machine CRD stubs")
+	cmd = exec.Command("kubectl", "wait", "--for=condition=Established",
+		"crd/nodepools.hypershift.openshift.io", "crd/machines.cluster.x-k8s.io", "--timeout=60s")
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "NodePool and Machine CRD stubs were not established")
+
 	By("verifying Multus CNI is installed")
 	if !utils.IsMultusInstalled() {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Installing Multus CNI...\n")
@@ -76,10 +103,14 @@ var _ = BeforeSuite(func() {
 		g.Expect(utils.IsNADReady("test-vlan-200", namespace)).To(BeTrue())
 	}, 2*time.Minute, time.Second).Should(Succeed())
 
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "container-build-e2e")
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	if os.Getenv("E2E_IMAGE") == "" && os.Getenv("IMG") == "" {
+		By("building the manager(Operator) image")
+		cmd := exec.Command("make", "container-build-e2e")
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Using prebuilt manager image %s\n", projectImage)
+	}
 
 	// When using Kind with KIND_CLUSTER env var set, ko automatically loads the image
 	// into the cluster. The LoadImageToKindClusterWithName step is skipped in this case.
@@ -108,6 +139,11 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	By("removing source-IP alias discovery CRD stubs")
+	cmd := exec.Command("kubectl", "delete", "crd",
+		"nodepools.hypershift.openshift.io", "machines.cluster.x-k8s.io", "--ignore-not-found=true")
+	_, _ = utils.RunWithTimeout(30*time.Second, cmd)
+
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")

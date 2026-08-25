@@ -33,8 +33,6 @@ spec:
     dns:
       enabled: true  # When enabled, DHCP automatically uses dns.serverIP
       serverIP: "192.168.100.3"  # VMs get this as their DNS server via DHCP
-      baseDomain: "example.com"
-      clusterName: "mycluster"
     
     proxy:
       enabled: true
@@ -45,27 +43,18 @@ spec:
       # names to the in-cluster proxy (pod-network view) instead of public DNS.
       # Accepts a ClusterIP Service FQDN or IP; leave unset to hide HCP from pods.
       # internalProxyService: "infra-sample-proxy.hosted-clusters.svc.cluster.local"
-  
-  # Optional: automate the hosted cluster's *.apps ingress via MetalLB.
-  # service.labels/service.annotations are merged onto the LoadBalancer Service
-  # in the hosted cluster on every reconcile - use them to let ExternalDNS
-  # (running inside the hosted cluster, >=1.3.0) publish the wildcard record:
-  #
-  # appsIngress:
-  #   enabled: true
-  #   hostedClusterRef:
-  #     name: mycluster
-  #     namespace: clusters
-  #   metallb:
-  #     addressPoolName: "lab-network"
-  #     ipAddressPoolRange: "192.168.100.200-192.168.100.220"
-  #   service:
-  #     name: "oooi-ingress"
-  #     namespace: "openshift-ingress"
-  #     annotations:
-  #       external-dns.alpha.kubernetes.io/hostname: "*.apps.mycluster.example.com."
-  #     labels:
-  #       external-dns.example.com/publish: "yes"
-  #   ports:
-  #     http: 80
-  #     https: 443
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: mycluster
+  namespace: default
+spec:
+  infraRef:
+    name: infra-sample
+  hostedClusterRef:
+    name: mycluster
+    namespace: clusters
+  dns:
+    clusterName: mycluster
+    baseDomain: example.com

@@ -11,8 +11,9 @@ Kubernetes operator for deploying infrastructure components required by OpenShif
 **Core Problem**: When KubeVirt VMs run with `attach-default-network: false` on isolated VLANs, they lack direct connectivity to the hosted control plane services running on the management cluster's pod network. This operator bridges that gap by deploying infrastructure services (DHCP, DNS, L4 proxy) onto the secondary network.
 
 **Key Components**:
-- **Infra CRD** ([api/v1alpha1/infra_types.go](api/v1alpha1/infra_types.go)): Custom resource defining infrastructure requirements for a hosted cluster
-- **InfraReconciler** ([internal/controller/infra_controller.go](internal/controller/infra_controller.go)): Controller that watches `HostedCluster` resources and provisions DHCP/DNS/Envoy services
+- **Infra CRD** ([api/v1alpha1/infra_types.go](api/v1alpha1/infra_types.go)): Network-scoped custom resource defining shared VLAN, DHCP, DNS, and proxy requirements
+- **InfraClusterAttachment CRD** ([api/v1alpha1/infraclusterattachment_types.go](api/v1alpha1/infraclusterattachment_types.go)): Per-hosted-cluster binding carrying DNS, control-plane, and optional apps-ingress settings
+- **InfraReconciler** ([internal/controller/infra_controller.go](internal/controller/infra_controller.go)): Controller that provisions shared DHCP/DNS/Envoy services and aggregates attachment routes
 - **API Group**: `hostedcluster.densityops.com/v1alpha1` (see [PROJECT](PROJECT))
 
 **Reference Architecture**: See [PLAN.md](PLAN.md) for comprehensive design document covering network isolation requirements, policy-based routing, and service topology.
@@ -65,7 +66,10 @@ make deploy IMG=quay.io/cldmnky/oooi:v0.0.1
 ```
 Then regenerate with `make manifests` to update [config/rbac/role.yaml](config/rbac/role.yaml).
 
-**Owner references**: All operator-created resources must set `OwnerReference` pointing to the `HostedCluster` to enable garbage collection cascade.
+**Owner references**: Namespaced resources must point to their owning `Infra` or
+`InfraClusterAttachment` where possible. Cross-namespace resources and
+cluster-scoped DHCP RBAC cannot use those owner references and require explicit
+cleanup.
 
 **Testing pattern**: Controller tests use Ginkgo/Gomega with envtest ([internal/controller/suite_test.go](internal/controller/suite_test.go)). The test suite starts a local etcd/apiserver and fake client.
 
@@ -89,7 +93,7 @@ Then regenerate with `make manifests` to update [config/rbac/role.yaml](config/r
 
 **Run controller with verbose logs**:
 ```bash
-make run -- --zap-log-level=debug
+go run ./main.go manager --zap-log-level=debug
 ```
 
 **View generated manifests**:

@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	hostedclusterv1alpha1 "github.com/cldmnky/oooi/api/v1alpha1"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -60,6 +61,8 @@ var _ = BeforeSuite(func() {
 
 	var err error
 	err = hostedclusterv1alpha1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = kubevirtv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
