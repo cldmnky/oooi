@@ -1,0 +1,67 @@
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: Infra
+metadata:
+  name: {{ .Values.infra.name }}
+  namespace: {{ .Values.namespace }}
+spec:
+  networkConfig:
+    cidr: {{ .Values.infra.network.cidr }}
+    gateway: {{ .Values.infra.network.gateway }}
+    networkAttachmentDefinition: {{ .Values.infra.network.attachmentName }}
+    networkAttachmentNamespace: {{ .Values.infra.network.attachmentNamespace }}
+    dnsServers:
+{{ toYaml .Values.infra.network.dnsServers | indent 4 }}
+  infraComponents:
+    dhcp:
+      enabled: true
+      image: {{ .Values.infra.components.image }}
+      serverIP: {{ .Values.infra.components.dhcp.serverIP }}
+      rangeStart: {{ .Values.infra.components.dhcp.rangeStart }}
+      rangeEnd: {{ .Values.infra.components.dhcp.rangeEnd }}
+      leaseTime: {{ .Values.infra.components.dhcp.leaseTime }}
+    dns:
+      enabled: true
+      image: {{ .Values.infra.components.image }}
+      serverIP: {{ .Values.infra.components.dns.serverIP }}
+    proxy:
+      enabled: true
+      managerImage: {{ .Values.infra.components.image }}
+      proxyImage: {{ .Values.infra.components.proxy.proxyImage }}
+      serverIP: {{ .Values.infra.components.proxy.serverIP }}
+      internalProxyService: {{ .Values.infra.name }}-proxy.{{ .Values.namespace }}.svc.cluster.local
+{{- range .Values.attachments }}
+---
+apiVersion: hostedcluster.densityops.com/v1alpha1
+kind: InfraClusterAttachment
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespace }}
+spec:
+  infraRef:
+    name: {{ $.Values.infra.name }}
+  hostedClusterRef:
+    name: {{ .hostedClusterName }}
+    namespace: {{ $.Values.namespace }}
+  dns:
+    clusterName: {{ .clusterName }}
+    baseDomain: {{ .baseDomain }}
+  externalService:
+    enabled: true
+    addressPoolName: {{ $.Values.infra.components.proxy.managementAddressPool }}
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: oauth.{{ .clusterName }}.{{ .baseDomain }}.
+    labels:
+      external-dns.blahonga.me/publish: "yes"
+  appsIngress:
+    enabled: true
+    metallb:
+      addressPoolName: {{ .apps.addressPoolName }}
+      ipAddressPoolRange: {{ .apps.addressRange }}
+    service:
+      name: oooi-ingress
+      namespace: openshift-ingress
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: '*.apps.{{ .clusterName }}.{{ .baseDomain }}.'
+      labels:
+        external-dns.blahonga.me/publish: "yes"
+{{- end }}

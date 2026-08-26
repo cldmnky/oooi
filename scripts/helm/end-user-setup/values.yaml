@@ -1,0 +1,76 @@
+namespace: clusters
+
+secrets:
+  etcdEncryptionKey: etcd-encryption-key-clusters
+  pullSecret: pullsecret-clusters
+  sshKey: sshkey-clusters
+
+infra:
+  name: vlan203
+  network:
+    cidr: 10.202.64.0/24
+    gateway: 10.202.64.1
+    attachmentName: vlan203
+    attachmentNamespace: default
+    dnsServers:
+      - 10.201.0.2
+      - 10.201.0.1
+  components:
+    image: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
+    dhcp:
+      serverIP: 10.202.64.2
+      rangeStart: 10.202.64.200
+      rangeEnd: 10.202.64.254
+      leaseTime: 1h
+    dns:
+      serverIP: 10.202.64.3
+    proxy:
+      serverIP: 10.202.64.4
+      proxyImage: envoyproxy/envoy:v1.36.4
+      managementAddressPool: metallb-pool
+
+hostedClusters:
+  - name: species-8472
+    baseDomain: clusters.blahonga.me
+    clusterNetwork: 10.50.0.0/16
+    serviceNetwork: 172.5.0.0/16
+    infraID: species-8472
+    replicas: 3
+    computeCores: 4
+    computeMemory: 16Gi
+    rootVolumeSize: 50Gi
+    releaseImage: quay.io/openshift-release-dev/ocp-release@sha256:99b41d100e64c0c56518b765fea58af8f5051eb19b39a7abf6aafc653f9fa6ea
+
+  - name: two-of-two
+    baseDomain: clusters.blahonga.me
+    clusterNetwork: 10.40.0.0/16
+    serviceNetwork: 172.4.0.0/16
+    infraID: two-of-two
+    replicas: 3
+    computeCores: 4
+    computeMemory: 16Gi
+    rootVolumeSize: 50Gi
+    releaseImage: quay.io/openshift-release-dev/ocp-release@sha256:99b41d100e64c0c56518b765fea58af8f5051eb19b39a7abf6aafc653f9fa6ea
+
+attachments:
+  - name: species-8472
+    hostedClusterName: species-8472
+    clusterName: species-8472
+    baseDomain: clusters.blahonga.me
+    apps:
+      addressPoolName: vlan203-species-apps
+      addressRange: 10.202.64.180-10.202.64.190
+
+  - name: two-of-two
+    hostedClusterName: two-of-two
+    clusterName: two-of-two
+    baseDomain: clusters.blahonga.me
+    apps:
+      addressPoolName: vlan203-two-of-two-apps
+      addressRange: 10.202.64.191-10.202.64.199
+
+externalDNS:
+  enabled: false
+  namespace: external-dns-operator
+  image: registry.redhat.io/edo/external-dns-rhel9@sha256:bff2bf48be1d62005dda3b939066fb9d3ba2877799373ec0d1b02feac7728bc9
+  zoneID: Z0744581GI2T7BTVHI4Y

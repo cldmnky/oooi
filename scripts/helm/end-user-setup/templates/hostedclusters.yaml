@@ -1,0 +1,100 @@
+{{- range .Values.hostedClusters }}
+---
+apiVersion: hypershift.openshift.io/v1beta1
+kind: HostedCluster
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    cluster.open-cluster-management.io/clusterset: default
+spec:
+  configuration:
+    featureGate:
+      featureSet: TechPreviewNoUpgrade
+  etcd:
+    managed:
+      storage:
+        persistentVolume:
+          size: 20Gi
+          storageClassName: lvms-vg1
+        type: PersistentVolume
+    managementType: Managed
+  release:
+    image: {{ .releaseImage }}
+  secretEncryption:
+    aescbc:
+      activeKey:
+        name: {{ $.Values.secrets.etcdEncryptionKey }}
+    type: aescbc
+  pullSecret:
+    name: {{ $.Values.secrets.pullSecret }}
+  sshKey:
+    name: {{ $.Values.secrets.sshKey }}
+  networking:
+    clusterNetwork:
+      - cidr: {{ .clusterNetwork }}
+    serviceNetwork:
+      - cidr: {{ .serviceNetwork }}
+    networkType: OVNKubernetes
+  controllerAvailabilityPolicy: SingleReplica
+  dns:
+    baseDomain: {{ .baseDomain }}
+  platform:
+    type: KubeVirt
+    kubevirt: {}
+  infraID: {{ .infraID }}
+  services:
+    - service: APIServer
+      servicePublishingStrategy:
+        type: LoadBalancer
+        loadBalancer:
+          hostname: api.{{ .name }}.{{ .baseDomain }}
+    - service: OAuthServer
+      servicePublishingStrategy:
+        type: Route
+        route:
+          hostname: oauth.{{ .name }}.{{ .baseDomain }}
+    - service: OIDC
+      servicePublishingStrategy:
+        type: Route
+        route:
+          hostname: oidc.{{ .name }}.{{ .baseDomain }}
+    - service: Konnectivity
+      servicePublishingStrategy:
+        type: Route
+        route:
+          hostname: konnectivity.{{ .name }}.{{ .baseDomain }}
+    - service: Ignition
+      servicePublishingStrategy:
+        type: Route
+        route:
+          hostname: ignition.{{ .name }}.{{ .baseDomain }}
+---
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespace }}
+spec:
+  arch: amd64
+  clusterName: {{ .name }}
+  replicas: {{ .replicas }}
+  management:
+    autoRepair: true
+    upgradeType: Replace
+  platform:
+    type: KubeVirt
+    kubevirt:
+      additionalNetworks:
+        - name: {{ $.Values.infra.network.attachmentNamespace }}/{{ $.Values.infra.network.attachmentName }}
+      attachDefaultNetwork: false
+      compute:
+        cores: {{ .computeCores }}
+        memory: {{ .computeMemory }}
+      rootVolume:
+        type: Persistent
+        persistent:
+          size: {{ .rootVolumeSize }}
+  release:
+    image: {{ .releaseImage }}
+{{- end }}
