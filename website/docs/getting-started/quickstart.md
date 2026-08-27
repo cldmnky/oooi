@@ -2,7 +2,7 @@
 
 This walkthrough creates a KubeVirt hosted cluster, attaches its workers to an
 isolated VLAN, and adds oooi infrastructure for DHCP, DNS, the control-plane
-proxy, apps ingress, and public OAuth DNS.
+proxy, apps ingress, and public API/OAuth DNS.
 
 The names, addresses, registry, and zone below are documentation values. Replace
 them before applying anything.
@@ -132,8 +132,10 @@ bootstrap; do not wait for the hosted cluster to become Available.
 
 The attachment is also the association used for shared DNS and proxy routing.
 After KubeVirt workers exist, the controller discovers their source addresses
-from CAPI Machines. This enables the source-scoped `kubernetes.*` aliases; it
-does not delay the fully qualified API route.
+from CAPI Machines. This enables the source-scoped `kubernetes.*` aliases. The
+hostname-SNI alias path uses port `443`; the IP-based Kubernetes Service path
+uses port `6443` without SNI. Alias discovery does not delay the fully
+qualified API route.
 
 ```yaml title="infra-example-hcp.yaml"
 apiVersion: hostedcluster.densityops.com/v1alpha1
@@ -252,15 +254,20 @@ names should resolve to the proxy ClusterIP rather than the VLAN addresses.
 
 ## 6. Publish public DNS
 
-Use ExternalDNS or your DNS provider to publish `*.apps` and OAuth. See
+Use ExternalDNS or your DNS provider to publish the API, `*.apps`, and OAuth.
+The API record comes from the management-cluster `kube-apiserver` Service in
+the HostedCluster control-plane namespace; `*.apps` comes from the hosted
+`oooi-ingress` Service; OAuth comes from the attachment's external proxy
+Service. See
 [Public DNS and OAuth publishing](../guides/public-dns-oauth.md) for the
 ownership model and a hosted-cluster ExternalDNS pattern.
 
 ```bash
+dig +short api.example-hcp.clusters.example.com @<public-resolver>
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 ```
 
-Both answers should match their current MetalLB VIPs. Use the
+The answers should match the current API, apps, and proxy Service VIPs. Use the
 [verification guide](../operations/verify.md) for the expected DNS and HTTP
 results.

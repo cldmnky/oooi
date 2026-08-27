@@ -62,7 +62,9 @@ The shared DNS server maps `kubernetes`, `kubernetes.default`,
 shared proxy address. For KubeVirt attachments, the Infra controller discovers
 worker addresses through HyperShift NodePools and CAPI Machines, filters them
 to the Infra CIDR, and gives Envoy one `/32` source range per worker. The
-matching source range selects the attachment's `kube-apiserver` Service.
+hostname-SNI path uses port `443`; the IP-based Kubernetes Service path uses
+port `6443` without SNI. In both cases, the matching source range selects the
+attachment's `kube-apiserver` Service.
 
 The aliases are omitted while Machine addresses are unavailable, and a source
 address claimed by multiple attachments disables only the ambiguous alias

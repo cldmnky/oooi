@@ -106,7 +106,12 @@ kubectl -n clusters get proxyserver tenant-vlan100-proxy \
   -o jsonpath='{range .spec.backends[*]}{.name}{" "}{.hostname}{" "}{.port}{"\n"}{end}'
 kubectl -n clusters get proxyserver tenant-vlan100-proxy \
   -o jsonpath='{range .spec.backends[?(@.name=="example-hcp-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+kubectl -n clusters get proxyserver tenant-vlan100-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="example-hcp-kubernetes-service")].sourcePrefixRanges}{.}{"\n"}{end}'
 ```
+
+The `hostname` backend is the port `443` SNI path. The `service` backend is the
+port `6443` source-only path used by IP-based Kubernetes Service clients.
 
 The `ProxyServer` status `backendCount` describes successfully configured
 backends. `Infra.status.componentStatus.proxyReady` describes reconciliation of

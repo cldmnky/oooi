@@ -46,7 +46,7 @@ flowchart LR
     subgraph pub["Public DNS zone"]
         direction TB
         EDNS["ExternalDNS"]
-        ZONE[("A records: oauth.* · *.apps.*")]
+        ZONE[("A records: api.* · oauth.* · *.apps.*")]
         CLI["External clients"]
         EDNS -->|writes| ZONE
         CLI --> ZONE
@@ -83,7 +83,7 @@ through Multus annotations; oooi does not create the NAD.
 | `InfraClusterAttachmentReconciler` | — | `registry.example.com/oooi` | Binds one HostedCluster, manages its control-plane policy, and drives optional apps ingress |
 | DHCP | `DHCPServer` | Infra-generated: oooi image; standalone API default: HyperDHCP image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
 | DNS | `DNSServer` | oooi image (CoreDNS component) | Split-horizon views; static HCP answers; upstream forwarding |
-| Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
+| Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI and source-scoped routing; apps wildcard backends |
 | Apps ingress | `InfraClusterAttachment` | MetalLB operator | Installs MetalLB into the attached hosted cluster, allocates and advertises its wildcard VIP |
 
 ### Ownership and garbage collection

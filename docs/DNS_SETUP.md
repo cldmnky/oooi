@@ -108,7 +108,9 @@ Envoy selects the control plane from the source IP of the connection. The Infra
 controller obtains worker addresses from CAPI `Machine.status.addresses`,
 associated with KubeVirt NodePools by the
 `hypershift.openshift.io/nodePool` annotation, and retains only addresses in
-`networkConfig.cidr`. Each retained address becomes a `/32` source range.
+`networkConfig.cidr`. Each retained address becomes a `/32` source range for
+both the port `443` hostname-SNI backend and the port `6443` source-only backend
+used by the IP-based Kubernetes Service path.
 
 If Machine addresses have not propagated yet, the aliases are not emitted. The
 fully qualified records remain independent of alias discovery. If two
@@ -118,6 +120,25 @@ are suppressed and the Infra reports `DuplicateSourceIP`.
 Source-IP matching is not authentication. A client able to spoof another
 worker's VLAN address can select that attachment; enforce anti-spoofing in the
 CNI or switching layer where necessary.
+
+## Public DNS ownership
+
+oooi writes only the VLAN and management-pod DNS views. Public records are
+written by an ExternalDNS instance or another DNS provider watching the
+appropriate LoadBalancer Services:
+
+- `api.<cluster>.<baseDomain>` comes from the HostedCluster's
+  management-cluster `kube-apiserver` Service in its control-plane namespace.
+- `oauth.<cluster>.<baseDomain>` comes from the attachment's
+  `<attachment>-proxy-external` Service when `externalService.enabled` is true.
+- `*.apps.<cluster>.<baseDomain>` comes from the hosted cluster's
+  `openshift-ingress/oooi-ingress` Service when apps ingress is enabled.
+
+If the management ExternalDNS instance uses a label filter, apply its publish
+label to each `kube-apiserver` Service. A watcher connected to the hosted
+cluster cannot see the management-cluster API Service, and a management-cluster
+watcher cannot see the hosted `oooi-ingress` Service without a hosted-cluster
+kubeconfig.
 
 ## How the views work
 
@@ -151,6 +172,19 @@ dig @192.0.2.3 +short kubernetes.default.svc
 
 dig @192.0.2.3 +short www.example.net
 # Answer from the configured upstream resolver
+```
+
+When public DNS is configured, verify the provider-owned records separately:
+
+```bash
+dig +short api.example-hcp.clusters.example.com @<public-resolver>
+# Current kube-apiserver Service EXTERNAL-IP
+
+dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
+# Current proxy external Service EXTERNAL-IP
+
+dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
+# Current hosted oooi-ingress Service EXTERNAL-IP
 ```
 
 From the pod network, query the DNSServer Service ClusterIP:
@@ -215,6 +249,7 @@ diagnostics.
   Infra CIDR yet. Fully qualified names should still resolve.
 - Forwarded names fail when `dnsServers` are unreachable; use explicit resolver
   IPs or `resolv.conf` as appropriate.
-- A stale public `*.apps` record is an ExternalDNS/provider issue, not a
-  DNSServer issue. Compare it with `appsIngressStatus.externalIP`, or verify
-  `externalHostname` when the endpoint is hostname-based.
+- A stale public API, OAuth, or `*.apps` record is an ExternalDNS/provider
+  issue, not a DNSServer issue. Compare it with the corresponding Service
+  `EXTERNAL-IP`, or verify `externalHostname` when the endpoint is
+  hostname-based.

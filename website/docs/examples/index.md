@@ -184,12 +184,15 @@ Plus one hosting-cluster MetalLB VIP for the attachment's generated OAuth
 Service `<attachment>-proxy-external`.
 
 When the KubeVirt worker Machines report addresses in `192.0.2.0/24`, the
-shared proxy also receives one source-scoped backend for the four
-`kubernetes.*` aliases. Inspect the generated ranges with:
+shared proxy receives two source-scoped backends for the four `kubernetes.*`
+aliases: port `443` for hostname-SNI clients and port `6443` for the IP-based
+Kubernetes Service path without SNI. Inspect both generated ranges with:
 
 ```bash
 kubectl -n clusters get proxyserver example-hcp-proxy \
   -o jsonpath='{range .spec.backends[?(@.name=="example-hcp-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+kubectl -n clusters get proxyserver example-hcp-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="example-hcp-kubernetes-service")].sourcePrefixRanges}{.}{"\n"}{end}'
 ```
 
 The aliases are omitted until those Machine addresses are available. Fully

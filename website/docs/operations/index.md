@@ -47,6 +47,8 @@ kubectl -n clusters get infraattachment <name> \
 # Source ranges for one KubeVirt attachment's Kubernetes aliases
 kubectl -n clusters get proxyserver <infra>-proxy \
   -o jsonpath='{range .spec.backends[?(@.name=="<attachment>-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+kubectl -n clusters get proxyserver <infra>-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="<attachment>-kubernetes-service")].sourcePrefixRanges}{.}{"\n"}{end}'
 
 # Child workloads
 kubectl -n clusters get dhcpserver,dnsserver,proxyserver
@@ -54,6 +56,9 @@ kubectl -n clusters get pods -l app=dhcp-server
 kubectl -n clusters get pods -l app=dns-server
 kubectl -n clusters get pods -l app=proxy-server
 ```
+
+The `hostname` backend is the port `443` SNI path; the `service` backend is the
+port `6443` source-only path used by IP-based Kubernetes Service clients.
 
 ## Useful log locations
 

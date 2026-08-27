@@ -68,3 +68,7 @@ kubectl get net-attach-def -A
 
 See [E2E test setup](docs/E2E_TEST_SETUP.md) for prerequisites, environment
 variables, file locations, and troubleshooting.
+
+For a real HyperShift/KubeVirt management cluster, see the production-like
+validation scripts documented there. The Kind suite does not replace that
+workflow's VLAN, public DNS, or worker no-SNI endpoint checks.
