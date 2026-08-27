@@ -25,8 +25,10 @@ The DNS server uses CoreDNS **view plugin** for source-based routing:
 1. **Multus View** (`view multus`):
    - Match expression: `incidr(client_ip(), '<secondary-cidr>')`
    - Queries from tenant VMs on secondary network (matches CIDR)
-   - HCP control plane endpoints (api, api-int, oauth, console, *.apps) resolve to Envoy proxy
-   - Static A records via hosts plugin
+   - HCP control-plane names (api, api-int, oauth, ignition, konnectivity) resolve to Envoy proxy
+   - `*.apps` names resolve to the MetalLB apps endpoint when an IP is available
+   - Kubernetes service aliases resolve to the shared proxy when a worker source range exists
+   - Static A records via hosts plugin and wildcard A records via template plugin
    - Upstream forwarding for non-HCP domains
 
 2. **Default View** (`view default`):
@@ -109,7 +111,13 @@ data:
         hosts {
             192.168.1.10 api.my-cluster.example.com
             192.168.1.10 api-int.my-cluster.example.com
-            192.168.1.10 oauth-openshift.apps.my-cluster.example.com
+            192.168.1.10 oauth.my-cluster.example.com
+            192.168.1.10 ignition.my-cluster.example.com
+            192.168.1.10 konnectivity.my-cluster.example.com
+            192.168.1.10 kubernetes
+            192.168.1.10 kubernetes.default
+            192.168.1.10 kubernetes.default.svc
+            192.168.1.10 kubernetes.default.svc.cluster.local
             fallthrough
         }
         forward . 8.8.8.8
@@ -187,7 +195,8 @@ The DNS server integrates with the operator workflow:
 
 **Core Split-Horizon Plugins:**
 - **`hosts`**: Static A/AAAA records for HCP control-plane endpoints (api,
-  api-int, oauth, apps, and conditional Kubernetes aliases)
+  api-int, oauth, ignition, konnectivity, conditional apps, and Kubernetes
+  aliases)
 - **`forward`**: Upstream DNS forwarding for non-HCP domains
 - **`reload`**: Automatic config reload when ConfigMap changes
 
@@ -224,7 +233,8 @@ See [CoreDNS Plugins Documentation](https://coredns.io/plugins/) for details.
   not discover HostedClusters or Machine addresses itself.
 - The four unqualified Kubernetes aliases are added only when the Infra
   controller has a KubeVirt worker source range. Envoy, not DNS, selects the
-  attachment from that source IP.
+  attachment from that source IP. The hostname-SNI path uses port `443`; the
+  IP-based Kubernetes Service path uses port `6443` without SNI.
 - The source range is routing metadata, not an authentication boundary.
 - Prometheus, DNSSEC, and custom dynamic discovery remain outside this
   component's API.

@@ -3,6 +3,6 @@ resources:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
-- digest: sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
-  name: controller
+- name: controller
   newName: quay.io/cldmnky/oooi
+  newTag: latest

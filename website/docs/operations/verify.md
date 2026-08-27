@@ -8,7 +8,7 @@ configuration enables.
 |---|---|---|---|
 | 1 | VLAN client → VLAN IPs | Always | Workers can bootstrap and operate |
 | 2 | Management pod → ClusterIPs | `internalProxyService` configured | Pod-network split-horizon view works |
-| 3 | Public resolver → VIPs | External Service/apps ingress and ExternalDNS configured | External clients reach OAuth / apps |
+| 3 | Public resolver → VIPs | API Service, external Service/apps ingress, and ExternalDNS configured | External clients reach API, OAuth, and apps |
 
 ## 1. Kubernetes status
 
@@ -94,16 +94,29 @@ Set `DIAGNOSTICS_IMAGE` to an image in your registry that provides `nslookup`.
 
 ## 4. Public resolution (optional)
 
-Run this section only after an ExternalDNS/provider path is configured. The apps
-query also requires apps ingress; the OAuth query requires the proxy external
-Service. Once the applicable ExternalDNS record has converged:
+Run this section only after an ExternalDNS/provider path is configured. The API
+query requires the hosted `kube-apiserver` LoadBalancer Service, the apps query
+requires apps ingress, and the OAuth query requires the proxy external Service.
+Once the applicable ExternalDNS record has converged:
 
 ```bash
+dig +short api.example-hcp.clusters.example.com @<public-resolver>
+# → current hosted kube-apiserver Service EXTERNAL-IP
+
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
 # → current InfraClusterAttachment.status.appsIngressStatus.externalIP, when IP-backed
 
 dig +short oauth.example-hcp.clusters.example.com @<public-resolver>
 # → current <attachment>-proxy-external EXTERNAL-IP
+```
+
+The public API path should also respond through the HostedCluster's
+`kube-apiserver` Service:
+
+```bash
+curl -k -o /dev/null -w '%{http_code}\n' \
+  https://api.example-hcp.clusters.example.com:6443/version
+# 200
 ```
 
 Also verify ownership TXT records exist for your registry (prevents two

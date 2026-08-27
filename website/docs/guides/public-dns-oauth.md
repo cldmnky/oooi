@@ -2,24 +2,53 @@
 
 oooi manages **VLAN-side** DNS itself but deliberately does **not** write
 public DNS records. This guide explains who can publish what, and gives two
-supported patterns: publishing the `*.apps` wildcard, and putting the **OAuth**
-endpoint on a MetalLB VIP when HyperShift forces the `Route` strategy.
+supported patterns: publishing the API and `*.apps` records, and putting the
+**OAuth** endpoint on a MetalLB VIP when HyperShift forces the `Route` strategy.
 
 ## Ownership matrix
 
 | Record | Created by | Watched Service | Where that Service lives |
 |---|---|---|---|
+| `api.<cluster>.<domain>` (public API VIP) | Your ExternalDNS | `kube-apiserver` | **Hosting** (management) cluster, `clusters-<name>` control-plane namespace |
 | `*.apps.<cluster>.<domain>` | Your ExternalDNS | `<service.name>` (`oooi-ingress`) | **Hosted** cluster `openshift-ingress` |
 | `oauth.<cluster>.<domain>` (public VIP) | Your ExternalDNS | `<attachment>-proxy-external` | **Hosting** (management) cluster, Infra namespace |
-| VLAN views of both | **oooi** (automatic) | — | DNSServer static zones |
+| VLAN views of these records | **oooi** (automatic) | — | DNSServer static zones |
 
 Key constraint: an ExternalDNS instance can only see Services in the cluster
 its kubeconfig points at. A default management-cluster ExternalDNS **cannot**
-see the hosted cluster's `oooi-ingress` Service.
+see the hosted cluster's `oooi-ingress` Service. Conversely, the hosted-cluster
+watcher cannot see the management-side `kube-apiserver` Service in the
+`clusters-<name>` control-plane namespace. Ensure the management ExternalDNS
+instance watches that Service too; if it uses a publish label filter, add the
+matching label to each API Service.
 
-## Pattern A — publish the `*.apps` wildcard
+## Pattern A — publish API and `*.apps` records
 
-Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
+The HostedCluster creates a management-cluster `kube-apiserver` LoadBalancer
+Service in its control-plane namespace. Run a management-cluster ExternalDNS
+instance that watches this Service and publishes
+`api.<cluster>.<domain>` from its hostname annotation. If that instance uses a
+label filter, apply its matching label to each API Service:
+
+```bash
+kubectl -n clusters-example-hcp get service kube-apiserver -o wide
+kubectl -n clusters-example-hcp label service kube-apiserver \
+  external-dns.example.com/publish=yes --overwrite
+```
+
+The API Service VIP is independent from the per-attachment OAuth VIP. Verify
+the public API record and endpoint after the management ExternalDNS sync:
+
+```bash
+dig +short api.example-hcp.clusters.example.com @<public-resolver>
+curl -k -o /dev/null -w '%{http_code}\n' \
+  https://api.example-hcp.clusters.example.com:6443/version
+# 200
+```
+
+Run a separate ExternalDNS instance that can watch the hosted cluster to
+publish the annotated apps-ingress Service. Two supported deployment variants
+are:
 
 === "ExternalDNS Operator inside the hosted cluster"
 
@@ -150,6 +179,9 @@ Records are removed by their owners:
 - Disabling `spec.externalService.enabled` on an attachment (or deleting the
   attachment or Infra) removes that cluster's Service; a `--policy=sync`
   ExternalDNS deletes its records on the next sync.
+- Deleting a HostedCluster removes its management-side API Service; a
+  management-cluster ExternalDNS running with `--policy=sync` deletes the API
+  record on the next sync.
 - Deleting the hosted-cluster ExternalDNS instance leaves its TXT/A pairs
   orphaned — delete the Deployment **and** remove leftover records manually if
   the zone must be clean. See [Uninstall and cleanup](../operations/uninstall.md).

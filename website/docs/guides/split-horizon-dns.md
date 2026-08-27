@@ -39,9 +39,10 @@ four Kubernetes aliases `kubernetes`, `kubernetes.default`,
 `kubernetes.default.svc`, and `kubernetes.default.svc.cluster.local`. The
 default view uses the resolved proxy Service ClusterIP when
 `internalProxyService` is configured. DNS cannot choose a hosted cluster for
-these names; Envoy uses the worker source IP after the connection arrives.
-The alias records are omitted until a KubeVirt worker address inside the Infra
-CIDR is available.
+these names; Envoy uses the worker source IP after the connection arrives. The
+hostname-SNI path uses port `443`; the IP-based Kubernetes Service path uses port
+`6443` without SNI. The alias records are omitted until a KubeVirt worker
+address inside the Infra CIDR is available.
 
 ## Configuring
 

@@ -69,6 +69,30 @@ make cleanup-test-e2e
 The suite refuses to run unless the current kubectl context is
 `kind-$KIND_CLUSTER`.
 
+## Production-like validation
+
+The repository also contains a separate script for a pre-existing
+HyperShift/KubeVirt management cluster:
+
+```bash
+./scripts/e2e-borg-species-8472.sh
+./scripts/cleanup-e2e-borg-species-8472.sh
+```
+
+Unlike the Kind suite, this workflow creates two real HostedClusters and
+attachments on one shared VLAN. It verifies source-scoped worker no-SNI API
+routing on port `6443`, fully qualified VLAN routes, public API/OAuth/apps DNS,
+and the corresponding HTTPS endpoints. It requires an environment-specific
+NAD, storage, MetalLB, HostedCluster prerequisites, DNS credentials, and a
+reachable image registry. Review and override the script variables before
+running it; do not use its lab defaults in another environment.
+
+The cleanup script removes attachments before shared Infra resources, waits for
+HostedClusters and NodePools, retries deletion of leftover KubeVirt VMs and
+VMIs, verifies public records are gone, and then removes the test operator
+installation. It intentionally retains shared prerequisite Secrets and
+management ExternalDNS resources.
+
 ## What is tested
 
 - Controller manager startup and metrics
@@ -77,6 +101,8 @@ The suite refuses to run unless the current kubectl context is
 - `InfraClusterAttachment` aggregation, conflict exclusion, and cleanup
 - Apps-ingress status and hosted-resource cleanup paths where applicable
 - Source-scoped `kubernetes.*` aliases from NodePool and Machine objects
+- Both alias transports: port `443` with Kubernetes hostname SNI and port `6443`
+  with source-only matching for the IP-based Kubernetes Service path
 - Machine address filtering by the Infra CIDR
 - Machine address updates and pending address recovery
 - Duplicate source-IP handling with `DuplicateSourceIP`

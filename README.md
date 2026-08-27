@@ -66,10 +66,12 @@ make deploy IMG="$OOOI_IMAGE"
 kubectl -n oooi-system rollout status deployment/oooi-controller-manager --timeout=5m
 ```
 
-The generated component defaults use the oooi image for DHCP and DNS, and
-`envoyproxy/envoy:v1.36.4` plus an oooi manager sidecar for the proxy. Mirror
-and set the component image fields explicitly in `Infra` when required by an
-air-gapped registry.
+The checked-in sample and end-user Helm defaults use
+`quay.io/cldmnky/oooi:latest`. The generated component defaults use the oooi
+image for DHCP and DNS, and `envoyproxy/envoy:v1.36.4` plus an oooi manager
+sidecar for the proxy. Mirror and set the component image fields explicitly in
+`Infra` when required by an air-gapped registry; use a digest instead of
+`:latest` when deployment reproducibility is required.
 
 ### Create an `Infra` and attachment
 
@@ -168,11 +170,15 @@ kubernetes.default.svc.cluster.local
 ```
 
 DNS gives every worker the same proxy address. Envoy chooses the hosted cluster
-using the worker's source IP. The Infra controller finds KubeVirt NodePools in
-the HostedCluster namespace, follows their CAPI `Machine` objects in the
-management cluster, and reads `Machine.status.addresses`. It keeps only
-addresses inside `Infra.spec.networkConfig.cidr`, deduplicates and sorts them,
-then emits `/32` `sourcePrefixRanges` on the generated alias backend.
+using the worker's source IP. The hostname-SNI path uses port `443`; the
+in-cluster Kubernetes Service path uses port `6443` and an IP URL, so it has no
+SNI. Both generated backends are source-scoped.
+
+The Infra controller finds KubeVirt NodePools in the HostedCluster namespace,
+follows their CAPI `Machine` objects in the management cluster, and reads
+`Machine.status.addresses`. It keeps only addresses inside
+`Infra.spec.networkConfig.cidr`, deduplicates and sorts them, then emits `/32`
+`sourcePrefixRanges` on both generated alias backends.
 
 Aliases are omitted while a KubeVirt NodePool has no usable in-CIDR Machine
 address; fully qualified names remain the recommended bootstrap path. A
@@ -193,6 +199,8 @@ DNS and proxy are updated only after a real endpoint exists.
 The operator does not write public DNS. Put ExternalDNS where it can watch the
 Service:
 
+- Watch each HostedCluster's management-cluster `kube-apiserver` LoadBalancer
+  Service for `api.<cluster>.<baseDomain>`.
 - Watch the hosted cluster's `oooi-ingress` Service for
   `*.apps.<cluster>.<baseDomain>`.
 - Watch the management cluster's generated
@@ -255,6 +263,14 @@ make test-e2e
 Use `PODMAN_RUNTIME=true make test-e2e` for Podman, or set `KIND_CLUSTER` to
 choose the Kind cluster name. The E2E suite is Kind-only and verifies its
 current context before running.
+
+For a production-like HyperShift/KubeVirt environment, review and run
+`scripts/e2e-borg-species-8472.sh`. It exercises two attachments on one VLAN,
+including source-scoped no-SNI API routing, public API/OAuth/apps DNS, and
+endpoint checks. Run `scripts/cleanup-e2e-borg-species-8472.sh` afterward; it
+deletes attachments before shared infrastructure and retries remaining
+KubeVirt VM resources while NodePools are terminating. Override the script's
+environment-specific variables before using it.
 
 For manager flags, use `go run ./main.go manager <flags>` directly; `make run`
 starts the manager without forwarding additional arguments.

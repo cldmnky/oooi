@@ -46,7 +46,7 @@ flowchart LR
     subgraph pub["Public DNS zone"]
         direction TB
         EDNS["ExternalDNS"]
-        ZONE[("A records: oauth.* · *.apps.*")]
+        ZONE[("A records: api.* · oauth.* · *.apps.*")]
         CLI["External clients"]
         EDNS -->|writes| ZONE
         CLI --> ZONE
@@ -83,7 +83,7 @@ through Multus annotations; oooi does not create the NAD.
 | `InfraClusterAttachmentReconciler` | — | `registry.example.com/oooi` | Binds one HostedCluster, manages its control-plane policy, and drives optional apps ingress |
 | DHCP | `DHCPServer` | Infra-generated: oooi image; standalone API default: HyperDHCP image | Serves leases on the VLAN; discovers KubeVirt VM interfaces to keep leases stable |
 | DNS | `DNSServer` | oooi image (CoreDNS component) | Split-horizon views; static HCP answers; upstream forwarding |
-| Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI routing; apps wildcard backends |
+| Proxy | `ProxyServer` | Envoy + oooi xDS sidecar | L4 TLS-passthrough gateway; SNI and source-scoped routing; apps wildcard backends |
 | Apps ingress | `InfraClusterAttachment` | MetalLB operator | Installs MetalLB into the attached hosted cluster, allocates and advertises its wildcard VIP |
 
 ### Ownership and garbage collection
@@ -115,8 +115,9 @@ sequenceDiagram
 - `api.<cluster>.<domain>:6443` → `controlPlaneNamespace/kube-apiserver`
 - `oauth|ignition|konnectivity.<cluster>.<domain>:443` → matching HCP Services
 
-For a KubeVirt worker, the shared proxy also supports these service aliases on
-port `443`:
+For a KubeVirt worker, the shared proxy supports these service aliases on
+port `443` for SNI-based traffic and on port `6443` for the in-cluster
+Kubernetes Service path:
 
 ```text
 kubernetes
@@ -134,6 +135,10 @@ The controller consumes the addresses exposed in Machine status; validate the
 CAPK address-selection and refresh behavior for the target release. Until an
 in-CIDR address is available, the attachment keeps its fully qualified routes
 but has no alias backend; the controller retries discovery.
+
+The `6443` service-alias backend matches the worker source range because that
+path connects by IP and does not send SNI. The `443` alias backend retains the
+Kubernetes hostname and matches both SNI and source range.
 
 The source address is a routing selector, not an identity mechanism. A client
 that can spoof another worker's VLAN address can select another attachment, so

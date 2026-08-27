@@ -43,13 +43,17 @@ kubectl -n <hosted-cluster-namespace> get nodepool
 kubectl -n <control-plane-namespace> get machine -o yaml
 kubectl -n <infra-namespace> get proxyserver <infra>-proxy \
   -o jsonpath='{range .spec.backends[?(@.name=="<attachment>-kubernetes-hostname")].sourcePrefixRanges}{.}{"\n"}{end}'
+kubectl -n <infra-namespace> get proxyserver <infra>-proxy \
+  -o jsonpath='{range .spec.backends[?(@.name=="<attachment>-kubernetes-service")].sourcePrefixRanges}{.}{"\n"}{end}'
 ```
 
 Addresses outside `networkConfig.cidr` are deliberately ignored. A pending
-Machine status causes the alias backend to be omitted while the fully qualified
-`api.<cluster>.<domain>` route remains available. If two attachments claim the
-same `/32`, inspect the Infra `Ready` condition for `DuplicateSourceIP`; only
-the conflicting alias routes are suppressed.
+Machine status causes the alias backends to be omitted while the fully
+qualified `api.<cluster>.<domain>` route remains available. The `hostname`
+backend serves SNI clients on port `443`; the `service` backend serves the
+IP-based no-SNI path on port `6443`. If two attachments claim the same `/32`,
+inspect the Infra `Ready` condition for `DuplicateSourceIP`; only the
+conflicting alias routes are suppressed.
 
 ## Hosted cluster stuck installing
 
@@ -112,6 +116,22 @@ dig +short oauth.<cluster>.<domain> @<public-resolver>         # must match abov
 curl -k -o /dev/null -w '%{http_code}\n' \
   'https://oauth.<cluster>.<domain>/oauth/authorize?client_id=openshift-challenging-client&response_type=token'  # 401 = good
 ```
+
+## API returns timeouts publicly but works on VLAN
+
+The public API record must point at the HostedCluster's management-cluster
+`kube-apiserver` LoadBalancer Service in its control-plane namespace. Verify
+the Service's current VIP and its hostname annotation:
+
+```bash
+kubectl -n <control-plane-namespace> get svc kube-apiserver -o wide
+dig +short api.<cluster>.<domain> @<public-resolver>
+curl -k https://api.<cluster>.<domain>:6443/version  # 200 = good
+```
+
+If the management ExternalDNS instance uses a publish label filter, add its
+matching label to the API Service. A hosted-cluster ExternalDNS instance cannot
+publish this management-cluster Service.
 
 ## Proxy pods crash-loop binding ports
 

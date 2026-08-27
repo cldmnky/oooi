@@ -25,10 +25,10 @@ Each child workload is configurable per `Infra` resource:
 
 | Field | Default | Used by |
 |---|---|---|
-| `infraComponents.dhcp.image` | built-in oooi image for an Infra-generated child | DHCP server |
-| `infraComponents.dns.image` | built-in oooi image | DNS server |
+| `infraComponents.dhcp.image` | `quay.io/cldmnky/oooi:latest` for an Infra-generated child | DHCP server |
+| `infraComponents.dns.image` | `quay.io/cldmnky/oooi:latest` | DNS server |
 | `infraComponents.proxy.proxyImage` | `envoyproxy/envoy:v1.36.4` | Envoy container |
-| `infraComponents.proxy.managerImage` | oooi image | xDS manager sidecar |
+| `infraComponents.proxy.managerImage` | `quay.io/cldmnky/oooi:latest` | xDS manager sidecar |
 
 !!! tip
 

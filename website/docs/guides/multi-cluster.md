@@ -98,13 +98,15 @@ kubernetes.default.svc.cluster.local
 ```
 
 Envoy disambiguates the aliases with each attachment's worker source `/32`
-ranges. The controller watches HyperShift `NodePool` objects for membership and
-CAPI `Machine` objects for lifecycle and address changes. It filters
-`Machine.status.addresses` to the `Infra.spec.networkConfig.cidr`. The
-controller consumes the addresses exposed by CAPK; validate which interfaces
-CAPK publishes and how quickly it refreshes them on the target release. If the
-Machine status is not populated yet, the alias backend is omitted and the fully
-qualified routes remain available while reconciliation retries.
+ranges. The hostname-SNI path uses port `443`; the IP-based Kubernetes Service
+path uses port `6443` without SNI. The controller watches HyperShift `NodePool`
+objects for membership and CAPI `Machine` objects for lifecycle and address
+changes. It filters `Machine.status.addresses` to the
+`Infra.spec.networkConfig.cidr`. The controller consumes the addresses exposed
+by CAPK; validate which interfaces CAPK publishes and how quickly it refreshes
+them on the target release. If the Machine status is not populated yet, both
+alias backends are omitted and the fully qualified routes remain available
+while reconciliation retries.
 
 The source range is a routing condition, not authentication. Enforce source
 anti-spoofing in the CNI or switching layer when different tenants share a VLAN.
@@ -149,6 +151,13 @@ The generated Service is named
 shared Envoy pods. Configure ExternalDNS on the hosting cluster to watch these
 Services. The annotation above is per cluster, so no multi-hostname merge or
 shared OAuth VIP is required.
+
+Public API records are separate from OAuth. Each HostedCluster's
+`kube-apiserver` LoadBalancer Service lives in its own control-plane namespace,
+so a management-cluster ExternalDNS instance must watch all of those Services.
+Each `api.<cluster>.<baseDomain>` record therefore follows its own API VIP;
+there is no shared API VIP. See [Public DNS and OAuth publishing](public-dns-oauth.md)
+for the ownership and label-filter requirements.
 
 ## Failure modes
 

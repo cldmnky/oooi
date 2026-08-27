@@ -184,12 +184,17 @@ var _ = Describe("Infra source-IP alias aggregation", func() {
 		}
 		Expect(byName).To(HaveKey("alpha-kubernetes-hostname"))
 		Expect(byName).To(HaveKey("bravo-kubernetes-hostname"))
+		Expect(byName).To(HaveKey("alpha-kubernetes-service"))
+		Expect(byName).To(HaveKey("bravo-kubernetes-service"))
 		alpha := byName["alpha-kubernetes-hostname"]
 		bravo := byName["bravo-kubernetes-hostname"]
+		alphaService := byName["alpha-kubernetes-service"]
 		Expect(alpha.Hostname).To(Equal("kubernetes"))
 		Expect(alpha.AlternateHostnames).To(ContainElements("kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local", "kubernetes.alpha.example.com"))
 		Expect(alpha.SourcePrefixRanges).To(Equal([]string{"192.168.100.10/32"}))
 		Expect(alpha.Port).To(Equal(int32(443)))
+		Expect(alphaService.Port).To(Equal(int32(6443)))
+		Expect(alphaService.SourcePrefixRanges).To(Equal([]string{"192.168.100.10/32"}))
 		Expect(alpha.TargetNamespace).To(Equal("clusters-alpha"))
 		Expect(bravo.SourcePrefixRanges).To(Equal([]string{"192.168.100.11/32"}))
 		Expect(bravo.TargetNamespace).To(Equal("clusters-bravo"))
@@ -749,6 +754,9 @@ var _ = Describe("helper coverage", func() {
 		if len(suffixKubernetesHostname) > longest {
 			longest = len(suffixKubernetesHostname)
 		}
+		if len(suffixKubernetesService) > longest {
+			longest = len(suffixKubernetesService)
+		}
 		Expect(longest).To(BeNumerically("<=", 63-40), "suffix budget leaves no room for a prefix")
 
 		names := []string{
@@ -768,13 +776,16 @@ var _ = Describe("helper coverage", func() {
 				sourceCIDRs:           []string{"192.168.100.1/32"},
 			}
 			prefix := backendNamePrefix(view)
-			for _, suffix := range []string{suffixKubeAPIServerInternal, suffixKubernetesHostname} {
+			for _, suffix := range []string{suffixKubeAPIServerInternal, suffixKubernetesHostname, suffixKubernetesService} {
 				full := prefix + suffix
 				Expect(len(full)).To(BeNumerically("<=", 63), "attachment %q with suffix %q produced %q", name, suffix, full)
 			}
 			backends := aliasBackendsForView(view, prefix)
 			Expect(backends).To(HaveLen(1))
 			Expect(len(backends[0].Name)).To(BeNumerically("<=", 63))
+			serviceBackends := serviceAliasBackendsForView(view, prefix)
+			Expect(serviceBackends).To(HaveLen(1))
+			Expect(len(serviceBackends[0].Name)).To(BeNumerically("<=", 63))
 		}
 
 		a := backendNamePrefix(attachmentView{name: strings.Repeat("a", 45) + "-one"})

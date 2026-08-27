@@ -1,0 +1,6 @@
+apiVersion: v2
+name: oooi-end-user-setup
+description: End-user HyperShift and oooi VLAN setup for the borg e2e test
+type: application
+version: 0.1.0
+appVersion: "e2e"

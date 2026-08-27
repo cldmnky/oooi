@@ -93,8 +93,8 @@ SNI passthrough traffic needed for the configured control-plane Services.
     ---
 
     Declarative labels and annotations on LoadBalancer Services let ExternalDNS
-    publish OAuth and `*.apps` records to Route53, Azure DNS, or any provider —
-    records follow VIP changes automatically.
+    publish API, OAuth, and `*.apps` records to Route53, Azure DNS, or any
+    provider — records follow VIP changes automatically.
 
 </div>
 
@@ -125,8 +125,10 @@ For multiple hosted clusters, DNS gives every worker the same proxy address for
 the aliases `kubernetes`, `kubernetes.default`, `kubernetes.default.svc`, and
 `kubernetes.default.svc.cluster.local`. Envoy chooses the control plane from
 the worker's source `/32`. The controller obtains those addresses from CAPI
-`Machine.status.addresses`, filtered to the shared `Infra` CIDR; aliases remain
-omitted while the address data is unavailable.
+`Machine.status.addresses`, filtered to the shared `Infra` CIDR. The
+hostname-SNI alias path uses port `443`; the IP-based Kubernetes Service path
+uses port `6443` without SNI. Both are omitted while the address data is
+unavailable.
 
 ## Documentation map
 
@@ -139,7 +141,7 @@ omitted while the address data is unavailable.
 | Look up an `Infra` spec field | [Infra CR reference](configuration/infra-reference.md) |
 | Configure DNS views or upstream resolvers | [Split-horizon DNS](guides/split-horizon-dns.md) |
 | Expose consoles and routes (`*.apps`) | [Apps ingress and MetalLB](guides/apps-ingress.md) |
-| Publish OAuth / `*.apps` in public DNS | [Public DNS and OAuth publishing](guides/public-dns-oauth.md) |
+| Publish API, OAuth, and `*.apps` in public DNS | [Public DNS and OAuth publishing](guides/public-dns-oauth.md) |
 | Route several hosted clusters on one VLAN | [Multiple hosted clusters](guides/multi-cluster.md) |
 | Copy a working manifest | [Examples](examples/index.md) |
 | Verify or debug a running deployment | [Operations](operations/index.md) |

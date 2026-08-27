@@ -58,11 +58,19 @@ On every attachment event, the Infra controller lists active attachments and
 rebuilds the shared child specs deterministically. Each valid attachment adds
 the five fully qualified HCP names and, when its apps status is Ready, the
 wildcard apps names. KubeVirt attachments with CAPI Machine addresses inside
-the Infra CIDR also add a source-scoped backend for `kubernetes`,
+the Infra CIDR also add two source-scoped backends for `kubernetes`,
 `kubernetes.default`, `kubernetes.default.svc`, and
-`kubernetes.default.svc.cluster.local`. Duplicate HostedCluster references,
-duplicate domains, and duplicate source IPs are reported instead of silently
-resolved; only the conflicting routes are excluded.
+`kubernetes.default.svc.cluster.local`:
+
+- The `kubernetes-hostname` backend listens on port `443` and matches the
+  Kubernetes hostname in TLS SNI plus the worker source range.
+- The `kubernetes-service` backend listens on port `6443` and matches only the
+  worker source range for the IP-based Kubernetes Service path, which sends no
+  SNI.
+
+Duplicate HostedCluster references, duplicate domains, and duplicate source IPs
+are reported instead of silently resolved; only the conflicting routes are
+excluded.
 
 There is no implicit single-cluster binding. Removing an attachment removes its
 records and backends on the next Infra reconciliation. Alias discovery watches

@@ -315,6 +315,7 @@ const (
 const (
 	suffixKubeAPIServerInternal = "kube-apiserver-internal" // longest suffix
 	suffixKubernetesHostname    = "kubernetes-hostname"
+	suffixKubernetesService     = "kubernetes-service"
 )
 
 const (
@@ -507,6 +508,27 @@ func aliasBackendsForView(view attachmentView, prefix string) []hostedclusterv1a
 		AlternateHostnames: []string{"kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local", "kubernetes." + view.domain},
 		SourcePrefixRanges: view.sourceCIDRs,
 		Port:               443,
+		TargetService:      "kube-apiserver",
+		TargetPort:         6443,
+		TargetNamespace:    view.controlPlaneNamespace,
+		Protocol:           "TCP",
+		TimeoutSeconds:     30,
+	}}
+}
+
+// serviceAliasBackendsForView builds source-IP scoped aliases for the
+// in-cluster Kubernetes Service path, which reaches the shared proxy on 6443
+// without sending an SNI hostname.
+func serviceAliasBackendsForView(view attachmentView, prefix string) []hostedclusterv1alpha1.ProxyBackend {
+	if len(view.sourceCIDRs) == 0 || !validDomain(view.domain) {
+		return nil
+	}
+	return []hostedclusterv1alpha1.ProxyBackend{{
+		Name:               prefix + suffixKubernetesService,
+		Hostname:           "kubernetes",
+		AlternateHostnames: []string{"kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local", "kubernetes." + view.domain},
+		SourcePrefixRanges: view.sourceCIDRs,
+		Port:               6443,
 		TargetService:      "kube-apiserver",
 		TargetPort:         6443,
 		TargetNamespace:    view.controlPlaneNamespace,
@@ -1024,6 +1046,7 @@ func (r *InfraReconciler) proxyServerForInfra(infra *hostedclusterv1alpha1.Infra
 		backends = append(backends, hcpBackendsForView(view, prefix)...)
 		backends = append(backends, appsBackendsForView(view, prefix)...)
 		backends = append(backends, aliasBackendsForView(view, prefix)...)
+		backends = append(backends, serviceAliasBackendsForView(view, prefix)...)
 	}
 
 	return &hostedclusterv1alpha1.ProxyServer{

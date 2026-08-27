@@ -17,18 +17,18 @@ spec:
   infraComponents:
     dhcp:
       enabled: true
-      image: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
+      image: quay.io/cldmnky/oooi:latest
       serverIP: 10.202.64.2
       rangeStart: 10.202.64.200
       rangeEnd: 10.202.64.254
       leaseTime: 1h
     dns:
       enabled: true
-      image: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
+      image: quay.io/cldmnky/oooi:latest
       serverIP: 10.202.64.3
     proxy:
       enabled: true
-      managerImage: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
+      managerImage: quay.io/cldmnky/oooi:latest
       proxyImage: envoyproxy/envoy:v1.36.4
       serverIP: 10.202.64.4
       internalProxyService: species-8472-proxy.clusters.svc.cluster.local
