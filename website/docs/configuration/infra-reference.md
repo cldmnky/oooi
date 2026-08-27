@@ -83,10 +83,10 @@ Envoy L4 SNI-passthrough gateway. `enabled` defaults to `true`.
 | `proxyImage` | string | `envoyproxy/envoy:v1.36.4` | Envoy image. |
 | `managerImage` | string | oooi image | xDS manager sidecar image. |
 
-Generated control-plane backends use `6443` for API traffic and `443` for OAuth,
-Ignition, konnectivity, and Kubernetes aliases. Apps-ingress backends use the
-configured HTTP/HTTPS ports. Envoy admin `9901` remains internal (ClusterIP
-only).
+Generated control-plane backends use `6443` for API traffic and source-scoped
+Kubernetes Service aliases, and `443` for OAuth, Ignition, konnectivity, and
+SNI-based Kubernetes aliases. Apps-ingress backends use the configured
+HTTP/HTTPS ports. Envoy admin `9901` remains internal (ClusterIP only).
 
 ## status
 

@@ -137,6 +137,13 @@ func (xs *XDSServer) UpdateProxyConfig(ctx context.Context, proxy *hostedcluster
 	return nil
 }
 
+func filterChainServerNames(port int32, backend *hostedclusterv1alpha1.ProxyBackend, srcRanges []*core.CidrRange) []string {
+	if port == 6443 && backend.Hostname == "kubernetes" && len(srcRanges) > 0 {
+		return nil
+	}
+	return append([]string{backend.Hostname}, backend.AlternateHostnames...)
+}
+
 // buildEnvoyResources builds Envoy listeners and clusters from ProxyServer backends
 func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServer) ([]types.Resource, []types.Resource, error) {
 	var clusters []types.Resource
@@ -159,13 +166,13 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 		// Fallback should route to konnectivity-server to establish tunnels
 		var fallbackClusterName string
 
-		// Port 6443 is used exclusively for kube-apiserver, so use plain TCP proxying
-		// without SNI/TLS inspection when there is a single backend. This allows HAProxy
-		// health checks (plain HTTP) to reach the backend. For shared Infra with multiple
-		// kube-apiserver backends, we switch to SNI routing so each cluster's api.*
-		// hostname routes to its own control-plane namespace.
+		// Port 6443 is used exclusively for kube-apiserver. Use plain TCP proxying
+		// without TLS inspection only when there is a single unscoped backend. For
+		// shared Infra, TLS inspection routes each cluster's api.* hostname and
+		// source-scoped Kubernetes Service aliases to its control-plane namespace.
 		// Use plain TCP for apps HTTP (80) - no SNI/TLS inspector
-		usePlainTCP := port == 80 || (port == 6443 && len(backends) == 1)
+		usePlainTCP := port == 80 ||
+			(port == 6443 && len(backends) == 1 && len(backends[0].SourcePrefixRanges) == 0)
 
 		// For plain TCP ports, we'll create a single catch-all filter chain
 		// after processing all backends, so track the primary cluster name
@@ -244,12 +251,6 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 					plainTCPCluster = clusterName
 				}
 			} else {
-				// For other ports (443 or multi-backend 6443), use SNI-based routing
-				// Create filter chain with SNI match
-				// Include both primary hostname and any alternate hostnames
-				serverNames := []string{backend.Hostname}
-				serverNames = append(serverNames, backend.AlternateHostnames...)
-
 				var srcRanges []*core.CidrRange
 				for _, cidrStr := range backend.SourcePrefixRanges {
 					_, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidrStr))
@@ -265,6 +266,10 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 				if len(backend.SourcePrefixRanges) > 0 && len(srcRanges) == 0 {
 					return nil, nil, fmt.Errorf("backend %q has no valid source prefix ranges", backend.Name)
 				}
+				// The hosted cluster's in-cluster Kubernetes Service reaches the
+				// shared proxy on 6443 with an IP URL, so its TLS ClientHello has no
+				// SNI. Source ranges select the attachment in that case.
+				serverNames := filterChainServerNames(port, backend, srcRanges)
 
 				filterChain := &listener.FilterChain{
 					FilterChainMatch: &listener.FilterChainMatch{
@@ -366,8 +371,7 @@ func (xs *XDSServer) buildEnvoyResources(proxy *hostedclusterv1alpha1.ProxyServe
 			return nil, nil, fmt.Errorf("failed to marshal access_log: %w", err)
 		}
 
-		// Create listener - use TLS inspector only for SNI-based ports (443)
-		// Port 6443 uses plain TCP passthrough
+		// Use TLS inspection whenever filter chains need SNI or source matching.
 		var listenerFilters []*listener.ListenerFilter
 		if !usePlainTCP {
 			// Create TLS inspector listener filter for SNI-based routing on port 443

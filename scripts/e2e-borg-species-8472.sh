@@ -22,9 +22,9 @@ END_USER_CHART="${END_USER_CHART:-$REPO_ROOT/scripts/helm/end-user-setup}"
 
 SETUP_RELEASE="${SETUP_RELEASE:-oooi-end-user-setup}"
 OOOI_NAMESPACE="${OOOI_NAMESPACE:-oooi-system}"
-OOOI_IMAGE="${OOOI_IMAGE:-quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918}"
+OOOI_IMAGE="${OOOI_IMAGE:-quay.io/cldmnky/oooi:latest}"
 BUILD_OOOI="${BUILD_OOOI:-false}"
-OOOI_BUILD_REPOSITORY="${OOOI_BUILD_REPOSITORY:-quay.io/cldmnky/oooi-e2e}"
+OOOI_BUILD_REPOSITORY="${OOOI_BUILD_REPOSITORY:-quay.io/cldmnky/oooi}"
 OOOI_BUILD_IMAGE="${OOOI_BUILD_IMAGE:-${OOOI_BUILD_REPOSITORY}:latest}"
 OOOI_ROLLOUT_TIMEOUT="${OOOI_ROLLOUT_TIMEOUT:-10m}"
 SETUP_HELM_TIMEOUT="${SETUP_HELM_TIMEOUT:-10m}"
@@ -94,6 +94,8 @@ PRIMARY_EXTERNAL_PROXY_IP=""
 SECOND_EXTERNAL_PROXY_IP=""
 APPS_IP=""
 SECOND_APPS_IP=""
+API_IP=""
+SECOND_API_IP=""
 
 log() {
   printf '[oooi-e2e] %s\n' "$*"
@@ -128,7 +130,7 @@ decode_base64() {
 }
 
 preflight() {
-  require_commands kubectl helm jq yq curl dig base64 make
+  require_commands kubectl oc helm jq yq curl dig base64 make
   [[ -f "$END_USER_CHART/Chart.yaml" ]] || fail "end-user Helm chart not found: $END_USER_CHART"
   [[ -f "$HOSTED_PREREQUISITES" ]] || fail "HostedCluster prerequisites not found: $HOSTED_PREREQUISITES"
   helm lint "$END_USER_CHART" >/dev/null
@@ -201,6 +203,9 @@ install_oooi() {
     make install KUBECTL="kubectl --context=$KUBE_CONTEXT"
     make deploy KUBECTL="kubectl --context=$KUBE_CONTEXT" IMG="$OOOI_IMAGE"
   )
+  if [[ "$OOOI_IMAGE" == *:latest ]]; then
+    kube -n "$OOOI_NAMESPACE" rollout restart deployment/oooi-controller-manager >/dev/null
+  fi
   for crd in \
     infras.hostedcluster.densityops.com \
     dhcpservers.hostedcluster.densityops.com \
@@ -264,6 +269,7 @@ prepare_hosted_external_dns() {
   local kubeconfig_secret="$external_dns_name-kubeconfig"
   local credentials_secret="$external_dns_name-credentials"
   local secret_name kubeconfig_data raw_kubeconfig internal_kubeconfig
+  local hosted_api_url hosted_server_name
   local credentials_json access_key_b64 secret_key_b64 access_key secret_key
   secret_name="$(kube -n "$MANAGEMENT_NAMESPACE" get hostedcluster "$cluster_name" -o jsonpath='{.status.kubeconfig.name}')"
   kubeconfig_data="$(kube -n "$MANAGEMENT_NAMESPACE" get secret "$secret_name" -o jsonpath='{.data.kubeconfig}')"
@@ -271,11 +277,13 @@ prepare_hosted_external_dns() {
   internal_kubeconfig="$WORK_ROOT/$cluster_name-hosted-kubeconfig-internal"
   printf '%s' "$kubeconfig_data" | decode_base64 > "$raw_kubeconfig"
 
-  HOSTED_API_URL="https://kube-apiserver.${control_plane_namespace}.svc.cluster.local:6443" \
-  HOSTED_SERVER_NAME="$api_host" \
+  hosted_api_url="https://kube-apiserver.${control_plane_namespace}.svc.cluster.local:6443"
+  hosted_server_name="$api_host"
+  HOSTED_API_URL="$hosted_api_url" \
+  HOSTED_SERVER_NAME="$hosted_server_name" \
     yq eval '.clusters[].cluster.server = strenv(HOSTED_API_URL) | .clusters[].cluster."tls-server-name" = strenv(HOSTED_SERVER_NAME)' \
-    "$raw_kubeconfig" > "$internal_kubeconfig"
-  grep -Fq "server: $HOSTED_API_URL" "$internal_kubeconfig" || fail "failed to make the hosted kubeconfig use the in-cluster API Service"
+      "$raw_kubeconfig" > "$internal_kubeconfig"
+  grep -Fq "server: $hosted_api_url" "$internal_kubeconfig" || fail "failed to make the hosted kubeconfig use the in-cluster API Service"
   chmod 600 "$raw_kubeconfig" "$internal_kubeconfig"
 
   credentials_json="$(kube -n "$EXTERNAL_DNS_NAMESPACE" get secret aws-access-key -o json)"
@@ -368,6 +376,22 @@ external_proxy_service_ready_for() {
     ' >/dev/null
 }
 
+api_service_ready_for() {
+  local namespace="$1" hostname="$2"
+  kube -n "$namespace" get service kube-apiserver -o json 2>/dev/null |
+    jq -e --arg hostname "$hostname" '
+      (.spec.type == "LoadBalancer") and
+      (.metadata.annotations["external-dns.alpha.kubernetes.io/hostname"] == $hostname) and
+      ((.status.loadBalancer.ingress[0].ip // "") != "")
+    ' >/dev/null
+}
+
+publish_api_service_for_external_dns() {
+  local namespace="$1"
+  kube -n "$namespace" label service kube-apiserver \
+    external-dns.blahonga.me/publish=yes --overwrite >/dev/null
+}
+
 proxy_configuration_ready() {
   local minimum_backends=14
   if [[ "$REQUIRE_SOURCE_ALIAS" == "true" ]]; then
@@ -393,7 +417,14 @@ proxy_configuration_ready() {
     kube -n "$MANAGEMENT_NAMESPACE" get proxyserver "$PROXY_NAME" -o json 2>/dev/null |
       jq -e '
         ([.spec.backends[]? | select(
-          .hostname == "kubernetes" and
+          .hostname == "kubernetes" and .port == 443 and
+          .targetService == "kube-apiserver" and .targetPort == 6443 and
+          ((.sourcePrefixRanges // []) | length > 0) and
+          all((.sourcePrefixRanges // [])[]; test("^10\\.202\\.64\\.[0-9]{1,3}/32$"))
+        )] | length) >= 2 and
+        ([.spec.backends[]? | select(
+          .hostname == "kubernetes" and .port == 6443 and
+          .targetService == "kube-apiserver" and .targetPort == 6443 and
           ((.sourcePrefixRanges // []) | length > 0) and
           all((.sourcePrefixRanges // [])[]; test("^10\\.202\\.64\\.[0-9]{1,3}/32$"))
         )] | length) >= 2
@@ -497,13 +528,14 @@ vlan_dns_ready_for() {
 }
 
 public_dns_ready() {
-  public_dns_ready_for "$CLUSTER_DOMAIN" "$PRIMARY_EXTERNAL_PROXY_IP" "$APPS_IP" || return 1
-  public_dns_ready_for "$SECOND_CLUSTER_DOMAIN" "$SECOND_EXTERNAL_PROXY_IP" "$SECOND_APPS_IP"
+  public_dns_ready_for "$CLUSTER_DOMAIN" "$API_IP" "$PRIMARY_EXTERNAL_PROXY_IP" "$APPS_IP" || return 1
+  public_dns_ready_for "$SECOND_CLUSTER_DOMAIN" "$SECOND_API_IP" "$SECOND_EXTERNAL_PROXY_IP" "$SECOND_APPS_IP"
 }
 
 public_dns_ready_for() {
-  local cluster_domain="$1" external_proxy_ip="$2" apps_ip="$3"
-  public_dns_record_matches "oauth.$cluster_domain" "$external_proxy_ip" &&
+  local cluster_domain="$1" api_ip="$2" external_proxy_ip="$3" apps_ip="$4"
+  public_dns_record_matches "api.$cluster_domain" "$api_ip" &&
+    public_dns_record_matches "oauth.$cluster_domain" "$external_proxy_ip" &&
     public_dns_record_matches "console-openshift-console.apps.$cluster_domain" "$apps_ip"
 }
 
@@ -524,6 +556,25 @@ vlan_api_endpoint_ready_for() {
   [[ "$(http_status --resolve "${host}:6443:${PROXY_SERVER_IP}" "https://${host}:6443/version" 2>/dev/null || true)" == "200" ]]
 }
 
+hosted_no_sni_api_endpoint_ready() {
+  hosted_no_sni_api_endpoint_ready_for "$CLUSTER_NAME" || return 1
+  hosted_no_sni_api_endpoint_ready_for "$SECOND_CLUSTER_NAME"
+}
+
+hosted_no_sni_api_endpoint_ready_for() {
+  local cluster_name="$1" kubeconfig node status
+  kubeconfig="$WORK_ROOT/${cluster_name}-hosted-kubeconfig"
+  node="$(KUBECONFIG="$kubeconfig" oc get nodes -l node-role.kubernetes.io/worker \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  [[ -n "$node" ]] || return 1
+  status="$(KUBECONFIG="$kubeconfig" oc debug "node/$node" -- chroot /host \
+    curl --silent --show-error --insecure \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" \
+    --output /dev/null --write-out '%{http_code}' \
+    "https://${PROXY_SERVER_IP}:6443/readyz" 2>/dev/null || true)"
+  [[ "$status" == "200" ]]
+}
+
 vlan_oauth_endpoint_ready() {
   vlan_oauth_endpoint_ready_for "$OAUTH_HOST" || return 1
   vlan_oauth_endpoint_ready_for "$SECOND_OAUTH_HOST"
@@ -542,6 +593,16 @@ public_oauth_endpoint_ready() {
 public_oauth_endpoint_ready_for() {
   local host="$1" external_proxy_ip="$2"
   [[ "$(http_status --resolve "${host}:443:${external_proxy_ip}" "https://${host}/oauth/authorize?client_id=openshift-challenging-client&response_type=token" 2>/dev/null || true)" == "401" ]]
+}
+
+public_api_endpoint_ready() {
+  public_api_endpoint_ready_for "$API_HOST" "$API_IP" || return 1
+  public_api_endpoint_ready_for "$SECOND_API_HOST" "$SECOND_API_IP"
+}
+
+public_api_endpoint_ready_for() {
+  local host="$1" api_ip="$2"
+  [[ "$(http_status --resolve "${host}:6443:${api_ip}" "https://${host}:6443/version" 2>/dev/null || true)" == "200" ]]
 }
 
 vlan_ignition_endpoint_ready() {
@@ -589,6 +650,13 @@ main() {
   wait_or_die "$DNS_NAME Ready" "$ATTACHMENT_WAIT" child_ready dnsserver "$DNS_NAME"
   wait_or_die "$PROXY_NAME Ready" "$ATTACHMENT_WAIT" child_ready proxyserver "$PROXY_NAME"
 
+  if [[ "$OOOI_IMAGE" == *:latest ]]; then
+    log "Restarting oooi component pods to pull the rebuilt :latest image"
+    for deployment in "$DHCP_NAME" "$DNS_NAME" "$PROXY_NAME"; do
+      kube -n "$MANAGEMENT_NAMESPACE" rollout restart "deployment/$deployment" >/dev/null
+    done
+  fi
+
   rollout_or_die "$DHCP_NAME"
   rollout_or_die "$DNS_NAME"
   rollout_or_die "$PROXY_NAME"
@@ -596,6 +664,12 @@ main() {
   PROXY_CLUSTER_IP="$(kube -n "$MANAGEMENT_NAMESPACE" get service "$PROXY_NAME" -o jsonpath='{.spec.clusterIP}')"
   APPS_IP="$(kube -n "$MANAGEMENT_NAMESPACE" get infraattachment "$CLUSTER_NAME" -o jsonpath='{.status.appsIngressStatus.externalIP}')"
   SECOND_APPS_IP="$(kube -n "$MANAGEMENT_NAMESPACE" get infraattachment "$SECOND_CLUSTER_NAME" -o jsonpath='{.status.appsIngressStatus.externalIP}')"
+  wait_or_die "$CLUSTER_NAME kube-apiserver Service assigned MetalLB VIP" "$ATTACHMENT_WAIT" api_service_ready_for "$CONTROL_PLANE_NAMESPACE" "$API_HOST"
+  wait_or_die "$SECOND_CLUSTER_NAME kube-apiserver Service assigned MetalLB VIP" "$ATTACHMENT_WAIT" api_service_ready_for "$SECOND_CONTROL_PLANE_NAMESPACE" "$SECOND_API_HOST"
+  API_IP="$(kube -n "$CONTROL_PLANE_NAMESPACE" get service kube-apiserver -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+  SECOND_API_IP="$(kube -n "$SECOND_CONTROL_PLANE_NAMESPACE" get service kube-apiserver -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+  publish_api_service_for_external_dns "$CONTROL_PLANE_NAMESPACE"
+  publish_api_service_for_external_dns "$SECOND_CONTROL_PLANE_NAMESPACE"
   wait_or_die "$PRIMARY_EXTERNAL_PROXY_SERVICE assigned MetalLB VIP" "$ATTACHMENT_WAIT" external_proxy_service_ready_for "$PRIMARY_EXTERNAL_PROXY_SERVICE"
   wait_or_die "$SECOND_EXTERNAL_PROXY_SERVICE assigned MetalLB VIP" "$ATTACHMENT_WAIT" external_proxy_service_ready_for "$SECOND_EXTERNAL_PROXY_SERVICE"
   PRIMARY_EXTERNAL_PROXY_IP="$(kube -n "$MANAGEMENT_NAMESPACE" get service "$PRIMARY_EXTERNAL_PROXY_SERVICE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
@@ -604,6 +678,9 @@ main() {
   [[ "$APPS_IP" =~ ^10\.202\.64\.(18[0-9]|190)$ ]] || fail "apps VIP $APPS_IP is outside $APPS_ADDRESS_RANGE"
   [[ "$SECOND_APPS_IP" =~ ^10\.202\.64\.(19[1-9])$ ]] || fail "apps VIP $SECOND_APPS_IP is outside $SECOND_APPS_ADDRESS_RANGE"
   [[ "$APPS_IP" != "$SECOND_APPS_IP" ]] || fail "both hosted clusters received the same apps VIP: $APPS_IP"
+  [[ "$API_IP" =~ ^10\.201\.0\.([2-4][0-9]|50)$ ]] || fail "API Service VIP $API_IP is outside $MANAGEMENT_METALLB_POOL"
+  [[ "$SECOND_API_IP" =~ ^10\.201\.0\.([2-4][0-9]|50)$ ]] || fail "API Service VIP $SECOND_API_IP is outside $MANAGEMENT_METALLB_POOL"
+  [[ "$API_IP" != "$SECOND_API_IP" ]] || fail "both hosted clusters received the same API Service VIP: $API_IP"
   [[ "$PRIMARY_EXTERNAL_PROXY_IP" =~ ^10\.201\.0\.([2-4][0-9]|50)$ ]] || fail "OAuth external Service VIP $PRIMARY_EXTERNAL_PROXY_IP is outside $MANAGEMENT_METALLB_POOL"
   [[ "$SECOND_EXTERNAL_PROXY_IP" =~ ^10\.201\.0\.([2-4][0-9]|50)$ ]] || fail "OAuth external Service VIP $SECOND_EXTERNAL_PROXY_IP is outside $MANAGEMENT_METALLB_POOL"
 
@@ -626,7 +703,14 @@ main() {
     log "Skipping VLAN DNS and endpoint checks (VERIFY_VLAN_NETWORK=$VERIFY_VLAN_NETWORK)"
   fi
 
+  if [[ "$REQUIRE_SOURCE_ALIAS" == "true" ]]; then
+    wait_or_die "worker no-SNI Kubernetes Service API endpoint" "$VLAN_NETWORK_WAIT" hosted_no_sni_api_endpoint_ready
+  else
+    log "Skipping worker no-SNI API check (REQUIRE_SOURCE_ALIAS=$REQUIRE_SOURCE_ALIAS)"
+  fi
+
   if [[ "$VERIFY_PUBLIC_ENDPOINTS" == "true" ]]; then
+    wait_or_die "public API /version endpoint returns 200" "$PUBLIC_DNS_WAIT" public_api_endpoint_ready
     wait_or_die "public OAuth endpoint returns 401" "$PUBLIC_DNS_WAIT" public_oauth_endpoint_ready
   else
     log "Skipping public endpoint checks (VERIFY_PUBLIC_ENDPOINTS=$VERIFY_PUBLIC_ENDPOINTS)"
@@ -634,8 +718,10 @@ main() {
 
   log "End-to-end test passed"
   log "${CLUSTER_NAME} OAuth public VIP: $PRIMARY_EXTERNAL_PROXY_IP"
+  log "${CLUSTER_NAME} API public VIP: $API_IP"
   log "${CLUSTER_NAME} apps VLAN/public VIP: $APPS_IP"
   log "${SECOND_CLUSTER_NAME} OAuth public VIP: $SECOND_EXTERNAL_PROXY_IP"
+  log "${SECOND_CLUSTER_NAME} API public VIP: $SECOND_API_IP"
   log "${SECOND_CLUSTER_NAME} apps VLAN/public VIP: $SECOND_APPS_IP"
   log "Hosted API: https://${API_HOST}:6443"
   log "Hosted OAuth: https://${OAUTH_HOST}/"

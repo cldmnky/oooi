@@ -18,7 +18,7 @@ interface. Its VLAN address is `infraComponents.proxy.serverIP`.
 | Listener | Traffic | Matching |
 |---|---|---|
 | `443` | OAuth, Ignition, konnectivity, aliases, and apps HTTPS | TLS inspector plus SNI; aliases also require a source range |
-| `6443` | API and API-int | Plain TCP for a single API backend; SNI-aware when multiple backends are present |
+| `6443` | API, API-int, and Kubernetes Service aliases | Plain TCP only for one unscoped backend; otherwise TLS inspector, with API names using SNI and source-scoped Kubernetes Service aliases matching the worker range for no-SNI traffic |
 | `80` | Apps HTTP when enabled | Plain TCP |
 | `9901` | Envoy admin and metrics | Pod-network Service only; not exposed by the external Service |
 | `18000` | Manager-to-Envoy xDS | Pod-local manager sidecar connection |
@@ -60,6 +60,11 @@ the management-cluster objects below:
 4. oooi keeps only addresses inside `Infra.spec.networkConfig.cidr`,
    deduplicates and sorts them, and emits the source ranges. Validate CAPK's
    interface selection and address refresh behavior for the target release.
+
+The aliases use the `443` listener when the client sends the Kubernetes Service
+hostname as SNI. The in-cluster Kubernetes Service path uses `6443` and an IP
+URL, so its TLS ClientHello has no SNI; the corresponding source-scoped backend
+selects the attachment from the worker source range.
 
 The NodePool and Machine watches are management-cluster watches. oooi does not
 need a remote VMI informer for an external KubeVirt infrastructure cluster.

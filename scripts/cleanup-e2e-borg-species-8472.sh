@@ -74,6 +74,21 @@ wait_deleted() {
   return 1
 }
 
+wait_nodepool_deleted() {
+  local cluster_name="$1" timeout="$2"
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if ! kube -n "$MANAGEMENT_NAMESPACE" get nodepool "$cluster_name" >/dev/null 2>&1; then
+      log "NodePool $cluster_name"
+      return 0
+    fi
+    delete_nodepool_virtual_machines "$cluster_name"
+    sleep "$POLL_INTERVAL"
+  done
+  printf '[oooi-cleanup] WARNING: timed out waiting for NodePool %s\n' "$cluster_name" >&2
+  return 1
+}
+
 wait_namespace_deleted() {
   local namespace="$1" timeout="$2"
   local deadline=$((SECONDS + timeout))
@@ -102,6 +117,18 @@ remove_attachment_finalizer() {
   local name="$1"
   kube -n "$MANAGEMENT_NAMESPACE" patch infraattachment "$name" \
     --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+}
+
+delete_nodepool_virtual_machines() {
+  local cluster_name="$1"
+  local control_plane_namespace="${MANAGEMENT_NAMESPACE}-${cluster_name}"
+  # CAPK Machine deletion can remain blocked when KubeVirt restarts a worker
+  # VMI after a transient virt-handler outage. This namespace belongs only to
+  # the target HostedCluster, so remove its remaining worker VM resources.
+  kube -n "$control_plane_namespace" delete virtualmachine \
+    --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  kube -n "$control_plane_namespace" delete virtualmachineinstance \
+    --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 
 public_dns_answers() {
@@ -163,33 +190,6 @@ cleanup() {
     wait_deleted "external proxy Service for $cluster_name" "$GC_WAIT" service "${cluster_name}-proxy-external" "$MANAGEMENT_NAMESPACE" || true
   done
 
-  if [[ "$VERIFY_DNS_CLEANUP" == "true" ]]; then
-    local deadline=$((SECONDS + DNS_CLEANUP_WAIT))
-    while (( SECONDS < deadline )); do
-      if public_dns_absent "oauth.${CLUSTER_DOMAIN}" && \
-        public_dns_absent "console-openshift-console.apps.${CLUSTER_DOMAIN}" && \
-        public_dns_absent "oauth.${SECOND_CLUSTER_DOMAIN}" && \
-        public_dns_absent "console-openshift-console.apps.${SECOND_CLUSTER_DOMAIN}"; then
-        log "ExternalDNS OAuth and wildcard records removed"
-        break
-      fi
-      sleep "$POLL_INTERVAL"
-    done
-    if ! public_dns_absent "oauth.${CLUSTER_DOMAIN}" || \
-      ! public_dns_absent "console-openshift-console.apps.${CLUSTER_DOMAIN}" || \
-      ! public_dns_absent "oauth.${SECOND_CLUSTER_DOMAIN}" || \
-      ! public_dns_absent "console-openshift-console.apps.${SECOND_CLUSTER_DOMAIN}"; then
-      log "WARNING: ExternalDNS records still resolve; inspect them before reusing the names"
-      for host in \
-        "oauth.${CLUSTER_DOMAIN}" \
-        "console-openshift-console.apps.${CLUSTER_DOMAIN}" \
-        "oauth.${SECOND_CLUSTER_DOMAIN}" \
-        "console-openshift-console.apps.${SECOND_CLUSTER_DOMAIN}"; do
-        printf '%s answers: %s\n' "$host" "$(public_dns_answers "$host")"
-      done
-    fi
-  fi
-
   log "Deleting the shared Infra and its generated child CRs"
   delete_namespaced infra "$INFRA_NAME" "$MANAGEMENT_NAMESPACE"
   if ! wait_deleted "Infra $INFRA_NAME" "$GC_WAIT" infra "$INFRA_NAME" "$MANAGEMENT_NAMESPACE"; then
@@ -211,7 +211,10 @@ cleanup() {
     delete_namespaced nodepool "$cluster_name" "$MANAGEMENT_NAMESPACE"
   done
   for cluster_name in "$CLUSTER_NAME" "$SECOND_CLUSTER_NAME"; do
-    if ! wait_deleted "NodePool $cluster_name" "$HOSTED_CLUSTER_DELETE_WAIT" nodepool "$cluster_name" "$MANAGEMENT_NAMESPACE"; then
+    delete_nodepool_virtual_machines "$cluster_name"
+  done
+  for cluster_name in "$CLUSTER_NAME" "$SECOND_CLUSTER_NAME"; do
+    if ! wait_nodepool_deleted "$cluster_name" "$HOSTED_CLUSTER_DELETE_WAIT"; then
       dump_status
       fail "NodePool $cluster_name did not finish deletion"
     fi
@@ -225,6 +228,39 @@ cleanup() {
       fail "HostedCluster $cluster_name did not finish deletion"
     fi
   done
+
+  if [[ "$VERIFY_DNS_CLEANUP" == "true" ]]; then
+    local deadline=$((SECONDS + DNS_CLEANUP_WAIT))
+    while (( SECONDS < deadline )); do
+      if public_dns_absent "oauth.${CLUSTER_DOMAIN}" && \
+        public_dns_absent "api.${CLUSTER_DOMAIN}" && \
+        public_dns_absent "console-openshift-console.apps.${CLUSTER_DOMAIN}" && \
+        public_dns_absent "oauth.${SECOND_CLUSTER_DOMAIN}" && \
+        public_dns_absent "api.${SECOND_CLUSTER_DOMAIN}" && \
+        public_dns_absent "console-openshift-console.apps.${SECOND_CLUSTER_DOMAIN}"; then
+        log "ExternalDNS API, OAuth, and wildcard records removed"
+        break
+      fi
+      sleep "$POLL_INTERVAL"
+    done
+    if ! public_dns_absent "oauth.${CLUSTER_DOMAIN}" || \
+      ! public_dns_absent "api.${CLUSTER_DOMAIN}" || \
+      ! public_dns_absent "console-openshift-console.apps.${CLUSTER_DOMAIN}" || \
+      ! public_dns_absent "oauth.${SECOND_CLUSTER_DOMAIN}" || \
+      ! public_dns_absent "api.${SECOND_CLUSTER_DOMAIN}" || \
+      ! public_dns_absent "console-openshift-console.apps.${SECOND_CLUSTER_DOMAIN}"; then
+      log "WARNING: ExternalDNS records still resolve; inspect them before reusing the names"
+      for host in \
+        "oauth.${CLUSTER_DOMAIN}" \
+        "api.${CLUSTER_DOMAIN}" \
+        "console-openshift-console.apps.${CLUSTER_DOMAIN}" \
+        "oauth.${SECOND_CLUSTER_DOMAIN}" \
+        "api.${SECOND_CLUSTER_DOMAIN}" \
+        "console-openshift-console.apps.${SECOND_CLUSTER_DOMAIN}"; do
+        printf '%s answers: %s\n' "$host" "$(public_dns_answers "$host")"
+      done
+    fi
+  fi
 
   log "Uninstalling end-user Helm release $SETUP_RELEASE"
   helm_kube uninstall "$SETUP_RELEASE" --namespace "$MANAGEMENT_NAMESPACE" --ignore-not-found --wait --cascade foreground --timeout "$HELM_UNINSTALL_TIMEOUT" || true

@@ -9,17 +9,24 @@ endpoint on a MetalLB VIP when HyperShift forces the `Route` strategy.
 
 | Record | Created by | Watched Service | Where that Service lives |
 |---|---|---|---|
+| `api.<cluster>.<domain>` (public API VIP) | Your ExternalDNS | `kube-apiserver` | **Hosting** (management) cluster, `clusters-<name>` control-plane namespace |
 | `*.apps.<cluster>.<domain>` | Your ExternalDNS | `<service.name>` (`oooi-ingress`) | **Hosted** cluster `openshift-ingress` |
 | `oauth.<cluster>.<domain>` (public VIP) | Your ExternalDNS | `<attachment>-proxy-external` | **Hosting** (management) cluster, Infra namespace |
 | VLAN views of both | **oooi** (automatic) | — | DNSServer static zones |
 
 Key constraint: an ExternalDNS instance can only see Services in the cluster
 its kubeconfig points at. A default management-cluster ExternalDNS **cannot**
-see the hosted cluster's `oooi-ingress` Service.
+see the hosted cluster's `oooi-ingress` Service. Conversely, the hosted-cluster
+watcher cannot see the management-side `kube-apiserver` Service in the
+`clusters-<name>` control-plane namespace. Ensure the management ExternalDNS
+instance watches that Service too; if it uses a publish label filter, add the
+matching label to each API Service.
 
 ## Pattern A — publish the `*.apps` wildcard
 
-Run an ExternalDNS instance that can watch the hosted cluster. Two variants:
+Run an ExternalDNS instance that can watch the hosted cluster to publish the
+annotated apps-ingress Service. Publish the management-side `kube-apiserver`
+Service with a management-cluster ExternalDNS instance. Two variants:
 
 === "ExternalDNS Operator inside the hosted cluster"
 

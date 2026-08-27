@@ -94,11 +94,15 @@ Set `DIAGNOSTICS_IMAGE` to an image in your registry that provides `nslookup`.
 
 ## 4. Public resolution (optional)
 
-Run this section only after an ExternalDNS/provider path is configured. The apps
-query also requires apps ingress; the OAuth query requires the proxy external
-Service. Once the applicable ExternalDNS record has converged:
+Run this section only after an ExternalDNS/provider path is configured. The API
+query requires the hosted `kube-apiserver` LoadBalancer Service, the apps query
+requires apps ingress, and the OAuth query requires the proxy external Service.
+Once the applicable ExternalDNS record has converged:
 
 ```bash
+dig +short api.example-hcp.clusters.example.com @<public-resolver>
+# → current hosted kube-apiserver Service EXTERNAL-IP
+
 dig +short console-openshift-console.apps.example-hcp.clusters.example.com @<public-resolver>
 # → current InfraClusterAttachment.status.appsIngressStatus.externalIP, when IP-backed
 

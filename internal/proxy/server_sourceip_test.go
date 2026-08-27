@@ -195,6 +195,84 @@ func TestXDSServer_buildEnvoyResources_MultiBackend6443_SNI(t *testing.T) {
 	assert.True(t, hostnames["api.bravo.example.com"])
 }
 
+func TestXDSServer_buildEnvoyResources_SingleSourceScoped6443_NoSNI(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, hostedclusterv1alpha1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	xs := &XDSServer{client: k8sClient, proxies: make(map[string]*hostedclusterv1alpha1.ProxyServer)}
+
+	proxy := &hostedclusterv1alpha1.ProxyServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
+		Spec: hostedclusterv1alpha1.ProxyServerSpec{
+			Backends: []hostedclusterv1alpha1.ProxyBackend{
+				{
+					Name:               "alpha-kubernetes-service",
+					Hostname:           "kubernetes",
+					SourcePrefixRanges: []string{"192.168.100.10/32"},
+					Port:               6443,
+					TargetService:      "kube-apiserver",
+					TargetPort:         6443,
+					TargetNamespace:    "clusters-alpha",
+					Protocol:           "TCP",
+					TimeoutSeconds:     30,
+				},
+			},
+		},
+	}
+
+	listeners, clusters, err := xs.buildEnvoyResources(proxy)
+	require.NoError(t, err)
+	require.Len(t, listeners, 1)
+	require.Len(t, clusters, 1)
+
+	l := listeners[0].(*listener.Listener)
+	require.NotEmpty(t, l.ListenerFilters, "source-scoped 6443 must use TLS inspection")
+	require.Len(t, l.FilterChains, 1)
+	require.NotNil(t, l.FilterChains[0].FilterChainMatch)
+	assert.Empty(t, l.FilterChains[0].FilterChainMatch.ServerNames)
+	assert.Equal(t, "tls", l.FilterChains[0].FilterChainMatch.TransportProtocol)
+	require.Len(t, l.FilterChains[0].FilterChainMatch.SourcePrefixRanges, 1)
+	assert.Equal(t, "192.168.100.10", l.FilterChains[0].FilterChainMatch.SourcePrefixRanges[0].AddressPrefix)
+}
+
+func TestXDSServer_buildEnvoyResources_KubernetesServiceAliasUsesSourceOnlyMatch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, hostedclusterv1alpha1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	xs := &XDSServer{client: k8sClient, proxies: make(map[string]*hostedclusterv1alpha1.ProxyServer)}
+
+	proxy := &hostedclusterv1alpha1.ProxyServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
+		Spec: hostedclusterv1alpha1.ProxyServerSpec{
+			Backends: []hostedclusterv1alpha1.ProxyBackend{
+				{Name: "alpha-kube-apiserver", Hostname: "api.alpha.example.com", Port: 6443, TargetService: "kube-apiserver", TargetPort: 6443, TargetNamespace: "clusters-alpha", Protocol: "TCP", TimeoutSeconds: 30},
+				{Name: "alpha-kubernetes-service", Hostname: "kubernetes", AlternateHostnames: []string{"kubernetes.default.svc"}, SourcePrefixRanges: []string{"192.168.100.10/32"}, Port: 6443, TargetService: "kube-apiserver", TargetPort: 6443, TargetNamespace: "clusters-alpha", Protocol: "TCP", TimeoutSeconds: 30},
+				{Name: "bravo-kube-apiserver", Hostname: "api.bravo.example.com", Port: 6443, TargetService: "kube-apiserver", TargetPort: 6443, TargetNamespace: "clusters-bravo", Protocol: "TCP", TimeoutSeconds: 30},
+				{Name: "bravo-kubernetes-service", Hostname: "kubernetes", AlternateHostnames: []string{"kubernetes.default.svc"}, SourcePrefixRanges: []string{"192.168.100.11/32"}, Port: 6443, TargetService: "kube-apiserver", TargetPort: 6443, TargetNamespace: "clusters-bravo", Protocol: "TCP", TimeoutSeconds: 30},
+			},
+		},
+	}
+
+	listeners, clusters, err := xs.buildEnvoyResources(proxy)
+	require.NoError(t, err)
+	require.Len(t, listeners, 1)
+	require.Len(t, clusters, 4)
+
+	l := listeners[0].(*listener.Listener)
+	assert.NotEmpty(t, l.ListenerFilters)
+	require.Len(t, l.FilterChains, 4)
+	var sourceOnly int
+	for _, fc := range l.FilterChains {
+		if len(fc.FilterChainMatch.SourcePrefixRanges) == 0 {
+			continue
+		}
+		sourceOnly++
+		assert.Empty(t, fc.FilterChainMatch.ServerNames)
+		assert.Equal(t, "tls", fc.FilterChainMatch.TransportProtocol)
+	}
+	assert.Equal(t, 2, sourceOnly)
+}
+
 func TestXDSServer_buildEnvoyResources_SourceIP_MultipleCIDRs(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, hostedclusterv1alpha1.AddToScheme(scheme))

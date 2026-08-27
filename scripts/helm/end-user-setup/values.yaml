@@ -16,7 +16,7 @@ infra:
       - 10.201.0.2
       - 10.201.0.1
   components:
-    image: quay.io/cldmnky/oooi@sha256:19b8edd854c923be7885b64dcc84805c7d53b3b7949b9a80846b21d03906b918
+    image: quay.io/cldmnky/oooi:latest
     dhcp:
       serverIP: 10.202.64.2
       rangeStart: 10.202.64.200
