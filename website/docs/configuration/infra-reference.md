@@ -48,7 +48,7 @@ Split-horizon CoreDNS. `enabled` defaults to `true`.
 |---|---|---|---|
 | `enabled` | bool | `true` | Deploy the DNSServer child and workload. |
 | `serverIP` | string | *(empty)* | Static VLAN address of CoreDNS. |
-| `image` | string | oooi image | Override the image that runs the CoreDNS component. |
+| `image` | string | `quay.io/cldmnky/oooi:latest` | Override the image that runs the CoreDNS component. |
 
 Static answers generated per view:
 
@@ -81,7 +81,7 @@ Envoy L4 SNI-passthrough gateway. `enabled` defaults to `true`.
 | `serverIP` | string | *(empty)* | Static VLAN address of Envoy. |
 | `internalProxyService` | string | *(empty)* | DNS name **or** ClusterIP of the proxy Service used in the pod-network DNS view. Omit to hide HCP names from pods. Example: `<infra>-proxy.clusters.svc.cluster.local`. |
 | `proxyImage` | string | `envoyproxy/envoy:v1.36.4` | Envoy image. |
-| `managerImage` | string | oooi image | xDS manager sidecar image. |
+| `managerImage` | string | `quay.io/cldmnky/oooi:latest` | xDS manager sidecar image. |
 
 Generated control-plane backends use `6443` for API traffic and source-scoped
 Kubernetes Service aliases, and `443` for OAuth, Ignition, konnectivity, and
