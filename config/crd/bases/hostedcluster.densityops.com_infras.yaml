@@ -137,6 +137,38 @@ spec:
                   NetworkConfig defines the secondary network (VLAN) configuration
                   for the hosted cluster's isolated network.
                 properties:
+                  attachment:
+                    description: |-
+                      Attachment references the network attachment resource (Multus
+                      NetworkAttachmentDefinition or OVN-Kubernetes ClusterUserDefinedNetwork)
+                      that represents this network. Structured form: when set, topology, role,
+                      exposure and ipam must be specified and the legacy
+                      networkAttachmentDefinition fields must be empty.
+                    properties:
+                      kind:
+                        description: |-
+                          Kind identifies the kind of the attachment resource. Supported values:
+                          NetworkAttachmentDefinition, ClusterUserDefinedNetwork.
+                        enum:
+                        - NetworkAttachmentDefinition
+                        - ClusterUserDefinedNetwork
+                        type: string
+                      name:
+                        description: Name is the name of the attachment resource.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the namespace of the attachment resource. For
+                          NetworkAttachmentDefinition it defaults to the Infra namespace when
+                          empty. For the cluster-scoped ClusterUserDefinedNetwork kind it is
+                          required: it identifies the namespace of the NADs and endpoints
+                          generated for the CUDN.
+                        type: string
+                    required:
+                    - kind
+                    - name
+                    type: object
                   cidr:
                     description: |-
                       CIDR is the IP address range for the secondary network in CIDR notation.
@@ -150,16 +182,36 @@ spec:
                     items:
                       type: string
                     type: array
+                  exposure:
+                    description: |-
+                      Exposure defines how the network is exposed. Supported values: Layer2,
+                      BGP.
+                    enum:
+                    - Layer2
+                    - BGP
+                    type: string
                   gateway:
                     description: |-
-                      Gateway is the default gateway IP address for the secondary network.
+                      Gateway is the default gateway IP address for the network. Required for
+                      Secondary networks with DHCP or External IPAM; optional for primary
+                      OVN-Kubernetes networks.
                       Example: "192.168.100.1"
                     pattern: ^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$
+                    type: string
+                  ipam:
+                    description: |-
+                      IPAM defines the IP address management mode. Supported values: DHCP,
+                      External, OVNKubernetes.
+                    enum:
+                    - DHCP
+                    - External
+                    - OVNKubernetes
                     type: string
                   networkAttachmentDefinition:
                     description: |-
                       NetworkAttachmentDefinition is the name of the Multus NetworkAttachmentDefinition
-                      that represents the secondary VLAN.
+                      that represents the secondary VLAN. Legacy form: only used when the
+                      structured attachment field is absent.
                     minLength: 1
                     type: string
                   networkAttachmentNamespace:
@@ -168,11 +220,54 @@ spec:
                       If not specified, the operator will look for the NAD first in the current namespace,
                       then in the default namespace.
                     type: string
+                  role:
+                    description: |-
+                      Role defines whether this network is the primary or a secondary network.
+                      Supported values: Secondary, Primary.
+                    enum:
+                    - Secondary
+                    - Primary
+                    type: string
+                  routeAdvertisementsRef:
+                    description: |-
+                      RouteAdvertisementsRef references a cluster-scoped route advertisements
+                      resource. Required for ClusterUserDefinedNetwork BGP exposure and
+                      forbidden for Localnet topology. For a classic NetworkAttachmentDefinition
+                      with BGP exposure it is optional validation/intent metadata.
+                    properties:
+                      name:
+                        description: Name is the name of the cluster-scoped resource.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  topology:
+                    description: |-
+                      Topology defines the network topology. Supported values: Localnet,
+                      Layer2, Layer3.
+                    enum:
+                    - Localnet
+                    - Layer2
+                    - Layer3
+                    type: string
                 required:
                 - cidr
-                - gateway
-                - networkAttachmentDefinition
                 type: object
+                x-kubernetes-validations:
+                - message: networkConfig must specify either attachment or networkAttachmentDefinition
+                  rule: has(self.attachment) || has(self.networkAttachmentDefinition)
+                - message: networkConfig cannot mix legacy networkAttachmentDefinition/networkAttachmentNamespace
+                    with structured attachment/topology/role/exposure/ipam/routeAdvertisementsRef
+                  rule: '!( (has(self.networkAttachmentDefinition) || has(self.networkAttachmentNamespace))
+                    && (has(self.attachment) || has(self.topology) || has(self.role)
+                    || has(self.exposure) || has(self.ipam) || has(self.routeAdvertisementsRef))
+                    )'
+                - message: networkConfig structured fields require attachment
+                  rule: has(self.attachment) || (!has(self.topology) && !has(self.role)
+                    && !has(self.exposure) && !has(self.ipam) && !has(self.routeAdvertisementsRef))
+                - message: networkConfig networkAttachmentNamespace requires networkAttachmentDefinition
+                  rule: '!has(self.networkAttachmentNamespace) || has(self.networkAttachmentDefinition)'
             required:
             - networkConfig
             type: object
