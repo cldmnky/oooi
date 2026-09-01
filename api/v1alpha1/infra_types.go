@@ -36,7 +36,18 @@ type InfraSpec struct {
 	InfraComponents InfraComponents `json:"infraComponents,omitempty"`
 }
 
-// NetworkConfig defines the secondary network parameters for the isolated VLAN.
+// NetworkConfig defines the network parameters for the hosted cluster's
+// isolated network.
+//
+// Two mutually exclusive forms are supported:
+//   - legacy: networkAttachmentDefinition (+ optional networkAttachmentNamespace)
+//   - structured: attachment plus topology, role, exposure and ipam
+//
+// A network must be specified in exactly one of the two forms.
+// +kubebuilder:validation:XValidation:rule="has(self.attachment) || has(self.networkAttachmentDefinition)",message="networkConfig must specify either attachment or networkAttachmentDefinition"
+// +kubebuilder:validation:XValidation:rule="!( (has(self.networkAttachmentDefinition) || has(self.networkAttachmentNamespace)) && (has(self.attachment) || has(self.topology) || has(self.role) || has(self.exposure) || has(self.ipam) || has(self.routeAdvertisementsRef)) )",message="networkConfig cannot mix legacy networkAttachmentDefinition/networkAttachmentNamespace with structured attachment/topology/role/exposure/ipam/routeAdvertisementsRef"
+// +kubebuilder:validation:XValidation:rule="has(self.attachment) || (!has(self.topology) && !has(self.role) && !has(self.exposure) && !has(self.ipam) && !has(self.routeAdvertisementsRef))",message="networkConfig structured fields require attachment"
+// +kubebuilder:validation:XValidation:rule="!has(self.networkAttachmentNamespace) || has(self.networkAttachmentDefinition)",message="networkConfig networkAttachmentNamespace requires networkAttachmentDefinition"
 type NetworkConfig struct {
 	// CIDR is the IP address range for the secondary network in CIDR notation.
 	// Example: "192.168.100.0/24"
@@ -44,23 +55,65 @@ type NetworkConfig struct {
 	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$`
 	CIDR string `json:"cidr"`
 
-	// Gateway is the default gateway IP address for the secondary network.
+	// Gateway is the default gateway IP address for the network. Required for
+	// Secondary networks with DHCP or External IPAM; optional for primary
+	// OVN-Kubernetes networks.
 	// Example: "192.168.100.1"
-	// +kubebuilder:validation:Required
+	// +optional
 	// +kubebuilder:validation:Pattern=`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`
-	Gateway string `json:"gateway"`
+	Gateway string `json:"gateway,omitempty"`
 
 	// NetworkAttachmentDefinition is the name of the Multus NetworkAttachmentDefinition
-	// that represents the secondary VLAN.
-	// +kubebuilder:validation:Required
+	// that represents the secondary VLAN. Legacy form: only used when the
+	// structured attachment field is absent.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
-	NetworkAttachmentDefinition string `json:"networkAttachmentDefinition"`
+	NetworkAttachmentDefinition string `json:"networkAttachmentDefinition,omitempty"`
 
 	// NetworkAttachmentNamespace is the namespace where the NetworkAttachmentDefinition resides.
 	// If not specified, the operator will look for the NAD first in the current namespace,
 	// then in the default namespace.
 	// +optional
 	NetworkAttachmentNamespace string `json:"networkAttachmentNamespace,omitempty"`
+
+	// Attachment references the network attachment resource (Multus
+	// NetworkAttachmentDefinition or OVN-Kubernetes ClusterUserDefinedNetwork)
+	// that represents this network. Structured form: when set, topology, role,
+	// exposure and ipam must be specified and the legacy
+	// networkAttachmentDefinition fields must be empty.
+	// +optional
+	Attachment *NetworkAttachmentReference `json:"attachment,omitempty"`
+
+	// Topology defines the network topology. Supported values: Localnet,
+	// Layer2, Layer3.
+	// +optional
+	// +kubebuilder:validation:Enum=Localnet;Layer2;Layer3
+	Topology NetworkTopology `json:"topology,omitempty"`
+
+	// Role defines whether this network is the primary or a secondary network.
+	// Supported values: Secondary, Primary.
+	// +optional
+	// +kubebuilder:validation:Enum=Secondary;Primary
+	Role NetworkRole `json:"role,omitempty"`
+
+	// Exposure defines how the network is exposed. Supported values: Layer2,
+	// BGP.
+	// +optional
+	// +kubebuilder:validation:Enum=Layer2;BGP
+	Exposure NetworkExposure `json:"exposure,omitempty"`
+
+	// IPAM defines the IP address management mode. Supported values: DHCP,
+	// External, OVNKubernetes.
+	// +optional
+	// +kubebuilder:validation:Enum=DHCP;External;OVNKubernetes
+	IPAM NetworkIPAMMode `json:"ipam,omitempty"`
+
+	// RouteAdvertisementsRef references a cluster-scoped route advertisements
+	// resource. Required for ClusterUserDefinedNetwork BGP exposure and
+	// forbidden for Localnet topology. For a classic NetworkAttachmentDefinition
+	// with BGP exposure it is optional validation/intent metadata.
+	// +optional
+	RouteAdvertisementsRef *ClusterResourceReference `json:"routeAdvertisementsRef,omitempty"`
 
 	// DNSServers is an optional list of upstream DNS servers for external resolution.
 	// If not specified, the infrastructure DNS will use the pod's default resolvers.
